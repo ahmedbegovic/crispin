@@ -1,0 +1,16 @@
+# Packaging config — fully exercised in M6; kept minimal until then.
+appId: dev.ahmed.orion
+productName: Orion
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - out/**
+  - package.json
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+  category: public.app-category.developer-tools
+npmRebuild: true
+# M6: extraResources will ship sidecars/ (source + uv.lock), bin/uv, and scripts/.

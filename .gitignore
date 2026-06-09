@@ -1,0 +1,21 @@
+# Node
+node_modules/
+out/
+dist/
+*.tsbuildinfo
+
+# Python sidecars
+sidecars/*/.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+
+# Packaging artifacts
+bin/uv
+
+# OS / editor
+.DS_Store
+*.log
+.idea/
+.vscode/
+.claude/settings.local.json

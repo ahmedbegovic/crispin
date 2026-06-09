@@ -1,0 +1,18 @@
+[project]
+name = "orion-tools"
+version = "0.1.0"
+description = "Orion helper sidecar: downloads, extraction, RAG, search, news"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "httpx>=0.28",
+    "pydantic>=2.10",
+    "huggingface_hub>=0.30",
+    "lancedb>=0.21",
+    "trafilatura>=2.0",
+    "ddgs>=9.0",
+    "feedparser>=6.0",
+    "pymupdf4llm>=0.0.21",
+    "markitdown[docx,pptx]>=0.1.1",
+]

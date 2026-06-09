@@ -1,0 +1,8 @@
+[project]
+name = "orion-engine"
+version = "0.1.0"
+description = "Orion inference sidecar: vllm-mlx OpenAI-compatible server"
+requires-python = ">=3.12"
+dependencies = [
+    "vllm-mlx",
+]
