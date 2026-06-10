@@ -267,8 +267,8 @@ export default function FileTree() {
 
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950/50">
-      {/* pt-10 clears the hiddenInset titlebar drag region overlay (h-9). */}
-      <div className="shrink-0 px-3 pb-1.5 pt-10 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-600">
+      {/* pt-12 clears the hiddenInset titlebar band (h-12, traffic lights centered). */}
+      <div className="shrink-0 px-3 pb-1.5 pt-12 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-600">
         Files
       </div>
       <div

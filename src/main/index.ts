@@ -137,7 +137,8 @@ async function createWindow(): Promise<void> {
     show: false,
     title: 'Orion',
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 13 },
+    // Centered in the 48px titlebar band every column's content clears (pt-12).
+    trafficLightPosition: { x: 14, y: 17 },
     backgroundColor: '#0c0c0e',
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/index.cjs'),

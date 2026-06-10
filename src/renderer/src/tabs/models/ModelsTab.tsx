@@ -17,8 +17,8 @@ export default function ModelsTab() {
 
   return (
     <div className="h-full overflow-y-auto">
-      {/* pt-10 clears the hiddenInset titlebar drag region overlay (h-9). */}
-      <div className="mx-auto flex max-w-5xl flex-col gap-8 px-8 pb-12 pt-10">
+      {/* pt-12 clears the hiddenInset titlebar band (h-12, traffic lights centered). */}
+      <div className="mx-auto flex max-w-5xl flex-col gap-8 px-8 pb-12 pt-12">
         <div className="flex items-center justify-between gap-6">
           <h1 className="text-xl font-semibold text-zinc-100">Models</h1>
           {overview && <RamMeter ram={overview.ram} />}

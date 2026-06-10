@@ -56,8 +56,8 @@ export default function CodeTab() {
     <div className="flex h-full">
       <FileTree />
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* pt-11 clears the hiddenInset titlebar drag region overlay (h-9). */}
-        <header className="flex shrink-0 items-center gap-2.5 border-b border-zinc-800/80 px-4 pb-2.5 pt-11">
+        {/* pt-12 clears the hiddenInset titlebar band (h-12, traffic lights centered). */}
+        <header className="flex shrink-0 items-center gap-2.5 border-b border-zinc-800/80 px-4 pb-2.5 pt-12">
           <span className="shrink-0 text-[13px] font-medium text-zinc-200">{dirName(root)}</span>
           <span title={root} className="min-w-0 truncate text-[11px] text-zinc-600">
             {root}

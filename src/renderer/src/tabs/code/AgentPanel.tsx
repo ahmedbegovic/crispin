@@ -177,9 +177,9 @@ export default function AgentPanel({ root }: Props) {
 
   if (collapsed) {
     return (
-      // pt-11 clears the hiddenInset titlebar drag overlay (h-9) — a button
+      // pt-12 clears the hiddenInset titlebar band (h-12) — a button
       // underneath it never receives clicks.
-      <aside className="flex w-9 shrink-0 flex-col items-center gap-2 border-l border-zinc-800/80 bg-zinc-950/50 pb-2 pt-11">
+      <aside className="flex w-9 shrink-0 flex-col items-center gap-2 border-l border-zinc-800/80 bg-zinc-950/50 pb-2 pt-12">
         <button
           onClick={() => setCollapsed(false)}
           title="Show agent panel"
@@ -199,9 +199,9 @@ export default function AgentPanel({ root }: Props) {
 
   return (
     <aside className="flex w-96 shrink-0 flex-col border-l border-zinc-800/80 bg-zinc-950/50">
-      {/* Clears the hiddenInset titlebar drag overlay (h-9) — header buttons
+      {/* Clears the hiddenInset titlebar band (h-12) — header buttons
           underneath it never receive clicks. */}
-      <div className="h-9 shrink-0" />
+      <div className="h-12 shrink-0" />
       <header className="flex shrink-0 items-center gap-1 border-b border-zinc-800/80 px-2 py-1.5">
         <button
           onClick={() => setCollapsed(true)}

@@ -13,7 +13,7 @@ const SUGGESTIONS = [
 ]
 
 // Stable component refs so Virtuoso doesn't remount header/footer every render.
-// Header clears the hiddenInset titlebar drag overlay (h-9).
+// Header clears the hiddenInset titlebar band (h-12).
 const virtuosoComponents = {
   Header: () => <div className="h-12" />,
   Footer: () => <div className="h-4" />

@@ -82,7 +82,7 @@ export default function App() {
 
         {/* Main area: visited tabs stay mounted so state survives switching */}
         <main className="relative min-w-0 flex-1 bg-zinc-925" style={{ backgroundColor: '#101013' }}>
-          <div className="drag-region absolute inset-x-0 top-0 z-10 h-9" />
+          <div className="drag-region absolute inset-x-0 top-0 z-10 h-12" />
           {TABS.filter(({ id }) => visited.has(id)).map(({ id, component: Tab }) => (
             <div key={id} className={`h-full ${id === active ? 'block' : 'hidden'}`}>
               <Suspense fallback={null}>

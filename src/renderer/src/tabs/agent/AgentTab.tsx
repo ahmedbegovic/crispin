@@ -35,8 +35,8 @@ export default function AgentTab() {
       <SessionSidebar />
       {session ? (
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* pt-11 clears the hiddenInset titlebar drag region overlay (h-9). */}
-          <header className="flex shrink-0 items-center gap-2.5 border-b border-zinc-800/80 px-6 pb-2.5 pt-11">
+          {/* pt-12 clears the hiddenInset titlebar band (h-12, traffic lights centered). */}
+          <header className="flex shrink-0 items-center gap-2.5 border-b border-zinc-800/80 px-6 pb-2.5 pt-12">
             <span className="shrink-0 truncate text-[13px] font-medium text-zinc-200">
               {session.title || 'New session'}
             </span>

@@ -29,8 +29,8 @@ export default function NewsTab() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* pt-11 clears the hiddenInset titlebar drag region overlay (h-9). */}
-      <header className="flex shrink-0 items-center gap-2.5 border-b border-zinc-800/80 px-6 pb-2.5 pt-11">
+      {/* pt-12 clears the hiddenInset titlebar band (h-12, traffic lights centered). */}
+      <header className="flex shrink-0 items-center gap-2.5 border-b border-zinc-800/80 px-6 pb-2.5 pt-12">
         <h1 className="text-[13px] font-semibold text-zinc-100">News</h1>
         {unread > 0 && (
           <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10.5px] font-medium tabular-nums text-zinc-300">

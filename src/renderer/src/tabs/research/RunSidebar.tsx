@@ -17,8 +17,8 @@ export default function RunSidebar() {
 
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950/50">
-      {/* pt-10 clears the hiddenInset titlebar drag region overlay (h-9). */}
-      <div className="no-drag shrink-0 px-3 pb-3 pt-10">
+      {/* pt-12 clears the hiddenInset titlebar band (h-12, traffic lights centered). */}
+      <div className="no-drag shrink-0 px-3 pb-3 pt-12">
         <NewResearch />
       </div>
 

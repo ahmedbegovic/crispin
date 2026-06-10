@@ -19,8 +19,8 @@ export default function ConversationSidebar() {
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950/50">
-      {/* pt-10 clears the hiddenInset titlebar drag region overlay (h-9). */}
-      <div className="shrink-0 px-3 pb-2 pt-10">
+      {/* pt-12 clears the hiddenInset titlebar band (h-12, traffic lights centered). */}
+      <div className="shrink-0 px-3 pb-2 pt-12">
         <button
           onClick={() => void create().catch(toastError)}
           className="no-drag flex w-full items-center justify-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 py-1.5 text-[12px] font-medium text-zinc-300 hover:border-zinc-600 hover:text-zinc-100"
