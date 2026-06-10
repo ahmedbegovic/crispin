@@ -109,3 +109,123 @@ export interface ModelsOverview {
   defaults: FeatureDefaults
   ram: RamReport
 }
+
+// ---------------------------------------------------------------------------
+// Chat (M2)
+// ---------------------------------------------------------------------------
+
+export type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
+
+/** One web/RAG source behind a [n] citation. */
+export interface SourceRef {
+  id: number
+  title: string | null
+  url: string
+}
+
+/**
+ * Message content is an ordered list of parts; assistant text streams into a
+ * text part, gemma thought channels land in a thought part, tool round-trips
+ * in tool_call/tool_result pairs. Persisted as JSON in messages.parts.
+ */
+export type MessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'thought'; text: string }
+  | { type: 'image'; path: string; mime: string }
+  /** args is the raw JSON string from the model — kept raw so malformed calls are inspectable. */
+  | { type: 'tool_call'; id: string; name: string; args: string }
+  | { type: 'tool_result'; toolCallId: string; name: string; result: string; sourceIds?: number[] }
+  | { type: 'sources'; sources: SourceRef[] }
+
+export interface Conversation {
+  id: string
+  title: string
+  systemPrompt: string | null
+  headMessageId: string | null
+  defaultTier: Tier
+  collectionId: string | null
+  webEnabled: boolean
+  archived: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ConversationMeta {
+  id: string
+  title: string
+  archived: boolean
+  updatedAt: number
+}
+
+export interface ChatMessage {
+  id: string
+  conversationId: string
+  parentId: string | null
+  role: MessageRole
+  parts: MessagePart[]
+  modelId: string | null
+  tokensIn: number | null
+  tokensOut: number | null
+  createdAt: number
+  /** Position among the parent's children — drives the BranchSwitcher. */
+  siblingIndex: number
+  siblingCount: number
+  /** All sibling message ids in branch order (includes this message). */
+  siblingIds: string[]
+}
+
+export interface AttachmentInput {
+  path: string
+  kind: 'image' | 'document'
+}
+
+// ---------------------------------------------------------------------------
+// Library / RAG (M2)
+// ---------------------------------------------------------------------------
+
+export interface Collection {
+  id: string
+  name: string
+  kind: 'library' | 'notebook'
+  docCount: number
+  createdAt: number
+}
+
+export type LibraryDocStatus = 'pending' | 'ingesting' | 'ready' | 'failed'
+
+export interface LibraryDoc {
+  id: string
+  collectionId: string
+  title: string | null
+  /** File path or URL the doc came from. */
+  source: string
+  kind: string
+  status: LibraryDocStatus
+  error: string | null
+  chunkCount: number
+  createdAt: number
+}
+
+// ---------------------------------------------------------------------------
+// MCP / skills (M2)
+// ---------------------------------------------------------------------------
+
+export type McpTransport = 'stdio' | 'http'
+export type McpScope = 'chat' | 'agent' | 'both'
+
+export interface McpServer {
+  id: string
+  name: string
+  transport: McpTransport
+  command: string | null
+  args: string[]
+  url: string | null
+  env: Record<string, string>
+  enabled: boolean
+  scope: McpScope
+}
+
+export interface SkillMeta {
+  name: string
+  description: string
+}

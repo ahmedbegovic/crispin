@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 const api = {
   call: (method: string, input: unknown): Promise<unknown> =>
@@ -9,7 +9,12 @@ const api = {
     return () => {
       ipcRenderer.removeListener('orion:event', listener)
     }
-  }
+  },
+  /**
+   * File.path is gone since Electron 32 — this is the only way the sandboxed
+   * renderer can resolve a dropped/picked File to a filesystem path.
+   */
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file)
 }
 
 contextBridge.exposeInMainWorld('orion', api)

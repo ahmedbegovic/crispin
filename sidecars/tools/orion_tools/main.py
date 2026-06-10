@@ -2,10 +2,13 @@ from fastapi import FastAPI, HTTPException
 
 from . import __version__
 from .jobs import registry
-from .routers import downloads
+from .routers import downloads, extract, rag, web
 
 app = FastAPI(title="orion-tools", version=__version__)
 app.include_router(downloads.router)
+app.include_router(extract.router)
+app.include_router(rag.router)
+app.include_router(web.router)
 
 
 @app.get("/healthz")

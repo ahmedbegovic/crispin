@@ -13,6 +13,7 @@ import type {
   TierResolution
 } from '@shared/types'
 import {
+  EMBEDDING_MODEL,
   FEATURE_DEFAULTS,
   TIERS,
   TIER_ORDER,
@@ -141,14 +142,21 @@ export class ModelService {
 
   async refreshInstalled(): Promise<InstalledModel[]> {
     const { models } = await this.deps.tools.localModels()
+    // The embedder is library plumbing, not a chat model: it must never enter
+    // the chat registry, the Models tab, or registryKey.
     this.installed = models
-      .filter((m) => !this.phantomPartial(m.repo_id))
+      .filter((m) => m.repo_id !== EMBEDDING_MODEL && !this.phantomPartial(m.repo_id))
       .map((m) => ({
         repoId: m.repo_id,
         sizeBytes: m.size_bytes,
         lastModifiedAt: m.last_modified_ms
       }))
     return this.installed
+  }
+
+  /** True when the chat registry would be non-empty (the embedder never counts). */
+  hasRegistryModels(): boolean {
+    return this.installed.length > 0
   }
 
   /**

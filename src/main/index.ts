@@ -9,7 +9,16 @@ import { EngineClient } from './services/engine-client'
 import { RamGuard } from './services/ram-guard'
 import { ModelService } from './services/model-service'
 import { dataDir, sidecarDir, uvBinary, uvEnvFor } from './services/paths'
+import { ChatRepo } from './services/chat/repo'
+import { ChatOrchestrator } from './services/chat/orchestrator'
+import { LibraryService } from './services/library-service'
+import { McpManager } from './services/mcp-manager'
+import { SkillsService } from './services/skills'
 import { registerModelsFeature } from './features/models'
+import { registerChatFeature } from './features/chat'
+import { registerLibraryFeature } from './features/library'
+import { registerMcpFeature } from './features/mcp'
+import { registerSkillsFeature } from './features/skills'
 import { attachRouter, handle } from './ipc/router'
 import { broadcast } from './ipc/events'
 
@@ -22,6 +31,9 @@ if (!app.requestSingleInstanceLock()) {
 let win: BrowserWindow | null = null
 let db: OrionDatabase | null = null
 let modelService: ModelService | null = null
+let orchestrator: ChatOrchestrator | null = null
+let libraryService: LibraryService | null = null
+let mcpManager: McpManager | null = null
 
 const processManager = new ProcessManager((snapshot) =>
   broadcast({ type: 'system.processState', process: snapshot })
@@ -124,6 +136,36 @@ app.whenReady().then(async () => {
   })
   registerModelsFeature({ processManager, modelService, engineClient, ports })
 
+  const chatRepo = new ChatRepo(db)
+  const skillsService = new SkillsService()
+  skillsService.init()
+  mcpManager = new McpManager(db)
+  const models = modelService
+  libraryService = new LibraryService({
+    db,
+    tools: toolsClient,
+    processManager,
+    getEnginePort: () => ports.engine,
+    hasRegistryModels: () => models.hasRegistryModels(),
+    broadcast
+  })
+  libraryService.init()
+  orchestrator = new ChatOrchestrator({
+    db,
+    repo: chatRepo,
+    engine: engineClient,
+    tools: toolsClient,
+    modelService,
+    mcp: mcpManager,
+    skills: skillsService,
+    library: libraryService,
+    broadcast
+  })
+  registerChatFeature({ repo: chatRepo, orchestrator, modelService })
+  registerLibraryFeature(libraryService)
+  registerMcpFeature(mcpManager)
+  registerSkillsFeature(skillsService)
+
   attachRouter()
 
   await createWindow()
@@ -148,6 +190,11 @@ app.on('before-quit', (event) => {
   void (async () => {
     try {
       modelService?.dispose()
+      // Chat/library/MCP teardown must precede the sidecar shutdown: abort
+      // in-flight generations and stop ingest pollers before their servers die.
+      orchestrator?.dispose()
+      libraryService?.dispose()
+      await mcpManager?.dispose()
       await processManager.shutdown()
       db?.close()
     } catch (err) {

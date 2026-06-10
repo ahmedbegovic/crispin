@@ -114,6 +114,120 @@ export const modelsOverviewSchema = z.object({
   ram: ramReportSchema
 })
 
+// --- chat (M2) -------------------------------------------------------------
+
+export const messageRoleSchema = z.enum(['system', 'user', 'assistant', 'tool'])
+
+export const sourceRefSchema = z.object({
+  id: z.number(),
+  title: z.string().nullable(),
+  url: z.string()
+})
+
+export const messagePartSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('text'), text: z.string() }),
+  z.object({ type: z.literal('thought'), text: z.string() }),
+  z.object({ type: z.literal('image'), path: z.string(), mime: z.string() }),
+  z.object({ type: z.literal('tool_call'), id: z.string(), name: z.string(), args: z.string() }),
+  z.object({
+    type: z.literal('tool_result'),
+    toolCallId: z.string(),
+    name: z.string(),
+    result: z.string(),
+    sourceIds: z.array(z.number()).optional()
+  }),
+  z.object({ type: z.literal('sources'), sources: z.array(sourceRefSchema) })
+])
+
+export const conversationSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  systemPrompt: z.string().nullable(),
+  headMessageId: z.string().nullable(),
+  defaultTier: tierSchema,
+  collectionId: z.string().nullable(),
+  webEnabled: z.boolean(),
+  archived: z.boolean(),
+  createdAt: z.number(),
+  updatedAt: z.number()
+})
+
+export const conversationMetaSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  archived: z.boolean(),
+  updatedAt: z.number()
+})
+
+export const chatMessageSchema = z.object({
+  id: z.string(),
+  conversationId: z.string(),
+  parentId: z.string().nullable(),
+  role: messageRoleSchema,
+  parts: z.array(messagePartSchema),
+  modelId: z.string().nullable(),
+  tokensIn: z.number().nullable(),
+  tokensOut: z.number().nullable(),
+  createdAt: z.number(),
+  siblingIndex: z.number(),
+  siblingCount: z.number(),
+  siblingIds: z.array(z.string())
+})
+
+export const attachmentInputSchema = z.object({
+  path: z.string(),
+  kind: z.enum(['image', 'document'])
+})
+
+/** chat.get / chat.switchBranch both return the conversation + active path. */
+export const conversationViewSchema = z.object({
+  conversation: conversationSchema,
+  messages: z.array(chatMessageSchema)
+})
+
+// --- library / RAG (M2) -----------------------------------------------------
+
+export const collectionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(['library', 'notebook']),
+  docCount: z.number(),
+  createdAt: z.number()
+})
+
+export const libraryDocStatusSchema = z.enum(['pending', 'ingesting', 'ready', 'failed'])
+
+export const libraryDocSchema = z.object({
+  id: z.string(),
+  collectionId: z.string(),
+  title: z.string().nullable(),
+  source: z.string(),
+  kind: z.string(),
+  status: libraryDocStatusSchema,
+  error: z.string().nullable(),
+  chunkCount: z.number(),
+  createdAt: z.number()
+})
+
+// --- MCP / skills (M2) --------------------------------------------------------
+
+export const mcpServerSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  transport: z.enum(['stdio', 'http']),
+  command: z.string().nullable(),
+  args: z.array(z.string()),
+  url: z.string().nullable(),
+  env: z.record(z.string(), z.string()),
+  enabled: z.boolean(),
+  scope: z.enum(['chat', 'agent', 'both'])
+})
+
+export const skillMetaSchema = z.object({
+  name: z.string(),
+  description: z.string()
+})
+
 // ---------------------------------------------------------------------------
 // Method contract: renderer -> main request/response over `orion:call`.
 // Every method is zod-validated on both sides of the bridge.
@@ -167,6 +281,129 @@ export const contract = {
   'models.setDefault': {
     input: z.object({ feature: featureSchema, tier: tierSchema }),
     output: z.object({ ok: z.boolean() })
+  },
+
+  // --- chat ------------------------------------------------------------------
+  'chat.list': {
+    input: z.object({ archived: z.boolean().optional() }).optional(),
+    output: z.object({ conversations: z.array(conversationMetaSchema) })
+  },
+  'chat.create': {
+    input: z.object({
+      tier: tierSchema.optional(),
+      collectionId: z.string().optional(),
+      webEnabled: z.boolean().optional()
+    }),
+    output: z.object({ conversation: conversationSchema })
+  },
+  'chat.get': {
+    input: z.object({ conversationId: z.string() }),
+    output: conversationViewSchema
+  },
+  'chat.send': {
+    /** Starts streaming; chat.delta/chat.done events carry the response. */
+    input: z.object({
+      conversationId: z.string(),
+      text: z.string(),
+      attachments: z.array(attachmentInputSchema).optional(),
+      tier: tierSchema.optional()
+    }),
+    output: z.object({ messageId: z.string(), assistantMessageId: z.string() })
+  },
+  'chat.abort': {
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'chat.regenerate': {
+    /** messageId = the assistant message to fork a sibling of. */
+    input: z.object({ conversationId: z.string(), messageId: z.string() }),
+    output: z.object({ assistantMessageId: z.string() })
+  },
+  'chat.editResend': {
+    /** messageId = the user message being edited; creates a sibling + regenerates. */
+    input: z.object({ conversationId: z.string(), messageId: z.string(), text: z.string() }),
+    output: z.object({ messageId: z.string(), assistantMessageId: z.string() })
+  },
+  'chat.switchBranch': {
+    /** Moves the head to the newest leaf under messageId's branch. */
+    input: z.object({ conversationId: z.string(), messageId: z.string() }),
+    output: conversationViewSchema
+  },
+  'chat.update': {
+    input: z.object({
+      conversationId: z.string(),
+      title: z.string().optional(),
+      systemPrompt: z.string().nullable().optional(),
+      defaultTier: tierSchema.optional(),
+      collectionId: z.string().nullable().optional(),
+      webEnabled: z.boolean().optional(),
+      archived: z.boolean().optional()
+    }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'chat.delete': {
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+
+  // --- library ----------------------------------------------------------------
+  'library.collections': {
+    input: z.undefined(),
+    output: z.object({ collections: z.array(collectionSchema) })
+  },
+  'library.createCollection': {
+    input: z.object({ name: z.string() }),
+    output: z.object({ collection: collectionSchema })
+  },
+  'library.deleteCollection': {
+    input: z.object({ collectionId: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'library.docs': {
+    input: z.object({ collectionId: z.string() }),
+    output: z.object({ docs: z.array(libraryDocSchema) })
+  },
+  'library.ingest': {
+    /** Async — progress arrives via library.docStatus events. */
+    input: z.object({
+      collectionId: z.string(),
+      path: z.string().optional(),
+      url: z.string().optional()
+    }),
+    output: z.object({ docId: z.string() })
+  },
+  'library.deleteDoc': {
+    input: z.object({ docId: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+
+  // --- MCP ----------------------------------------------------------------------
+  'mcp.list': {
+    input: z.undefined(),
+    output: z.object({ servers: z.array(mcpServerSchema) })
+  },
+  'mcp.upsert': {
+    input: z.object({ server: mcpServerSchema }),
+    output: z.object({ server: mcpServerSchema })
+  },
+  'mcp.remove': {
+    input: z.object({ id: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'mcp.test': {
+    /** Connects, lists tools, disconnects. */
+    input: z.object({ id: z.string() }),
+    output: z.object({
+      ok: z.boolean(),
+      tools: z.array(z.string()).optional(),
+      error: z.string().optional()
+    })
+  },
+
+  // --- skills ---------------------------------------------------------------------
+  'skills.list': {
+    input: z.undefined(),
+    output: z.object({ skills: z.array(skillMetaSchema) })
   }
 } as const
 
@@ -203,6 +440,43 @@ export const orionEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('models.statusChanged'),
     engine: engineStatusSchema
+  }),
+  z.object({
+    type: z.literal('chat.delta'),
+    conversationId: z.string(),
+    messageId: z.string(),
+    /** Index of the part this delta targets within the assistant message. */
+    partIndex: z.number(),
+    part: messagePartSchema,
+    /** true = append part.text to the existing part; false = insert/replace whole part. */
+    append: z.boolean()
+  }),
+  z.object({
+    type: z.literal('chat.toolEvent'),
+    conversationId: z.string(),
+    messageId: z.string(),
+    toolCallId: z.string(),
+    name: z.string(),
+    phase: z.enum(['start', 'result', 'error']),
+    detail: z.string().optional()
+  }),
+  z.object({
+    type: z.literal('chat.done'),
+    conversationId: z.string(),
+    messageId: z.string(),
+    aborted: z.boolean(),
+    error: z.string().nullable(),
+    tokensIn: z.number().nullable(),
+    tokensOut: z.number().nullable()
+  }),
+  z.object({
+    type: z.literal('chat.titleChanged'),
+    conversationId: z.string(),
+    title: z.string()
+  }),
+  z.object({
+    type: z.literal('library.docStatus'),
+    doc: libraryDocSchema
   })
 ])
 

@@ -75,6 +75,13 @@ export const FEATURE_DEFAULTS: Record<Feature, Tier> = {
 /** The only model allowed in the RAM guard's utility slot. */
 export const UTILITY_MODEL = TIERS.low.candidates[0]
 
+/**
+ * The library RAG embedder. Lives in the HF cache like any model but is
+ * NOT a chat model: it must stay out of the engine chat registry and its
+ * memory budget (served via /v1/embeddings, which bypasses the registry).
+ */
+export const EMBEDDING_MODEL = 'mlx-community/embeddinggemma-300m-6bit'
+
 export interface RepoValidation {
   ok: boolean
   warning?: string
