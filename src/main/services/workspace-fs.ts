@@ -145,7 +145,11 @@ export class WorkspaceFs {
     const src = this.jailed(root, from)
     const dst = this.jailedTarget(root, to)
     if (!existsSync(src.abs)) throw new Error(`No such file or directory: ${from}`)
-    if (existsSync(dst.abs)) throw new Error(`Already exists: ${to}`)
+    // On case-insensitive APFS, existsSync('Foo') is true while renaming
+    // 'foo' → 'Foo' — a case-only rename of the SAME entry is legal and
+    // renameSync handles it in place. Only a genuinely different entry blocks.
+    const caseOnly = src.abs !== dst.abs && src.abs.toLowerCase() === dst.abs.toLowerCase()
+    if (!caseOnly && existsSync(dst.abs)) throw new Error(`Already exists: ${to}`)
     this.refuseIntoSelf(src.abs, dst.abs, 'move', from)
     renameSync(src.abs, dst.abs)
   }
