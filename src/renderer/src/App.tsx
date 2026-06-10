@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from 'react'
+import { lazy, Suspense, useEffect, useState, type ComponentType } from 'react'
 import {
   Bot,
   Code2,
@@ -13,10 +13,13 @@ import StatusBar from './components/StatusBar'
 import Toasts from './components/Toasts'
 import ChatTab from './tabs/chat/ChatTab'
 import AgentTab from './tabs/agent/AgentTab'
-import CodeTab from './tabs/code/CodeTab'
 import ResearchTab from './tabs/research/ResearchTab'
 import ModelsTab from './tabs/models/ModelsTab'
 import NewsTab from './tabs/news/NewsTab'
+
+// Lazy so monaco + xterm (and their worker chunks) load on first Code-tab
+// activation instead of being evaluated at app boot.
+const CodeTab = lazy(() => import('./tabs/code/CodeTab'))
 
 type TabId = 'chat' | 'agent' | 'code' | 'research' | 'models' | 'news'
 
@@ -82,7 +85,9 @@ export default function App() {
           <div className="drag-region absolute inset-x-0 top-0 z-10 h-9" />
           {TABS.filter(({ id }) => visited.has(id)).map(({ id, component: Tab }) => (
             <div key={id} className={`h-full ${id === active ? 'block' : 'hidden'}`}>
-              <Tab />
+              <Suspense fallback={null}>
+                <Tab />
+              </Suspense>
             </div>
           ))}
         </main>

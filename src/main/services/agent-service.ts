@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { OrionEvent } from '@shared/ipc'
-import type { AgentSessionMeta, Tier } from '@shared/types'
+import type { AgentSessionMeta, AgentTab, Tier } from '@shared/types'
 import { TIER_ORDER } from '@shared/model-tiers'
 import type { OrionDatabase } from './db'
 import { engineModelId } from './engine-client'
@@ -20,7 +20,7 @@ export interface AgentServiceDeps {
 interface AgentSessionRow {
   id: string
   opencode_session_id: string | null
-  tab: string
+  tab: AgentTab
   directory: string
   title: string | null
   created_at: number
@@ -29,6 +29,7 @@ interface AgentSessionRow {
 
 const rowToMeta = (row: AgentSessionRow): AgentSessionMeta => ({
   id: row.id,
+  tab: row.tab,
   directory: row.directory,
   title: row.title,
   createdAt: row.created_at,
@@ -73,24 +74,35 @@ export class AgentService {
 
   // --- sessions ---------------------------------------------------------------
 
-  sessions(): AgentSessionMeta[] {
+  sessions(filter?: { tab?: AgentTab; directory?: string }): AgentSessionMeta[] {
+    const where: string[] = []
+    const params: string[] = []
+    if (filter?.tab) {
+      where.push('tab = ?')
+      params.push(filter.tab)
+    }
+    if (filter?.directory) {
+      where.push('directory = ?')
+      params.push(filter.directory)
+    }
     const rows = this.deps.db
       .prepare(
-        "SELECT * FROM agent_sessions WHERE tab = 'agent' ORDER BY COALESCE(last_used_at, created_at) DESC"
+        `SELECT * FROM agent_sessions${where.length ? ` WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY COALESCE(last_used_at, created_at) DESC`
       )
-      .all() as unknown as AgentSessionRow[]
+      .all(...params) as unknown as AgentSessionRow[]
     return rows.map(rowToMeta)
   }
 
-  async create(directory: string, tier?: Tier): Promise<AgentSessionMeta> {
-    const modelId = this.resolveModel(tier)
+  async create(directory: string, tier?: Tier, tab: AgentTab = 'agent'): Promise<AgentSessionMeta> {
+    const modelId = this.resolveModel(tier, tab)
     const { baseUrl } = await this.deps.pool.ensureServer(directory)
     this.deps.pool.touch(directory)
     const opencodeId = await this.createOpencodeSession(baseUrl, modelId)
     const row: AgentSessionRow = {
       id: crypto.randomUUID(),
       opencode_session_id: opencodeId,
-      tab: 'agent',
+      tab,
       directory,
       title: null,
       created_at: Date.now(),
@@ -126,7 +138,7 @@ export class AgentService {
    */
   async prompt(sessionId: string, text: string, tier?: Tier): Promise<void> {
     const row = this.row(sessionId)
-    const modelId = this.resolveModel(tier)
+    const modelId = this.resolveModel(tier, row.tab)
     const { baseUrl } = await this.deps.pool.ensureServer(row.directory)
     this.deps.pool.touch(row.directory)
     this.deps.db
@@ -138,6 +150,7 @@ export class AgentService {
       this.deps.broadcast({
         type: 'agent.event',
         sessionId: row.id,
+        tab: row.tab,
         event: { type: 'orion.promptFailed', error: message }
       })
     })
@@ -230,9 +243,10 @@ export class AgentService {
   // --- internals -------------------------------------------------------------------
 
   /** Requested tier first, then nearest installed below, then above (mirrors chat). */
-  private resolveModel(tier?: Tier): string {
+  private resolveModel(tier: Tier | undefined, tab: AgentTab): string {
     const overview = this.deps.modelService.overview()
-    const requested = tier ?? overview.defaults.agent
+    // Each surface honors its own persisted feature default.
+    const requested = tier ?? overview.defaults[tab === 'code' ? 'code' : 'agent']
     const active = new Map(overview.tiers.map((t) => [t.tier, t.active]))
     const start = TIER_ORDER.indexOf(requested)
     const order = [
@@ -326,13 +340,18 @@ export class AgentService {
       }
     }
 
-    this.deps.broadcast({ type: 'agent.event', sessionId: row.id, event })
+    this.deps.broadcast({ type: 'agent.event', sessionId: row.id, tab: row.tab, event })
     // Live 1.16.2 emits 'permission.asked' with properties = the permission
     // object ({id: 'per_…', sessionID, permission, patterns, metadata, …}).
     // The id guard excludes 'permission.replied' (whose properties carry no
     // id), which would otherwise enqueue a ghost ask after every reply.
     if (typeof type === 'string' && type.includes('permission') && typeof props?.id === 'string') {
-      this.deps.broadcast({ type: 'agent.permissionRequest', sessionId: row.id, request: props })
+      this.deps.broadcast({
+        type: 'agent.permissionRequest',
+        sessionId: row.id,
+        tab: row.tab,
+        request: props
+      })
     }
   }
 }

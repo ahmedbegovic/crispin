@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentSessionMeta, SkillMeta, Tier } from '@shared/types'
+import type { AgentSessionMeta, AgentTab, SkillMeta, Tier } from '@shared/types'
 import { call, onEvent } from '@/lib/ipc'
 import { pushToast } from '@/stores/toasts'
 
@@ -52,6 +52,8 @@ export interface AgentMessage {
 
 export interface PermissionAsk {
   sessionId: string
+  /** Owning surface — the Agent tab and Code panel each pop only their own asks. */
+  tab: AgentTab
   request: unknown
 }
 
@@ -162,7 +164,9 @@ function without<T>(record: Record<string, T>, key: string): Record<string, T> {
 }
 
 interface AgentStore {
+  /** Sessions of BOTH tabs — each surface filters by `tab`. */
   sessions: AgentSessionMeta[]
+  /** Agent-tab selection; the Code panel keeps its own per-workspace pick. */
   activeId: string | null
   /** Reduced opencode timelines; only opened sessions have an entry. */
   messagesBySession: Record<string, AgentMessage[]>
@@ -172,10 +176,17 @@ interface AgentStore {
   skills: SkillMeta[]
   initialized: boolean
   init: () => Promise<void>
+  /** Agent-tab eager select of the newest agent session — split from init() so
+   *  the Code panel's init never spawns a server for an unrelated directory. */
+  selectInitialAgentSession: () => Promise<void>
   refresh: () => Promise<void>
   /** Folder picker -> agent.create -> select. No-op when the picker is cancelled. */
   create: () => Promise<void>
+  /** agent.create for a known directory (Code panel); never moves activeId. */
+  createIn: (directory: string, tab: AgentTab, tier?: Tier) => Promise<AgentSessionMeta>
   select: (sessionId: string) => Promise<void>
+  /** Snapshot-fetch a session's timeline without touching activeId. */
+  load: (sessionId: string) => Promise<void>
   prompt: (sessionId: string, text: string, tier?: Tier) => Promise<void>
   abort: (sessionId: string) => Promise<void>
   permissionReply: (
@@ -343,40 +354,55 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       }
     })
 
-    onEvent('agent.permissionRequest', ({ sessionId, request }) => {
+    onEvent('agent.permissionRequest', ({ sessionId, tab, request }) => {
       // Real asks always carry an id; id-less payloads (e.g. a rebroadcast
       // permission.replied) have nothing to reply to — never queue them.
       const id = permissionIdOf(request)
       if (!id) return
       set((s) => {
         if (s.permissionQueue.some((p) => permissionIdOf(p.request) === id)) return {}
-        return { permissionQueue: [...s.permissionQueue, { sessionId, request }] }
+        return { permissionQueue: [...s.permissionQueue, { sessionId, tab, request }] }
       })
     })
 
     await get().refresh()
-    const first = get().sessions[0]
-    if (first && get().activeId === null) await get().select(first.id)
+  },
+
+  // select() -> load() -> agent.get spawns the session's opencode server, so
+  // only the Agent tab's own mount may run this — never the Code panel's init.
+  selectInitialAgentSession: async () => {
+    const s = get()
+    const first = s.sessions.find((x) => x.tab === 'agent')
+    if (first && s.activeId === null) await s.select(first.id)
   },
 
   refresh: async () => {
-    const { sessions } = await call('agent.sessions')
+    const { sessions } = await call('agent.sessions', {})
     set({ sessions })
   },
 
   create: async () => {
     const { path } = await call('agent.pickDirectory')
     if (!path) return
-    const { session } = await call('agent.create', { directory: path })
+    const session = await get().createIn(path, 'agent')
+    set({ activeId: session.id })
+  },
+
+  createIn: async (directory, tab, tier) => {
+    const { session } = await call('agent.create', { directory, tier, tab })
     set((s) => ({
       sessions: [session, ...s.sessions.filter((x) => x.id !== session.id)],
-      messagesBySession: { ...s.messagesBySession, [session.id]: [] },
-      activeId: session.id
+      messagesBySession: { ...s.messagesBySession, [session.id]: [] }
     }))
+    return session
   },
 
   select: async (sessionId) => {
     set({ activeId: sessionId })
+    await get().load(sessionId)
+  },
+
+  load: async (sessionId) => {
     // Never clobber a live-streaming timeline with a snapshot fetch.
     if (get().busyBySession[sessionId] && get().messagesBySession[sessionId]) return
     const { session, messages } = await call('agent.get', { sessionId })
@@ -461,7 +487,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       permissionQueue: s.permissionQueue.filter((p) => p.sessionId !== sessionId),
       activeId: s.activeId === sessionId ? null : s.activeId
     }))
-    const next = get().sessions[0]
+    // activeId is the Agent tab's selection — never refill it with a code session.
+    const next = get().sessions.find((x) => x.tab === 'agent')
     if (get().activeId === null && next) await get().select(next.id)
   },
 

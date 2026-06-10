@@ -28,12 +28,15 @@ function detailOf(metadata: Record<string, unknown>): string | undefined {
 }
 
 /**
- * Surfaces the FIRST queued permission ask app-wide; replies pop the queue and
+ * Surfaces the FIRST queued Agent-tab permission ask; replies pop the queue and
  * reveal the next one. No backdrop dismiss — an ask demands a decision.
+ * Code-panel asks render inline in the Code tab's DiffPermission instead.
  */
 export default function PermissionModal() {
-  const ask = useAgentStore((s) => s.permissionQueue[0])
-  const queueLength = useAgentStore((s) => s.permissionQueue.length)
+  const ask = useAgentStore((s) => s.permissionQueue.find((p) => p.tab === 'agent'))
+  const queueLength = useAgentStore(
+    (s) => s.permissionQueue.filter((p) => p.tab === 'agent').length
+  )
   const session = useAgentStore((s) =>
     ask ? s.sessions.find((x) => x.id === ask.sessionId) : undefined
   )

@@ -246,10 +246,22 @@ export interface SkillMeta {
   agentEnabled: boolean
 }
 
+/** Which UI surface owns an opencode session. */
+export type AgentTab = 'agent' | 'code'
+
 export interface AgentSessionMeta {
   id: string
+  tab: AgentTab
   directory: string
   title: string | null
   createdAt: number
   lastUsedAt: number | null
+}
+
+/** One node of a lazy directory listing inside a code workspace. */
+export interface WorkspaceEntry {
+  name: string
+  /** Workspace-relative path, '/'-separated. */
+  path: string
+  kind: 'file' | 'dir'
 }

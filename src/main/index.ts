@@ -16,12 +16,15 @@ import { McpManager } from './services/mcp-manager'
 import { SkillsService } from './services/skills'
 import { OpencodePool } from './services/opencode-pool'
 import { AgentService } from './services/agent-service'
+import { WorkspaceFs } from './services/workspace-fs'
+import { TermService } from './services/term-service'
 import { registerModelsFeature } from './features/models'
 import { registerChatFeature } from './features/chat'
 import { registerLibraryFeature } from './features/library'
 import { registerMcpFeature } from './features/mcp'
 import { registerSkillsFeature } from './features/skills'
 import { registerAgentFeature } from './features/agent'
+import { registerCodeFeature } from './features/code'
 import { attachRouter, handle } from './ipc/router'
 import { broadcast } from './ipc/events'
 
@@ -38,6 +41,8 @@ let orchestrator: ChatOrchestrator | null = null
 let libraryService: LibraryService | null = null
 let mcpManager: McpManager | null = null
 let opencodePool: OpencodePool | null = null
+let workspaceFs: WorkspaceFs | null = null
+let termService: TermService | null = null
 
 const processManager = new ProcessManager((snapshot) =>
   broadcast({ type: 'system.processState', process: snapshot })
@@ -185,6 +190,10 @@ app.whenReady().then(async () => {
   agentService.init()
   registerAgentFeature(agentService)
 
+  workspaceFs = new WorkspaceFs({ broadcast })
+  termService = new TermService({ broadcast })
+  registerCodeFeature({ db, workspaceFs, terms: termService })
+
   attachRouter()
 
   await createWindow()
@@ -208,6 +217,10 @@ app.on('before-quit', (event) => {
   quitting = true
   void (async () => {
     try {
+      // PTYs and fs watchers live entirely in main — kill them first so
+      // nothing keeps streaming term.data/fsChanged into a closing window.
+      termService?.dispose()
+      await workspaceFs?.dispose()
       modelService?.dispose()
       // Chat/library/MCP teardown must precede the sidecar shutdown: abort
       // in-flight generations and stop ingest pollers before their servers die.

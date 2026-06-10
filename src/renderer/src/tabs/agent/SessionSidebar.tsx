@@ -11,7 +11,8 @@ function dirName(directory: string): string {
 }
 
 export default function SessionSidebar() {
-  const sessions = useAgentStore((s) => s.sessions)
+  // Code-panel sessions live in the same store; this sidebar lists only its own.
+  const sessions = useAgentStore((s) => s.sessions).filter((x) => x.tab === 'agent')
   const activeId = useAgentStore((s) => s.activeId)
   const busyBySession = useAgentStore((s) => s.busyBySession)
   const select = useAgentStore((s) => s.select)

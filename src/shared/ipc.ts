@@ -240,12 +240,24 @@ export const skillMetaSchema = z.object({
   agentEnabled: z.boolean()
 })
 
+/** Which UI surface owns an opencode session. */
+export const agentTabSchema = z.enum(['agent', 'code'])
+
 export const agentSessionMetaSchema = z.object({
   id: z.string(),
+  tab: agentTabSchema,
   directory: z.string(),
   title: z.string().nullable(),
   createdAt: z.number(),
   lastUsedAt: z.number().nullable()
+})
+
+/** One node of a lazy directory listing inside a code workspace. */
+export const workspaceEntrySchema = z.object({
+  name: z.string(),
+  /** Workspace-relative path, '/'-separated. */
+  path: z.string(),
+  kind: z.enum(['file', 'dir'])
 })
 
 // ---------------------------------------------------------------------------
@@ -442,11 +454,16 @@ export const contract = {
 
   // --- agent (opencode) -------------------------------------------------------------
   'agent.sessions': {
-    input: z.undefined(),
+    /** No filters = the Agent tab's list; the Code panel filters by tab+directory. */
+    input: z.object({ tab: agentTabSchema.optional(), directory: z.string().optional() }).optional(),
     output: z.object({ sessions: z.array(agentSessionMetaSchema) })
   },
   'agent.create': {
-    input: z.object({ directory: z.string(), tier: tierSchema.optional() }),
+    input: z.object({
+      directory: z.string(),
+      tier: tierSchema.optional(),
+      tab: agentTabSchema.optional()
+    }),
     output: z.object({ session: agentSessionMetaSchema })
   },
   'agent.get': {
@@ -495,6 +512,67 @@ export const contract = {
   'memory.write': {
     /** Empty content deletes the file. */
     input: z.object({ name: z.string(), content: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+
+  // --- code workspace (fs is jailed under the chosen root) ---------------------------
+  'code.pickWorkspace': {
+    /** Native folder picker; remembers the last workspace. Null when cancelled. */
+    input: z.undefined(),
+    output: z.object({ path: z.string().nullable() })
+  },
+  'code.lastWorkspace': {
+    input: z.undefined(),
+    output: z.object({ path: z.string().nullable() })
+  },
+  'code.openWorkspace': {
+    /** Validates the root, starts the chokidar watcher, returns the top level. */
+    input: z.object({ root: z.string() }),
+    output: z.object({ entries: z.array(workspaceEntrySchema) })
+  },
+  'code.closeWorkspace': {
+    input: z.object({ root: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'code.listDir': {
+    /** Lazy per-directory listing; dir is workspace-relative ('' = root). */
+    input: z.object({ root: z.string(), dir: z.string() }),
+    output: z.object({ entries: z.array(workspaceEntrySchema) })
+  },
+  'code.readFile': {
+    input: z.object({ root: z.string(), path: z.string() }),
+    output: z.object({ content: z.string(), mtime: z.number() })
+  },
+  'code.writeFile': {
+    /**
+     * expectedMtime guards against clobbering disk changes: when set and the
+     * file is newer, the write is refused with conflict=true.
+     */
+    input: z.object({
+      root: z.string(),
+      path: z.string(),
+      content: z.string(),
+      expectedMtime: z.number().optional()
+    }),
+    output: z.object({ ok: z.boolean(), mtime: z.number().nullable(), conflict: z.boolean() })
+  },
+
+  // --- terminal (node-pty) -------------------------------------------------------------
+  'term.create': {
+    /** Login shell with cwd inside the workspace; output streams via term.data. */
+    input: z.object({ cwd: z.string(), cols: z.number(), rows: z.number() }),
+    output: z.object({ termId: z.string() })
+  },
+  'term.write': {
+    input: z.object({ termId: z.string(), data: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'term.resize': {
+    input: z.object({ termId: z.string(), cols: z.number(), rows: z.number() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'term.kill': {
+    input: z.object({ termId: z.string() }),
     output: z.object({ ok: z.boolean() })
   }
 } as const
@@ -580,13 +658,33 @@ export const orionEventSchema = z.discriminatedUnion('type', [
     /** Raw opencode SSE event for one of our sessions — renderer casts. */
     type: z.literal('agent.event'),
     sessionId: z.string(),
+    /** Owning surface — the Agent tab and Code panel each reduce only theirs. */
+    tab: agentTabSchema,
     event: z.unknown()
   }),
   z.object({
     /** Permission ask surfaced from opencode; reply via agent.permissionReply. */
     type: z.literal('agent.permissionRequest'),
     sessionId: z.string(),
+    tab: agentTabSchema,
     request: z.unknown()
+  }),
+  z.object({
+    /** Batch of workspace paths that changed on disk (chokidar, debounced). */
+    type: z.literal('code.fsChanged'),
+    root: z.string(),
+    paths: z.array(z.string())
+  }),
+  z.object({
+    /** PTY output chunk (batched ~16ms in main). */
+    type: z.literal('term.data'),
+    termId: z.string(),
+    data: z.string()
+  }),
+  z.object({
+    type: z.literal('term.exit'),
+    termId: z.string(),
+    exitCode: z.number().nullable()
   }),
   z.object({
     type: z.literal('library.docStatus'),

@@ -4,10 +4,10 @@ import type { AgentService } from '../services/agent-service'
 
 /** Registers every agent.* and memory.* IPC method. */
 export function registerAgentFeature(agent: AgentService): void {
-  handle('agent.sessions', () => ({ sessions: agent.sessions() }))
+  handle('agent.sessions', (filter) => ({ sessions: agent.sessions(filter) }))
 
-  handle('agent.create', async ({ directory, tier }) => ({
-    session: await agent.create(directory, tier)
+  handle('agent.create', async ({ directory, tier, tab }) => ({
+    session: await agent.create(directory, tier, tab)
   }))
 
   handle('agent.get', ({ sessionId }) => agent.get(sessionId))

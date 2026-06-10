@@ -12,17 +12,23 @@ import SkillsPanel from './SkillsPanel'
 
 export default function AgentTab() {
   const init = useAgentStore((s) => s.init)
+  const selectInitialAgentSession = useAgentStore((s) => s.selectInitialAgentSession)
   const activeId = useAgentStore((s) => s.activeId)
+  // The store holds Code-panel sessions too — this tab only ever shows its own.
   const session = useAgentStore((s) =>
-    s.activeId !== null ? s.sessions.find((x) => x.id === s.activeId) : undefined
+    s.activeId !== null
+      ? s.sessions.find((x) => x.id === s.activeId && x.tab === 'agent')
+      : undefined
   )
   const create = useAgentStore((s) => s.create)
   const [memoryOpen, setMemoryOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
 
   useEffect(() => {
-    void init().catch(toastError)
-  }, [init])
+    // init() is a no-op guard when the Code panel ran it first, so always
+    // chain the eager agent-tab select after it resolves.
+    void init().then(selectInitialAgentSession).catch(toastError)
+  }, [init, selectInitialAgentSession])
 
   return (
     <div className="flex h-full">
