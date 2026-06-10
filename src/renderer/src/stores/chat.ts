@@ -37,6 +37,8 @@ interface ChatStore {
   toolPhases: Record<string, ToolPhaseInfo>
   /** conversationId -> error from the last chat.done; cleared on the next send. */
   lastError: Record<string, string>
+  /** conversationId -> tokens used vs the tier's context window (donut data). */
+  usage: Record<string, { used: number; contextLength: number | null }>
   initialized: boolean
   init: () => Promise<void>
   refreshList: () => Promise<void>
@@ -80,6 +82,21 @@ function rememberSiblings(messages: ChatMessage[]): void {
     slots[m.siblingIndex] = m.id
     siblingRegistry.set(key, slots)
   }
+}
+
+// tokensIn of an assistant message is the prompt size of that generation, i.e.
+// the whole-conversation context at that point — the latest one is the donut's
+// numerator.
+function usageFromMessages(
+  messages: ChatMessage[],
+  contextLength: number | null
+): { used: number; contextLength: number | null } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === 'assistant' && m.tokensIn !== null)
+      return { used: m.tokensIn + (m.tokensOut ?? 0), contextLength }
+  }
+  return null
 }
 
 function assistantStub(
@@ -142,6 +159,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   streaming: {},
   toolPhases: {},
   lastError: {},
+  usage: {},
   initialized: false,
 
   init: async () => {
@@ -187,7 +205,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           lastError:
             event.error !== null
               ? { ...s.lastError, [event.conversationId]: event.error }
-              : s.lastError
+              : s.lastError,
+          usage:
+            !event.aborted && event.tokensIn !== null
+              ? {
+                  ...s.usage,
+                  [event.conversationId]: {
+                    used: event.tokensIn + (event.tokensOut ?? 0),
+                    // A null contextLength here just means main couldn't resolve
+                    // the model this time — keep the last known denominator.
+                    contextLength:
+                      event.contextLength ?? s.usage[event.conversationId]?.contextLength ?? null
+                  }
+                }
+              : s.usage
         }
       })
       if (event.error !== null && !event.aborted) pushToast('error', event.error)
@@ -198,6 +229,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       void get()
         .refreshList()
         .catch(() => {})
+    })
+
+    onEvent('models.installedChanged', () => {
+      // On a cold start the views can arrive while main's first cache scan is
+      // still running, leaving every donut denominator null — re-pull loaded
+      // views once the installed set actually lands.
+      for (const id of Object.keys(get().messagesById)) {
+        void get()
+          .refreshConversation(id)
+          .catch(() => {})
+      }
     })
 
     onEvent('chat.titleChanged', (event) => {
@@ -236,10 +278,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     rememberSiblings(view.messages)
     // Never clobber an in-flight stream with the slower persisted snapshot.
     if (get().streaming[conversationId] !== undefined) return
-    set((s) => ({
-      conversationById: { ...s.conversationById, [conversationId]: view.conversation },
-      messagesById: { ...s.messagesById, [conversationId]: view.messages }
-    }))
+    set((s) => {
+      const entry = usageFromMessages(
+        view.messages,
+        // Same policy as chat.done: a null from main (model momentarily
+        // unresolvable) never erases a known denominator.
+        view.contextLength ?? s.usage[conversationId]?.contextLength ?? null
+      )
+      const { [conversationId]: _, ...usage } = s.usage
+      return {
+        conversationById: { ...s.conversationById, [conversationId]: view.conversation },
+        messagesById: { ...s.messagesById, [conversationId]: view.messages },
+        usage: entry ? { ...usage, [conversationId]: entry } : usage
+      }
+    })
   },
 
   setShowArchived: async (show) => {
@@ -258,10 +310,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     const view = await call('chat.get', { conversationId })
     rememberSiblings(view.messages)
-    set((s) => ({
-      conversationById: { ...s.conversationById, [conversationId]: view.conversation },
-      messagesById: { ...s.messagesById, [conversationId]: view.messages }
-    }))
+    set((s) => {
+      const entry = usageFromMessages(
+        view.messages,
+        // Same policy as chat.done: a null from main (model momentarily
+        // unresolvable) never erases a known denominator.
+        view.contextLength ?? s.usage[conversationId]?.contextLength ?? null
+      )
+      const { [conversationId]: _, ...usage } = s.usage
+      return {
+        conversationById: { ...s.conversationById, [conversationId]: view.conversation },
+        messagesById: { ...s.messagesById, [conversationId]: view.messages },
+        usage: entry ? { ...usage, [conversationId]: entry } : usage
+      }
+    })
   },
 
   create: async () => {
@@ -469,10 +531,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     const view = await call('chat.switchBranch', { conversationId, messageId: targetId })
     rememberSiblings(view.messages)
-    set((s) => ({
-      conversationById: { ...s.conversationById, [conversationId]: view.conversation },
-      messagesById: { ...s.messagesById, [conversationId]: view.messages }
-    }))
+    set((s) => {
+      const entry = usageFromMessages(
+        view.messages,
+        // Same policy as chat.done: a null from main (model momentarily
+        // unresolvable) never erases a known denominator.
+        view.contextLength ?? s.usage[conversationId]?.contextLength ?? null
+      )
+      const { [conversationId]: _, ...usage } = s.usage
+      return {
+        conversationById: { ...s.conversationById, [conversationId]: view.conversation },
+        messagesById: { ...s.messagesById, [conversationId]: view.messages },
+        usage: entry ? { ...usage, [conversationId]: entry } : usage
+      }
+    })
   },
 
   update: async (conversationId, patch) => {
@@ -497,6 +569,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       await call('chat.update', { conversationId, ...patch })
       // Archive toggles change which list the conversation belongs to.
       if (patch.archived !== undefined) await get().refreshList()
+      if (patch.defaultTier !== undefined) {
+        // The donut denominator tracks the tier's active model — a tier switch
+        // changes it without any new generation. Patch ONLY the usage entry so
+        // the in-flight-stream guard protecting messages stays untouched.
+        const view = await call('chat.get', { conversationId })
+        set((s) => {
+          const prev = s.usage[conversationId]
+          return prev
+            ? {
+                usage: {
+                  ...s.usage,
+                  [conversationId]: { ...prev, contextLength: view.contextLength }
+                }
+              }
+            : {}
+        })
+      }
     } catch (err) {
       set((s) => ({
         conversationById: prevConversation
@@ -513,10 +602,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set((s) => {
       const { [conversationId]: _c, ...conversationById } = s.conversationById
       const { [conversationId]: _m, ...messagesById } = s.messagesById
+      const { [conversationId]: _u, ...usage } = s.usage
       return {
         conversations: s.conversations.filter((c) => c.id !== conversationId),
         conversationById,
         messagesById,
+        usage,
         activeId: s.activeId === conversationId ? null : s.activeId
       }
     })

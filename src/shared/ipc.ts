@@ -54,7 +54,17 @@ export const engineStatusSchema = z.object({
 export const installedModelSchema = z.object({
   repoId: z.string(),
   sizeBytes: z.number(),
-  lastModifiedAt: z.number().nullable()
+  lastModifiedAt: z.number().nullable(),
+  /** max_position_embeddings from the snapshot's config.json; null if unreadable. */
+  contextLength: z.number().nullable(),
+  /** Recommended sampling from generation_config.json; null if absent. */
+  sampling: z
+    .object({
+      temperature: z.number().nullable(),
+      topP: z.number().nullable(),
+      topK: z.number().nullable()
+    })
+    .nullable()
 })
 
 export const downloadStateSchema = z.enum(['queued', 'downloading', 'done', 'failed', 'cancelled'])
@@ -182,7 +192,13 @@ export const attachmentInputSchema = z.object({
 /** chat.get / chat.switchBranch both return the conversation + active path. */
 export const conversationViewSchema = z.object({
   conversation: conversationSchema,
-  messages: z.array(chatMessageSchema)
+  messages: z.array(chatMessageSchema),
+  /**
+   * Context window of the conversation's current tier's active model — the
+   * denominator for the composer's context-usage donut. Null when nothing
+   * is installed for the tier.
+   */
+  contextLength: z.number().nullable()
 })
 
 // --- library / RAG (M2) -----------------------------------------------------
@@ -272,6 +288,15 @@ export const contract = {
   'models.load': {
     /** force bypasses the RAM guard's free-memory check — UI must confirm first. */
     input: z.object({ repoId: z.string(), force: z.boolean().optional() }),
+    output: z.object({ ok: z.boolean(), reason: z.string().optional() })
+  },
+  'models.unload': {
+    /**
+     * Unload one model. The engine has no per-model unload endpoint, so this
+     * restarts it (cheap in lazy registry mode) and re-warms the other loaded
+     * models in the background.
+     */
+    input: z.object({ repoId: z.string() }),
     output: z.object({ ok: z.boolean(), reason: z.string().optional() })
   },
   'models.unloadAll': {
@@ -442,6 +467,14 @@ export const orionEventSchema = z.discriminatedUnion('type', [
     engine: engineStatusSchema
   }),
   z.object({
+    /**
+     * The set of installed models changed (first cache scan finished, a
+     * download completed, a delete ran). Carries no payload — listeners
+     * refetch the overview, which is already assembled main-side.
+     */
+    type: z.literal('models.installedChanged')
+  }),
+  z.object({
     type: z.literal('chat.delta'),
     conversationId: z.string(),
     messageId: z.string(),
@@ -467,7 +500,9 @@ export const orionEventSchema = z.discriminatedUnion('type', [
     aborted: z.boolean(),
     error: z.string().nullable(),
     tokensIn: z.number().nullable(),
-    tokensOut: z.number().nullable()
+    tokensOut: z.number().nullable(),
+    /** Context window of the model that generated this message; donut denominator. */
+    contextLength: z.number().nullable()
   }),
   z.object({
     type: z.literal('chat.titleChanged'),

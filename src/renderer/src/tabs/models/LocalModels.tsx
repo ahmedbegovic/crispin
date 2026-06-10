@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
+import { modelDisplayName } from '@shared/model-tiers'
 import type { InstalledModel, ModelsOverview } from '@shared/types'
 import { useModelsStore } from '@/stores/models'
 import { toastError } from '@/stores/toasts'
@@ -34,7 +35,7 @@ export default function LocalModels({ overview }: { overview: ModelsOverview }) 
               />
             )}
             <span className="flex-1 truncate text-[12px] text-zinc-200" title={model.repoId}>
-              {model.repoId}
+              {modelDisplayName(model.repoId)}
             </span>
             <span className="text-[11px] tabular-nums text-zinc-500">
               {formatBytes(model.sizeBytes)}

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { TIER_ORDER, TIERS } from '@shared/model-tiers'
+import { modelDisplayName, TIER_ORDER, TIERS } from '@shared/model-tiers'
 import type {
   DownloadInfo,
   EngineModelState,
@@ -19,10 +19,6 @@ const TIER_LABELS: Record<Tier, string> = {
   ultra: 'Ultra'
 }
 
-function shortName(repoId: string): string {
-  return repoId.split('/').pop() ?? repoId
-}
-
 interface ChipProps {
   candidate: TierCandidateInfo
   active: boolean
@@ -30,10 +26,19 @@ interface ChipProps {
   engineState: EngineModelState | null
   download: DownloadInfo | undefined
   onLoad: (repoId: string) => void
+  onUnload: (repoId: string) => void
   onDownload: (repoId: string) => void
 }
 
-function CandidateChip({ candidate, active, engineState, download, onLoad, onDownload }: ChipProps) {
+function CandidateChip({
+  candidate,
+  active,
+  engineState,
+  download,
+  onLoad,
+  onUnload,
+  onDownload
+}: ChipProps) {
   let action: React.ReactNode
   if (!candidate.installed) {
     action = download ? (
@@ -52,10 +57,18 @@ function CandidateChip({ candidate, active, engineState, download, onLoad, onDow
     )
   } else if (engineState === 'loaded') {
     action = (
-      <span className="flex items-center gap-1.5 text-[11px] text-emerald-400">
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-        Loaded
-      </span>
+      <>
+        <span className="flex items-center gap-1.5 text-[11px] text-emerald-400">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          Loaded
+        </span>
+        <button
+          onClick={() => onUnload(candidate.repoId)}
+          className="rounded-md border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+        >
+          Unload
+        </button>
+      </>
     )
   } else if (engineState === 'loading') {
     action = <span className="animate-pulse text-[11px] text-amber-400">Loading…</span>
@@ -83,7 +96,7 @@ function CandidateChip({ candidate, active, engineState, download, onLoad, onDow
       }`}
     >
       <span className="max-w-56 truncate text-[12px] text-zinc-300" title={candidate.repoId}>
-        {shortName(candidate.repoId)}
+        {modelDisplayName(candidate.repoId)}
       </span>
       {action}
     </div>
@@ -93,6 +106,7 @@ function CandidateChip({ candidate, active, engineState, download, onLoad, onDow
 /** One row per quality tier: policy from model-tiers, live state from the overview. */
 export default function TierTable({ overview }: { overview: ModelsOverview }) {
   const load = useModelsStore((s) => s.load)
+  const unload = useModelsStore((s) => s.unload)
   const download = useModelsStore((s) => s.download)
   const [guard, setGuard] = useState<{ repoId: string; reason: string } | null>(null)
 
@@ -116,6 +130,17 @@ export default function TierTable({ overview }: { overview: ModelsOverview }) {
     }
   }
 
+  const onUnload = async (repoId: string): Promise<void> => {
+    try {
+      // On success the engine restarts and re-warms the other loaded models;
+      // status events update the chips on their own.
+      const result = await unload(repoId)
+      if (!result.ok) pushToast('error', result.reason ?? 'Unload failed.')
+    } catch (err) {
+      toastError(err)
+    }
+  }
+
   return (
     <section>
       <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -125,6 +150,11 @@ export default function TierTable({ overview }: { overview: ModelsOverview }) {
         {TIER_ORDER.map((tier) => {
           const spec = TIERS[tier]
           const resolution = overview.tiers.find((t) => t.tier === tier)
+          // Real context_length from the active model's config.json beats the spec guess.
+          const activeCtx = resolution?.active
+            ? (overview.installed.find((m) => m.repoId === resolution.active)?.contextLength ??
+              null)
+            : null
           return (
             <div key={tier} className="flex items-center gap-4 px-4 py-3">
               <div className="w-44 shrink-0">
@@ -142,7 +172,10 @@ export default function TierTable({ overview }: { overview: ModelsOverview }) {
                     ))}
                 </div>
                 <div className="mt-0.5 text-[11px] text-zinc-500">
-                  ~{spec.approxGB} GB · {Math.round(spec.defaultCtx / 1024)}k ctx
+                  ~{spec.approxGB} GB ·{' '}
+                  {activeCtx !== null
+                    ? `${Math.round(activeCtx / 1024)}k ctx`
+                    : `~${Math.round(spec.defaultCtx / 1024)}k ctx`}
                 </div>
               </div>
               <div className="flex flex-1 flex-wrap items-center gap-2">
@@ -154,6 +187,7 @@ export default function TierTable({ overview }: { overview: ModelsOverview }) {
                     engineState={liveState(candidate.repoId, candidate.engineState)}
                     download={activeDownload(candidate.repoId)}
                     onLoad={(repoId) => void onLoad(repoId)}
+                    onUnload={(repoId) => void onUnload(repoId)}
                     onDownload={(repoId) => void download(repoId).catch(toastError)}
                   />
                 ))}

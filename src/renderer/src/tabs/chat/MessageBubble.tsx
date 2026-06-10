@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Check, Copy, FileText, Image as ImageIcon, Loader2, Pencil, RefreshCw } from 'lucide-react'
+import { modelDisplayName } from '@shared/model-tiers'
 import type { ChatMessage, MessagePart } from '@shared/types'
 import { useChatStore } from '@/stores/chat'
 import { pushToast, toastError } from '@/stores/toasts'
@@ -231,7 +232,7 @@ function AssistantMessage({
             <BranchSwitcher message={message} disabled={busy} />
             {message.modelId && (
               <span className="text-[10.5px] text-zinc-600" title={message.modelId}>
-                {message.modelId.split('/').pop()}
+                {modelDisplayName(message.modelId)}
               </span>
             )}
           </div>

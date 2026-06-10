@@ -19,6 +19,7 @@ import { pushToast, toastError } from '@/stores/toasts'
 import { basename, kindForPath, pathForFile } from './attachments'
 import McpDialog from './McpDialog'
 import LibraryDialog from './LibraryDialog'
+import ContextDonut from './ContextDonut'
 
 const TIER_LABELS: Record<Tier, string> = {
   low: 'Low',
@@ -47,6 +48,7 @@ export default function Composer({ conversation }: Props) {
   const abort = useChatStore((s) => s.abort)
   const update = useChatStore((s) => s.update)
   const streaming = useChatStore((s) => conversation.id in s.streaming)
+  const usage = useChatStore((s) => s.usage[conversation.id])
   const collections = useLibraryStore((s) => s.collections)
 
   const [text, setText] = useState('')
@@ -259,7 +261,8 @@ export default function Composer({ conversation }: Props) {
               </span>
             )}
 
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              {usage && <ContextDonut used={usage.used} contextLength={usage.contextLength} />}
               {streaming ? (
                 <button
                   onClick={() => void abort(conversation.id).catch(toastError)}

@@ -1,4 +1,5 @@
 import { X } from 'lucide-react'
+import { modelDisplayName } from '@shared/model-tiers'
 import type { DownloadInfo, ModelsOverview } from '@shared/types'
 import { useModelsStore } from '@/stores/models'
 import { toastError } from '@/stores/toasts'
@@ -46,7 +47,7 @@ export default function DownloadsPanel({ overview }: { overview: ModelsOverview 
           <div key={d.id} className={`px-3 py-2 ${isActive(d) ? '' : 'opacity-50'}`}>
             <div className="flex items-center gap-3">
               <span className="flex-1 truncate text-[12px] text-zinc-200" title={d.repoId}>
-                {d.repoId}
+                {modelDisplayName(d.repoId)}
               </span>
               <span className="text-[11px] tabular-nums text-zinc-500">
                 {formatBytes(d.bytesDone)}

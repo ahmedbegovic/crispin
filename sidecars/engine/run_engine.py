@@ -76,6 +76,12 @@ def build_argv(config_path: Path) -> list[str]:
         "--enable-auto-tool-choice",
         "--tool-call-parser",
         "auto",
+        # Small models get ctx-bounded generation (uncapped reasoning); the
+        # per-request cap for the ultra tier comes from the orchestrator.
+        "--max-tokens",
+        "131072",
+        "--max-request-tokens",
+        "131072",
         # Weights come from the shared HF cache; downloads are the tools sidecar's job.
         "--offline",
     ]

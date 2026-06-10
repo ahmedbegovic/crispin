@@ -48,11 +48,25 @@ export interface EngineStatus {
   models: EngineModelInfo[]
 }
 
+/**
+ * The model's own recommended sampling, from its generation_config.json.
+ * topK is carried for completeness but never sent: vllm-mlx's chat
+ * completions path does not plumb top_k into generation.
+ */
+export interface ModelSampling {
+  temperature: number | null
+  topP: number | null
+  topK: number | null
+}
+
 /** A model snapshot present in the shared HF cache. */
 export interface InstalledModel {
   repoId: string
   sizeBytes: number
   lastModifiedAt: number | null
+  /** max_position_embeddings from the snapshot's config.json; null if unreadable. */
+  contextLength: number | null
+  sampling: ModelSampling | null
 }
 
 export type DownloadState = 'queued' | 'downloading' | 'done' | 'failed' | 'cancelled'

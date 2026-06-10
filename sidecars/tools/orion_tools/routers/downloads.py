@@ -7,6 +7,7 @@ All weights live in the shared HF cache (~/.cache/huggingface/hub).
 
 from __future__ import annotations
 
+import json
 import threading
 from typing import Any, Optional
 
@@ -136,6 +137,43 @@ def _snapshot_complete(repo: CachedRepoInfo) -> bool:
     return not any((repo.repo_path / "blobs").glob("*.incomplete"))
 
 
+def _snapshot_json(repo: CachedRepoInfo, filename: str) -> Optional[dict[str, Any]]:
+    """Parsed json file from the newest snapshot, or None on any failure."""
+    try:
+        revision = max(repo.revisions, key=lambda rev: rev.last_modified or 0)
+        parsed = json.loads((revision.snapshot_path / filename).read_text())
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _context_length(repo: CachedRepoInfo) -> Optional[int]:
+    """max_position_embeddings from config.json, or None.
+
+    Multimodal configs (gemma) nest it under text_config.
+    """
+    cfg = _snapshot_json(repo, "config.json")
+    if cfg is None:
+        return None
+    return (cfg.get("text_config") or {}).get("max_position_embeddings") or cfg.get(
+        "max_position_embeddings"
+    )
+
+
+def _sampling_defaults(repo: CachedRepoInfo) -> Optional[dict[str, Any]]:
+    """The model's recommended sampling from generation_config.json, or None.
+
+    Engines default to generic values (vllm-mlx: 0.7/0.9) instead of reading
+    this file — main passes these per request so models run as their authors
+    intended (gemma: temperature 1.0, top_k 64, top_p 0.95).
+    """
+    cfg = _snapshot_json(repo, "generation_config.json")
+    if cfg is None:
+        return None
+    sampling = {key: cfg.get(key) for key in ("temperature", "top_p", "top_k")}
+    return sampling if any(v is not None for v in sampling.values()) else None
+
+
 @router.get("/local")
 def local_models() -> dict[str, list[dict[str, Any]]]:
     try:
@@ -147,6 +185,8 @@ def local_models() -> dict[str, list[dict[str, Any]]]:
             "repo_id": repo.repo_id,
             "size_bytes": repo.size_on_disk,
             "last_modified_ms": int(repo.last_modified * 1000) if repo.last_modified else None,
+            "context_length": _context_length(repo),
+            "sampling": _sampling_defaults(repo),
         }
         for repo in cache.repos
         if repo.repo_type == "model" and _snapshot_complete(repo)

@@ -21,6 +21,10 @@ export interface LocalModelEntry {
   repo_id: string
   size_bytes: number
   last_modified_ms: number | null
+  /** max_position_embeddings from the snapshot's config.json; null if unreadable. */
+  context_length: number | null
+  /** Recommended sampling from generation_config.json; null if absent. */
+  sampling: { temperature: number | null; top_p: number | null; top_k: number | null } | null
 }
 
 export interface HubSearchEntry {

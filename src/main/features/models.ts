@@ -58,6 +58,8 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
 
   handle('models.load', ({ repoId, force }) => modelService.load(repoId, force ?? false))
 
+  handle('models.unload', ({ repoId }) => modelService.unload(repoId))
+
   handle('models.unloadAll', async () => {
     await modelService.unloadAll()
     return { ok: true }

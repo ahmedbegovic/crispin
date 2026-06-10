@@ -8,7 +8,18 @@ export interface TierSpec {
   caps: ModelCapability[]
   /** Approximate weights footprint on disk / in memory at 4-bit, GB. */
   approxGB: number
+  /**
+   * Display fallback when the real context_length (read from the installed
+   * snapshot's config.json) is unknown. Nothing enforces this as a cap.
+   */
   defaultCtx: number
+  /**
+   * Per-request max_tokens the orchestrator sends for this tier. Unset means
+   * the engine default (spawned at 131072 ≈ unlimited, bounded by context) —
+   * small models get free rein on reasoning; only ultra is capped to keep a
+   * runaway 27B generation's fp16 KV growth inside the RAM budget.
+   */
+  maxOutputTokens?: number
   /** If true this model may never share RAM with the utility model. */
   noCoload?: boolean
 }
@@ -51,14 +62,37 @@ export const TIERS: Record<Tier, TierSpec> = {
   },
   ultra: {
     // KV stays fp16: vllm-mlx only quantizes KV under continuous batching,
-    // which cannot generate with gemma-4 — so the 32k ctx cap and noCoload
+    // which cannot generate with gemma-4 — so the 32k output cap and noCoload
     // are what keep this one inside the budget.
     candidates: ['mlx-community/Qwen3.6-27B-4bit'],
     caps: ['text', 'vision', 'video'],
     approxGB: 16.5,
     defaultCtx: 32768,
+    maxOutputTokens: 32768,
     noCoload: true
   }
+}
+
+/** Curated short names; repos outside the tier table get a prettified id. */
+const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  'mlx-community/gemma-4-E2B-it-qat-4bit': 'Gemma 4 E2B',
+  'mlx-community/gemma-4-E4B-it-qat-4bit': 'Gemma 4 E4B',
+  'mlx-community/gemma-4-12B-it-qat-4bit': 'Gemma 4 12B',
+  'mlx-community/gemma-4-26B-A4B-it-qat-4bit': 'Gemma 4 26B',
+  'mlx-community/Qwen3.5-9B-MLX-4bit': 'Qwen 3.5 9B',
+  'mlx-community/Qwen3.6-27B-4bit': 'Qwen 3.6 27B'
+}
+
+/** Human name for a repo id — quant/format suffixes stripped, org dropped. */
+export function modelDisplayName(repoId: string): string {
+  const curated = MODEL_DISPLAY_NAMES[repoId]
+  if (curated) return curated
+  const short = (repoId.split('/').pop() ?? repoId)
+    // Lookahead keeps keyword-prefixed words intact ('-italian' is not '-it').
+    .replace(/[-_](it|instruct|chat|mlx|qat|bf16|fp16|\d+bit|\d+-bit)(?=[-_.]|$)/gi, '')
+    .replace(/[-_]+/g, ' ')
+    .trim()
+  return short || repoId
 }
 
 export const TIER_ORDER: Tier[] = ['low', 'medium', 'high', 'extraHigh', 'ultra']

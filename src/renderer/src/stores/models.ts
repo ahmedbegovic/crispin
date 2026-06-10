@@ -14,6 +14,7 @@ interface ModelsStore {
   deleteModel: (repoId: string) => Promise<void>
   search: (query: string) => Promise<void>
   load: (repoId: string, force?: boolean) => Promise<{ ok: boolean; reason?: string }>
+  unload: (repoId: string) => Promise<{ ok: boolean; reason?: string }>
   unloadAll: () => Promise<void>
   setDefault: (feature: Feature, tier: Tier) => Promise<void>
 }
@@ -35,28 +36,32 @@ export const useModelsStore = create<ModelsStore>((set, get) => ({
   initialized: false,
 
   init: async () => {
-    if (get().initialized) return
-    set({ initialized: true })
-    onEvent('models.downloadProgress', (event) => {
-      set((s) =>
-        s.overview
-          ? {
-              overview: {
-                ...s.overview,
-                downloads: upsertDownload(s.overview.downloads, event.download)
+    // Listeners latch once, but refresh runs on every mount so reopening the
+    // tab heals staleness even if an event raced or was missed.
+    if (!get().initialized) {
+      set({ initialized: true })
+      onEvent('models.downloadProgress', (event) => {
+        set((s) =>
+          s.overview
+            ? {
+                overview: {
+                  ...s.overview,
+                  downloads: upsertDownload(s.overview.downloads, event.download)
+                }
               }
-            }
-          : {}
+            : {}
+        )
+        // A finished download changes what's installed and how tiers resolve.
+        if (event.download.status === 'done') void get().refresh()
+      })
+      onEvent('models.statusChanged', (event) =>
+        set((s) => (s.overview ? { overview: { ...s.overview, engine: event.engine } } : {}))
       )
-      // A finished download changes what's installed and how tiers resolve.
-      if (event.download.status === 'done') void get().refresh()
-    })
-    onEvent('models.statusChanged', (event) =>
-      set((s) => (s.overview ? { overview: { ...s.overview, engine: event.engine } } : {}))
-    )
-    onEvent('system.ramReport', (event) =>
-      set((s) => (s.overview ? { overview: { ...s.overview, ram: event.ram } } : {}))
-    )
+      onEvent('models.installedChanged', () => void get().refresh())
+      onEvent('system.ramReport', (event) =>
+        set((s) => (s.overview ? { overview: { ...s.overview, ram: event.ram } } : {}))
+      )
+    }
     await get().refresh()
   },
 
@@ -94,6 +99,11 @@ export const useModelsStore = create<ModelsStore>((set, get) => ({
   load: async (repoId, force) => {
     // Surfaced to the caller so the UI can offer "Load anyway" on a RAM-guard refusal.
     return call('models.load', { repoId, force })
+  },
+
+  unload: async (repoId) => {
+    // Surfaced to the caller so the UI can toast the refusal reason.
+    return call('models.unload', { repoId })
   },
 
   unloadAll: async () => {

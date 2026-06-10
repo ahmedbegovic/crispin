@@ -16,6 +16,14 @@ export interface ChatFeatureDeps {
 export function registerChatFeature(deps: ChatFeatureDeps): void {
   const { repo, orchestrator, modelService } = deps
 
+  // conversationViewSchema requires contextLength — the composer's donut denominator.
+  const viewOf = (conversationId: string): ReturnType<ChatRepo['view']> & {
+    contextLength: number | null
+  } => {
+    const view = repo.view(conversationId)
+    return { ...view, contextLength: orchestrator.contextForTier(view.conversation.defaultTier) }
+  }
+
   handle('chat.list', (input) => ({
     conversations: repo.listConversations(input?.archived ?? false)
   }))
@@ -28,7 +36,7 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
     })
   }))
 
-  handle('chat.get', ({ conversationId }) => repo.view(conversationId))
+  handle('chat.get', ({ conversationId }) => viewOf(conversationId))
 
   handle('chat.send', (input) => orchestrator.send(input))
 
@@ -47,7 +55,7 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
       throw new Error('Cannot switch branches while a generation is running')
     }
     repo.switchBranch(conversationId, messageId)
-    return repo.view(conversationId)
+    return viewOf(conversationId)
   })
 
   handle('chat.update', ({ conversationId, ...fields }) => {

@@ -50,6 +50,12 @@ const clip = (text: string, limit: number): string =>
 const visionCapable = (modelId: string): boolean =>
   TIER_ORDER.some((t) => TIERS[t].candidates.includes(modelId) && TIERS[t].caps.includes('vision'))
 
+/** Per-request output cap from the model's tier; undefined = engine default. */
+const maxTokensFor = (modelId: string): number | undefined => {
+  const tier = TIER_ORDER.find((t) => TIERS[t].candidates.includes(modelId))
+  return tier ? TIERS[tier].maxOutputTokens : undefined
+}
+
 /**
  * Streams one assistant message: owns its parts array, coalesces chat.delta
  * broadcasts (~30ms) and persists incrementally (~500ms) so a crash mid-stream
@@ -351,6 +357,10 @@ export class ChatOrchestrator {
         signal: controller.signal
       }
 
+      // The model's own generation_config.json sampling (gemma: 1.0/0.95) —
+      // without it the engine falls back to its generic 0.7/0.9 defaults.
+      const sampling = this.deps.modelService.samplingFor(modelId)
+
       let parseErrorLastIteration = false
       let toolBudgetExhausted = false
       // <= cap: one extra tools-disabled round so a cap exit still produces an answer.
@@ -369,14 +379,20 @@ export class ChatOrchestrator {
           model: modelId,
           messages,
           tools: !toolBudgetExhausted && toolDefs.length > 0 ? toolDefs : undefined,
+          maxTokens: maxTokensFor(modelId),
+          temperature: sampling?.temperature ?? undefined,
+          topP: sampling?.topP ?? undefined,
           signal: controller.signal
         })) {
           if (event.type === 'content') consume(splitter.push(event.text))
           else if (event.type === 'reasoning') stream.append('thought', event.text)
           else {
             toolCalls = event.toolCalls
+            // Last round only, NOT summed: the final prompt already re-encodes
+            // every earlier round's output, so tokensIn + tokensOut is the true
+            // end-of-generation context size (the donut's numerator).
             tokensIn = event.tokensIn ?? tokensIn
-            tokensOut = (tokensOut ?? 0) + (event.tokensOut ?? 0)
+            tokensOut = event.tokensOut ?? tokensOut
           }
         }
         consume(splitter.flush())
@@ -496,7 +512,8 @@ export class ChatOrchestrator {
         aborted,
         error,
         tokensIn,
-        tokensOut
+        tokensOut,
+        contextLength: this.deps.modelService.contextLengthFor(modelId)
       })
     }
 
@@ -526,6 +543,15 @@ export class ChatOrchestrator {
   }
 
   // --- model resolution -----------------------------------------------------------
+
+  /** Context window of the tier's active model; null when nothing is installed. */
+  contextForTier(tier: Tier): number | null {
+    try {
+      return this.deps.modelService.contextLengthFor(this.resolveModel(tier))
+    } catch {
+      return null
+    }
+  }
 
   /** Requested tier first, then nearest installed below, then above. */
   private resolveModel(tier: Tier): string {

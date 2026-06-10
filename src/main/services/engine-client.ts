@@ -45,6 +45,8 @@ export interface StreamChatOptions {
   tools?: ChatToolDef[]
   maxTokens?: number
   temperature?: number
+  /** top_k is deliberately absent: vllm-mlx's chat path never plumbs it. */
+  topP?: number
   signal?: AbortSignal
 }
 
@@ -177,6 +179,7 @@ export class EngineClient {
           tools: opts.tools?.length ? opts.tools : undefined,
           max_tokens: opts.maxTokens,
           temperature: opts.temperature,
+          top_p: opts.topP,
           stream: true
         }),
         signal: AbortSignal.any(signals)

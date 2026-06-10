@@ -8,6 +8,7 @@ import type {
   FeatureDefaults,
   HFSearchResult,
   InstalledModel,
+  ModelSampling,
   ModelsOverview,
   Tier,
   TierResolution
@@ -90,6 +91,10 @@ export class ModelService {
   private installed: InstalledModel[] = []
   private engineModels: EngineModelInfo[] = []
   private lastEngineKey = ''
+  /** Fingerprint of the last installed scan — drives models.installedChanged. */
+  private lastInstalledKey = ''
+  /** Bumped by every unload/unloadAll; stale re-warm loops check it and bail. */
+  private unloadEpoch = 0
   /** Registry fingerprint the running engine was spawned with. */
   private appliedRegistryKey: string | null = null
   private pendingRegistryRestart = false
@@ -149,9 +154,30 @@ export class ModelService {
       .map((m) => ({
         repoId: m.repo_id,
         sizeBytes: m.size_bytes,
-        lastModifiedAt: m.last_modified_ms
+        lastModifiedAt: m.last_modified_ms,
+        contextLength: m.context_length,
+        sampling: m.sampling
+          ? { temperature: m.sampling.temperature, topP: m.sampling.top_p, topK: m.sampling.top_k }
+          : null
       }))
+    // The renderer's one-shot overview fetch can race the first scan — push a
+    // change signal so it refetches instead of caching a stale installed set.
+    const key = JSON.stringify(this.installed)
+    if (key !== this.lastInstalledKey) {
+      this.lastInstalledKey = key
+      if (!this.disposed) this.deps.broadcast({ type: 'models.installedChanged' })
+    }
     return this.installed
+  }
+
+  /** Context window of an installed model; null when not installed or unknown. */
+  contextLengthFor(repoId: string): number | null {
+    return this.installed.find((m) => m.repoId === repoId)?.contextLength ?? null
+  }
+
+  /** The model's own recommended sampling; null when not installed or unknown. */
+  samplingFor(repoId: string): ModelSampling | null {
+    return this.installed.find((m) => m.repoId === repoId)?.sampling ?? null
   }
 
   /** True when the chat registry would be non-empty (the embedder never counts). */
@@ -414,12 +440,80 @@ export class ModelService {
    * the first-class restart-swap fallback path.
    */
   async unloadAll(): Promise<void> {
+    // Supersede any in-flight re-warm — "unload all" must not be undone by an
+    // earlier unload's background warms.
+    this.unloadEpoch += 1
     const engine = this.deps.processManager.get('engine')
     if (!engine || engine.snapshot().state === 'stopped') return
     // No models installed means the respawn would exit 2 on an empty registry.
     if (this.installed.length === 0) await engine.stop()
     else await engine.restart('unload all models')
     this.engineModels = []
+  }
+
+  /**
+   * Unload one model. vllm-mlx has no per-model unload endpoint, so this is a
+   * supervised restart (cheap in lazy registry mode) plus a background re-warm
+   * of whatever else was loaded.
+   */
+  async unload(repoId: string): Promise<{ ok: boolean; reason?: string }> {
+    // Even a click that no-ops below supersedes an earlier unload's in-flight
+    // re-warm — the user's latest intent is always "less loaded, never more".
+    this.unloadEpoch += 1
+    const epoch = this.unloadEpoch
+    const engine = this.deps.processManager.get('engine')
+    if (!engine || engine.snapshot().state !== 'running') return { ok: true }
+    const target = this.engineModels.find((m) => m.id === repoId)
+    if (!target || (target.state !== 'loaded' && target.state !== 'loading')) return { ok: true }
+    if (!(await this.engineIdle())) {
+      return { ok: false, reason: 'The engine is busy — wait for the generation to finish.' }
+    }
+    const others = this.engineModels
+      .filter((m) => m.state === 'loaded' && m.id !== repoId)
+      .map((m) => m.id)
+    // No models installed means the respawn would exit 2 on an empty registry.
+    if (this.installed.length === 0) await engine.stop()
+    else await engine.restart(`unload ${repoId}`)
+    this.engineModels = []
+    // The restart is user activity — keep the idle timer from firing right away.
+    this.lastBusyAt = Date.now()
+    if (others.length > 0) void this.rewarm(others, epoch)
+    return { ok: true }
+  }
+
+  /** Background re-warm of unload survivors; a later unload/unloadAll cancels it. */
+  private async rewarm(others: string[], epoch: number): Promise<void> {
+    try {
+      await this.ensureEngineRunning()
+    } catch (err) {
+      if (this.disposed) return
+      this.deps.broadcast({
+        type: 'system.toast',
+        level: 'warn',
+        message: `Could not reload ${others.join(', ')} after unload: ${err instanceof Error ? err.message : err}`
+      })
+      return
+    }
+    const failed: string[] = []
+    let lastError: unknown
+    // Cold loads block the engine event loop — sequential keeps health
+    // pressure bounded.
+    for (const id of others) {
+      if (epoch !== this.unloadEpoch || this.disposed) return
+      try {
+        await this.deps.engine.warm(id)
+      } catch (err) {
+        failed.push(id)
+        lastError = err
+      }
+    }
+    if (failed.length > 0 && !this.disposed) {
+      this.deps.broadcast({
+        type: 'system.toast',
+        level: 'warn',
+        message: `Could not reload ${failed.join(', ')} after unload: ${lastError instanceof Error ? lastError.message : lastError}`
+      })
+    }
   }
 
   private async ensureEngineRunning(): Promise<void> {
