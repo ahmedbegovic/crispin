@@ -1,18 +1,26 @@
-"""Launcher for the vllm-mlx engine sidecar — the only file that knows engine CLI flags.
+"""Launcher for the oMLX engine sidecar — the only file that knows engine CLI flags.
 
 Electron main rewrites <dataDir>/engine/engine-config.json before every spawn
-(model registry, port, memory budget); this script renders the vllm-mlx
-models-config YAML next to it and runs vllm_mlx.cli in-process so the
-supervisor's process-group signals land on a single PID.
+(port, memory budget, per-model settings); this script merges the per-model
+settings into oMLX's ~/.omlx/model_settings.json and runs omlx.cli in-process
+so the supervisor's process-group signals land on a single PID.
+
+oMLX discovers models from the shared HF cache by itself (--hf-cache default),
+serves them lazily with LRU eviction under --memory-guard-gb, and exposes real
+per-model load/unload endpoints — no registry YAML, no monkeypatches. Engine
+model ids are the HF repo id with '/' replaced by '--'; main maps both ways.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, NoReturn
+
+SETTINGS_VERSION = 1
 
 
 def fail(message: str) -> NoReturn:
@@ -21,8 +29,51 @@ def fail(message: str) -> NoReturn:
     sys.exit(2)
 
 
-def build_argv(config_path: Path) -> list[str]:
-    """Read engine-config.json, write models-config.yaml beside it, return serve argv."""
+def engine_model_id(repo_id: str) -> str:
+    """oMLX flattens HF repo ids into directory-safe ids."""
+    return repo_id.replace("/", "--")
+
+
+def write_model_settings(models: list[dict[str, Any]]) -> None:
+    """Merge Orion's per-model settings into oMLX's model_settings.json.
+
+    Only the keys Orion manages are overwritten; settings the user tuned in
+    oMLX's own admin UI (and entries for models Orion doesn't know) survive.
+    """
+    path = Path.home() / ".omlx" / "model_settings.json"
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or not isinstance(data.get("models"), dict):
+            raise ValueError
+    except Exception:
+        data = {"version": SETTINGS_VERSION, "models": {}}
+
+    for m in models:
+        model_id = engine_model_id(m["name"])
+        entry = data["models"].get(model_id)
+        # A hand-edited non-dict entry is corruption like any other: reset it
+        # rather than crash blaming engine-config.json for the wrong file.
+        if not isinstance(entry, dict):
+            entry = data["models"][model_id] = {}
+        # Per-model output budget: ctx-bounded for small tiers, capped for ultra.
+        entry["max_tokens"] = int(m["max_tokens"])
+        # Thinking is parsed into reasoning_content server-side, so it is safe
+        # for OpenAI clients (opencode) and wanted by the Chat tab.
+        entry["enable_thinking"] = bool(m["enable_thinking"])
+        # Idle auto-unload is the engine's job now (was a main-side timer).
+        entry["ttl_seconds"] = m["ttl_seconds"]
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        tmp.replace(path)
+    except OSError as exc:
+        fail(f"cannot write {path}: {exc}")
+
+
+def build_argv(config_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
+    """Read engine-config.json, return (serve argv, per-model settings)."""
     try:
         config: dict[str, Any] = json.loads(config_path.read_text())
     except FileNotFoundError:
@@ -37,69 +88,21 @@ def build_argv(config_path: Path) -> list[str]:
     try:
         port = int(config["port"])
         budget_gb = float(config["memory_budget_gb"])
-        contention = config.get("contention") or {}
-        registry = {
-            "manager": {
-                "memory_budget_gb": budget_gb,
-                "contention_policy": {
-                    "strategy": contention.get("strategy", "wait_then_fail"),
-                    "wait_timeout_s": float(contention.get("wait_timeout_s", 180)),
-                },
-            },
-            "models": [
-                {
-                    "name": m["name"],
-                    "source": m["source"],
-                    "preload": False,  # lazy loading is the point: load on first request
-                    "estimated_memory_gb": float(m["estimated_memory_gb"]),
-                }
-                for m in models
-            ],
-        }
     except (KeyError, TypeError, ValueError) as exc:
         fail(f"config field missing or invalid: {exc!r}")
 
-    import yaml  # vllm-mlx dependency; always present in the engine venv
-
-    yaml_path = config_path.parent / "models-config.yaml"
-    yaml_path.write_text(yaml.safe_dump(registry, sort_keys=False))
-
-    argv = [
-        "vllm-mlx",
+    return [
+        "omlx",
         "serve",
-        "--models-config",
-        str(yaml_path),
         "--host",
         "127.0.0.1",
         "--port",
         str(port),
-        "--enable-auto-tool-choice",
-        "--tool-call-parser",
-        "auto",
-        # Small models get ctx-bounded generation (uncapped reasoning); the
-        # per-request cap for the ultra tier comes from the orchestrator.
-        "--max-tokens",
-        "131072",
-        "--max-request-tokens",
-        "131072",
-        # Weights come from the shared HF cache; downloads are the tools sidecar's job.
-        "--offline",
-    ]
-    # The parser is a server-wide global in vllm-mlx, so main only sets it when
-    # every registry model shares a family. Without it gemma's raw
-    # <|channel>thought blocks reach OpenAI clients that can't parse them
-    # (opencode loops forever waiting for visible text).
-    reasoning_parser = config.get("reasoning_parser")
-    if reasoning_parser:
-        argv += ["--reasoning-parser", str(reasoning_parser)]
-    # Deliberately simple mode, no KV-cache quantization: the KV-quant flags
-    # only take effect under --continuous-batching, and vllm-mlx 0.3.0's
-    # batched path cannot generate with gemma-4 models at all
-    # (patch_gemma4_attention_for_batching rejects the shared_kv kwarg).
-    # Revisit both together when upstream fixes batched gemma-4.
-    # No --auto-unload-idle-seconds either: it is inert in registry mode (only
-    # wired up for single-model serve). Electron main owns the idle-unload timer.
-    return argv
+        "--memory-guard-gb",
+        str(budget_gb),
+        "--log-level",
+        "info",
+    ], models
 
 
 def main() -> None:
@@ -108,106 +111,32 @@ def main() -> None:
     parser.add_argument(
         "--print-args",
         action="store_true",
-        help="print the final vllm-mlx argv as JSON and exit (dry run)",
+        help="print the final omlx argv as JSON and exit (dry run)",
     )
     args = parser.parse_args()
 
-    argv = build_argv(Path(args.config))
+    argv, models = build_argv(Path(args.config))
     if args.print_args:
         print(json.dumps(argv))
         return
 
+    # After the dry-run exit: ~/.omlx/model_settings.json is shared with the
+    # standalone oMLX app, and a debugging --print-args must not rewrite it.
+    try:
+        write_model_settings(models)
+    except (KeyError, TypeError, ValueError) as exc:
+        fail(f"config field missing or invalid: {exc!r}")
+
+    # Weights come from the shared HF cache; downloads are the tools sidecar's
+    # job — never let the engine reach for the network.
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
     # Run the CLI in-process: one PID, so SIGTERM/SIGKILL from the supervisor
     # hit the actual server. Imported late so config errors stay fast.
     sys.argv = argv
-    _patch_registry_model_name()
-    _patch_mllm_tool_history()
-    from vllm_mlx.cli import main as cli_main
+    from omlx.cli import main as cli_main
 
     cli_main()
-
-
-def _patch_registry_model_name() -> None:
-    """Work around a vllm-mlx 0.3.0 bug: registry mode leaves the module-global
-    `_model_name` as None, and every ChatCompletionResponse/Chunk is built with
-    `model=_model_name` — so ALL chat completions 500 on pydantic validation.
-    Give the global a constant placeholder after the registry loads; clients
-    ignore the echoed model name.
-    """
-    import vllm_mlx.server as server
-
-    original = server.load_model_registry
-
-    def patched(config_path, *, defaults):  # noqa: ANN001 — mirrors upstream
-        original(config_path, defaults=defaults)
-        server._model_name = "vllm-mlx"
-
-    server.load_model_registry = patched
-
-
-def _patch_mllm_tool_history() -> None:
-    """Work around a vllm-mlx 0.3.0 bug: _prepare_chat_messages routes MLLM
-    models (all gemma-4) around extract_multimodal_content "to keep embedded
-    images", so assistant tool_calls and role='tool' turns reach the gemma chat
-    template raw — which silently drops them. Every agent round then looks like
-    a fresh question and the model re-calls the same tool forever (reproduced
-    live with opencode). Text-encode tool history into plain turns first, in
-    the exact shapes the LLM path produces; _normalize_messages then merges any
-    consecutive same-role turns the encoding creates.
-    """
-    import vllm_mlx.server as server
-
-    def _text_of(content) -> str:  # noqa: ANN001 — content is str | list | None
-        if isinstance(content, list):
-            return "".join(
-                part.get("text", "") for part in content if isinstance(part, dict)
-            )
-        return content or ""
-
-    def _encode(request_messages: list) -> list:
-        encoded = []
-        for msg in request_messages:
-            if hasattr(msg, "model_dump"):
-                d = msg.model_dump(exclude_none=True)
-            else:
-                d = {k: v for k, v in dict(msg).items() if v is not None}
-            role = d.get("role")
-            if role == "assistant" and d.get("tool_calls"):
-                calls = "\n".join(
-                    "[Calling tool: {}({})]".format(
-                        (tc.get("function") or {}).get("name") or "?",
-                        (tc.get("function") or {}).get("arguments") or "",
-                    )
-                    for tc in d["tool_calls"]
-                    if isinstance(tc, dict)
-                )
-                text = _text_of(d.get("content"))
-                encoded.append(
-                    {"role": "assistant", "content": f"{text}\n{calls}".strip()}
-                )
-            elif role == "tool":
-                encoded.append(
-                    {
-                        "role": "user",
-                        "content": "[Tool Result ({})]: {}".format(
-                            d.get("tool_call_id") or "", _text_of(d.get("content"))
-                        ),
-                    }
-                )
-            else:
-                encoded.append(msg)
-        return encoded
-
-    original = server._prepare_chat_messages
-
-    def patched(engine, request_messages):  # noqa: ANN001 — mirrors upstream
-        if getattr(engine, "is_mllm", False) and not getattr(
-            engine, "preserve_native_tool_format", False
-        ):
-            request_messages = _encode(request_messages)
-        return original(engine, request_messages)
-
-    server._prepare_chat_messages = patched
 
 
 if __name__ == "__main__":

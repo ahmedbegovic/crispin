@@ -4,6 +4,7 @@ import type { OrionEvent } from '@shared/ipc'
 import type { AgentSessionMeta, Tier } from '@shared/types'
 import { TIER_ORDER } from '@shared/model-tiers'
 import type { OrionDatabase } from './db'
+import { engineModelId } from './engine-client'
 import type { ModelService } from './model-service'
 import type { OpencodePool } from './opencode-pool'
 import { dataDir } from './paths'
@@ -126,13 +127,6 @@ export class AgentService {
   async prompt(sessionId: string, text: string, tier?: Tier): Promise<void> {
     const row = this.row(sessionId)
     const modelId = this.resolveModel(tier)
-    if (modelId.toLowerCase().includes('gemma') && this.deps.modelService.reasoningParser() === null) {
-      throw new Error(
-        'Gemma agent sessions are unavailable: a non-gemma model in the engine registry ' +
-          'disabled the gemma reasoning parser, so this session would hang waiting for visible ' +
-          'text. Remove the foreign model from the HF cache or use a qwen model instead.'
-      )
-    }
     const { baseUrl } = await this.deps.pool.ensureServer(row.directory)
     this.deps.pool.touch(row.directory)
     this.deps.db
@@ -248,7 +242,9 @@ export class AgentService {
     ]
     for (const candidate of order) {
       const modelId = active.get(candidate)
-      if (modelId) return modelId
+      // opencode forwards this verbatim as the OpenAI model param — the
+      // engine knows models by their flattened id, not the HF repo id.
+      if (modelId) return engineModelId(modelId)
     }
     throw new Error('No chat models installed — download one in the Models tab first.')
   }

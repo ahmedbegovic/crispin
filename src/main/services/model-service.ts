@@ -37,7 +37,7 @@ const ENGINE_START_TIMEOUT_MS = 180_000
  * Weights on disk ≈ weights in memory at 4-bit; +10% for runtime overhead.
  * Deliberately NOT higher: the ultra tier (~16.5 GB on disk) must still fit
  * the 18.5 GB budget after full eviction, and KV growth is bounded by the
- * engine's own gpu-memory-utilization Metal limit, not this estimate.
+ * engine's --memory-guard-gb process-memory enforcer, not this estimate.
  */
 const MEMORY_OVERHEAD = 1.1
 
@@ -93,15 +93,9 @@ export class ModelService {
   private lastEngineKey = ''
   /** Fingerprint of the last installed scan — drives models.installedChanged. */
   private lastInstalledKey = ''
-  /** Bumped by every unload/unloadAll; stale re-warm loops check it and bail. */
-  private unloadEpoch = 0
   /** Registry fingerprint the running engine was spawned with. */
   private appliedRegistryKey: string | null = null
-  /** Reasoning parser the engine was spawned with; null = raw passthrough. */
-  private spawnReasoningParser: string | null = null
   private pendingRegistryRestart = false
-  /** Last unix ms the engine was busy (or had nothing loaded) — idle-unload clock. */
-  private lastBusyAt = Date.now()
   /** downloadId → tools job id, for every download we're actively polling. */
   private readonly activeDownloads = new Map<string, string>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -204,37 +198,40 @@ export class ModelService {
   }
 
   private registryEntries(): EngineConfigModel[] {
-    return this.installed.map((m) => ({
-      name: m.repoId,
-      source: m.repoId,
-      estimatedMemoryGB: round2((m.sizeBytes / 1e9) * MEMORY_OVERHEAD)
-    }))
+    // 0 disables the engine-side per-model idle TTL.
+    const idleSeconds = settings.get(this.deps.db, 'engine.autoUnloadIdleSeconds', 1800)
+    return this.installed.map((m) => {
+      const spec = tierSpecFor(m.repoId)
+      return {
+        name: m.repoId,
+        // Output budget: ultra is capped, small models run ctx-bounded.
+        maxTokens: spec?.maxOutputTokens ?? m.contextLength ?? 32768,
+        ttlSeconds: idleSeconds > 0 ? idleSeconds : null
+      }
+    })
   }
 
-  private writeConfig(port: number): { entries: EngineConfigModel[]; reasoningParser: string | null } {
+  private writeConfig(port: number): EngineConfigModel[] {
     const entries = this.registryEntries()
-    const { reasoningParser } = writeEngineConfig({
+    const idleSeconds = settings.get(this.deps.db, 'engine.autoUnloadIdleSeconds', 1800)
+    writeEngineConfig({
       port,
-      models: entries,
+      // The embedder is pool-resident under oMLX like any model — give it the
+      // same idle TTL so RAG use doesn't pin its RAM until app quit. Kept out
+      // of `entries` so the restart fingerprint and empty-registry semantics
+      // stay chat-model-only (maxTokens is inert for an embeddings model).
+      models: [
+        ...entries,
+        { name: EMBEDDING_MODEL, maxTokens: 1, ttlSeconds: idleSeconds > 0 ? idleSeconds : null }
+      ],
       budgetGB: this.deps.ramGuard.report(0).budgetGB
     })
-    return { entries, reasoningParser }
+    return entries
   }
 
   /** Called from the engine ManagedProcess command() at every spawn. */
   writeConfigForSpawn(port: number): void {
-    const { entries, reasoningParser } = this.writeConfig(port)
-    this.appliedRegistryKey = registryKey(entries)
-    this.spawnReasoningParser = reasoningParser
-  }
-
-  /**
-   * Reasoning parser the engine was spawned with. null means the registry was
-   * mixed-family and the engine streams raw text — gemma agent sessions would
-   * hang on unparsed thought channels, so callers must surface this.
-   */
-  reasoningParser(): string | null {
-    return this.spawnReasoningParser
+    this.appliedRegistryKey = registryKey(this.writeConfig(port))
   }
 
   /**
@@ -286,12 +283,12 @@ export class ModelService {
     }
   }
 
-  /** True when no request is in flight and no model is mid-(un)load. */
+  /** True when no request is in flight and no model is mid-load. */
   private async engineIdle(): Promise<boolean> {
     try {
       const status = await this.deps.engine.status()
       if ((status.numRunning ?? 0) > 0) return false
-      return !this.engineModels.some((m) => m.state === 'loading' || m.state === 'unloading')
+      return !this.engineModels.some((m) => m.state === 'loading')
     } catch {
       return false // unreachable counts as busy — never yank blindly
     }
@@ -431,9 +428,6 @@ export class ModelService {
     })
     if (!verdict.ok && !force) return { ok: false, reason: verdict.reason }
 
-    // A load counts as activity even before warm()'s POST is in flight, so
-    // the idle-unload timer can't restart the engine out from under it.
-    this.lastBusyAt = Date.now()
     await this.ensureEngineRunning()
     // If a registry change was deferred (engine was busy), the running engine
     // was spawned without this model and warm() would 404. An explicit Load
@@ -447,86 +441,30 @@ export class ModelService {
     return { ok: true }
   }
 
-  /**
-   * Unload everything via a supervised engine restart — there is no unload
-   * endpoint, and lazy registry mode makes restarts cost ~seconds. This is
-   * the first-class restart-swap fallback path.
-   */
+  /** Unload every loaded model — real endpoints now, no restart involved. */
   async unloadAll(): Promise<void> {
-    // Supersede any in-flight re-warm — "unload all" must not be undone by an
-    // earlier unload's background warms.
-    this.unloadEpoch += 1
-    const engine = this.deps.processManager.get('engine')
-    if (!engine || engine.snapshot().state === 'stopped') return
-    // No models installed means the respawn would exit 2 on an empty registry.
-    if (this.installed.length === 0) await engine.stop()
-    else await engine.restart('unload all models')
-    this.engineModels = []
+    if (!this.engineProcessRunning()) return
+    for (const m of this.engineModels.filter((m) => m.state === 'loaded')) {
+      await this.deps.engine.unloadModel(m.id)
+    }
+    this.engineModels = this.engineModels.map((m) =>
+      m.state === 'loaded' ? { ...m, state: 'unloaded', memoryGB: null } : m
+    )
   }
 
-  /**
-   * Unload one model. vllm-mlx has no per-model unload endpoint, so this is a
-   * supervised restart (cheap in lazy registry mode) plus a background re-warm
-   * of whatever else was loaded.
-   */
+  /** Unload one model via the engine's per-model endpoint — others stay loaded. */
   async unload(repoId: string): Promise<{ ok: boolean; reason?: string }> {
-    // Even a click that no-ops below supersedes an earlier unload's in-flight
-    // re-warm — the user's latest intent is always "less loaded, never more".
-    this.unloadEpoch += 1
-    const epoch = this.unloadEpoch
-    const engine = this.deps.processManager.get('engine')
-    if (!engine || engine.snapshot().state !== 'running') return { ok: true }
+    if (!this.engineProcessRunning()) return { ok: true }
     const target = this.engineModels.find((m) => m.id === repoId)
-    if (!target || (target.state !== 'loaded' && target.state !== 'loading')) return { ok: true }
+    if (!target || target.state !== 'loaded') return { ok: true }
     if (!(await this.engineIdle())) {
       return { ok: false, reason: 'The engine is busy — wait for the generation to finish.' }
     }
-    const others = this.engineModels
-      .filter((m) => m.state === 'loaded' && m.id !== repoId)
-      .map((m) => m.id)
-    // No models installed means the respawn would exit 2 on an empty registry.
-    if (this.installed.length === 0) await engine.stop()
-    else await engine.restart(`unload ${repoId}`)
-    this.engineModels = []
-    // The restart is user activity — keep the idle timer from firing right away.
-    this.lastBusyAt = Date.now()
-    if (others.length > 0) void this.rewarm(others, epoch)
+    await this.deps.engine.unloadModel(repoId)
+    this.engineModels = this.engineModels.map((m) =>
+      m.id === repoId ? { ...m, state: 'unloaded', memoryGB: null } : m
+    )
     return { ok: true }
-  }
-
-  /** Background re-warm of unload survivors; a later unload/unloadAll cancels it. */
-  private async rewarm(others: string[], epoch: number): Promise<void> {
-    try {
-      await this.ensureEngineRunning()
-    } catch (err) {
-      if (this.disposed) return
-      this.deps.broadcast({
-        type: 'system.toast',
-        level: 'warn',
-        message: `Could not reload ${others.join(', ')} after unload: ${err instanceof Error ? err.message : err}`
-      })
-      return
-    }
-    const failed: string[] = []
-    let lastError: unknown
-    // Cold loads block the engine event loop — sequential keeps health
-    // pressure bounded.
-    for (const id of others) {
-      if (epoch !== this.unloadEpoch || this.disposed) return
-      try {
-        await this.deps.engine.warm(id)
-      } catch (err) {
-        failed.push(id)
-        lastError = err
-      }
-    }
-    if (failed.length > 0 && !this.disposed) {
-      this.deps.broadcast({
-        type: 'system.toast',
-        level: 'warn',
-        message: `Could not reload ${failed.join(', ')} after unload: ${lastError instanceof Error ? lastError.message : lastError}`
-      })
-    }
   }
 
   private async ensureEngineRunning(): Promise<void> {
@@ -624,7 +562,13 @@ export class ModelService {
     return {
       running,
       budgetGB: this.deps.ramGuard.report(0).budgetGB,
-      models: running ? this.engineModels : []
+      // Renderer-facing list sticks to Orion-known chat models: oMLX discovers
+      // everything in the shared HF cache (embedder, foreign repos), and those
+      // must not flip LocalModels' "Unload all" / load badges. loadedGB() keeps
+      // using the unfiltered list so the RAM donut stays honest.
+      models: running
+        ? this.engineModels.filter((m) => this.installed.some((i) => i.repoId === m.id))
+        : []
     }
   }
 
@@ -679,27 +623,7 @@ export class ModelService {
       this.pendingRegistryRestart = false
       await this.syncEngineRegistry()
     }
-
-    // Idle auto-unload is main's job: vllm-mlx's --auto-unload-idle-seconds
-    // only works in single-model mode, never in the registry mode we spawn.
-    if (running && this.loadedGB() > 0) {
-      if (await this.engineIdle()) {
-        if (this.disposed) return // the await above can outlive dispose()
-        const idleSeconds = settings.get(this.deps.db, 'engine.autoUnloadIdleSeconds', 1800)
-        if (idleSeconds > 0 && Date.now() - this.lastBusyAt > idleSeconds * 1000) {
-          this.lastBusyAt = Date.now() // one shot per idle stretch
-          await this.unloadAll()
-          this.deps.broadcast({
-            type: 'system.toast',
-            level: 'info',
-            message: `Engine idle for ${Math.round(idleSeconds / 60)} min — models unloaded to reclaim RAM.`
-          })
-        }
-      } else {
-        this.lastBusyAt = Date.now()
-      }
-    } else {
-      this.lastBusyAt = Date.now()
-    }
+    // Idle auto-unload is the engine's job now: oMLX enforces the per-model
+    // ttl_seconds written by registryEntries().
   }
 }

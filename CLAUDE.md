@@ -18,7 +18,7 @@ Apple Silicon only; dev machine has 24GB unified memory — RAM headroom is the 
   main pushes events on one channel. Every new feature extends this contract first.
 - `src/main/services/process-manager.ts` — supervises sidecars (spawn/health/backoff/restart,
   process-group kills). Engine restarts are a feature (model swap), not a failure.
-- Sidecars: `engine` (vllm-mlx, OpenAI-compatible, preferred port 47621) and `tools`
+- Sidecars: `engine` (oMLX, OpenAI-compatible, preferred port 47621) and `tools`
   (FastAPI: downloads/extract/RAG/search/news, preferred port 47622). Ports are dynamic —
   always resolve via the port allocator, never hardcode.
 - SQLite via built-in `node:sqlite` (NOT better-sqlite3 — it doesn't compile against current

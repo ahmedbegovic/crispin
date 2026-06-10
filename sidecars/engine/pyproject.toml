@@ -1,8 +1,11 @@
 [project]
 name = "orion-engine"
 version = "0.1.0"
-description = "Orion inference sidecar: vllm-mlx OpenAI-compatible server"
+description = "Orion inference sidecar: oMLX OpenAI-compatible multi-model server"
 requires-python = ">=3.12"
 dependencies = [
-    "vllm-mlx",
+    "omlx",
 ]
+
+[tool.uv.sources]
+omlx = { git = "https://github.com/jundot/omlx.git", tag = "v0.4.3" }

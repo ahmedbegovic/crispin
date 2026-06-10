@@ -1,5 +1,8 @@
 import { createParser } from 'eventsource-parser'
-import type { EngineModelInfo, EngineModelState } from '@shared/types'
+import type { EngineModelInfo } from '@shared/types'
+
+/** oMLX flattens HF repo ids into directory-safe ids ('/' → '--'). */
+export const engineModelId = (repoId: string): string => repoId.replace('/', '--')
 
 // --- OpenAI chat wire shapes (this client owns them) -------------------------
 
@@ -26,9 +29,9 @@ export interface ChatToolDef {
 }
 
 export type ChatStreamEvent =
-  /** Raw content delta — family parsing (gemma thought channel) happens upstream. */
+  /** Raw content delta — family parsing happens upstream when needed. */
   | { type: 'content'; text: string }
-  /** Models that stream a separate reasoning channel (none observed yet — defensive). */
+  /** Thinking parsed server-side into the reasoning channel (gemma et al). */
   | { type: 'reasoning'; text: string }
   | {
       type: 'done'
@@ -40,13 +43,14 @@ export type ChatStreamEvent =
     }
 
 export interface StreamChatOptions {
+  /** Canonical HF repo id; mapped to the engine id internally. */
   model: string
   messages: ChatCompletionMessage[]
   tools?: ChatToolDef[]
   maxTokens?: number
   temperature?: number
-  /** top_k is deliberately absent: vllm-mlx's chat path never plumbs it. */
   topP?: number
+  topK?: number
   signal?: AbortSignal
 }
 
@@ -69,31 +73,33 @@ interface StreamChunk {
 /** No chunk for this long means a wedged stream, not a slow model — bail out. */
 const STREAM_INACTIVITY_MS = 300_000
 
-/** One entry of /v1/status model_manager.models in registry mode. */
-interface RegistryModelEntry {
+/** One entry of oMLX's /v1/models/status. */
+interface ModelStatusEntry {
   id: string
-  status?: EngineModelState
   loaded?: boolean
-  owned_by?: string
-  source?: string
-  memory_gb?: number | null
+  is_loading?: boolean
+  estimated_size?: number | null
+  actual_size?: number | null
+  /** Original HF repo id (slash form); absent for built-ins like MarkItDown. */
+  source_repo_id?: string | null
 }
 
-interface StatusResponse {
+interface ModelsStatusResponse {
+  models?: ModelStatusEntry[]
+}
+
+interface ApiStatusResponse {
   status?: string
-  num_running?: number
-  model_manager?: {
-    memory_budget_gb?: number
-    models?: RegistryModelEntry[]
-  }
+  active_requests?: number
+  waiting_requests?: number
+  models_loading?: number
 }
 
-/** Typed client for the vllm-mlx engine sidecar (OpenAI-compatible). */
+/** Typed client for the oMLX engine sidecar (OpenAI-compatible). */
 export class EngineClient {
   /**
-   * Generation requests in flight through THIS client. Registry-mode
-   * /v1/status hides per-request state, and main owns all engine traffic in
-   * M1/M2 — so this counter is the idleness signal restart decisions and the
+   * Generation requests in flight through THIS client. Main owns all engine
+   * traffic, so this counter is the idleness signal restart decisions and the
    * supervisor's busy() hook rely on. Status/models probes (GETs) don't count.
    */
   private inflightCount = 0
@@ -129,28 +135,34 @@ export class EngineClient {
   }
 
   /**
-   * Registry state of every configured model — from /v1/status, because the
-   * /v1/models route strips everything but the id. Tolerates the single-model
-   * shape (no model_manager) by reporting the active model as loaded.
+   * Load state of every discovered model, keyed by the canonical HF repo id.
+   * Built-in pseudo-models (no source_repo_id, e.g. MarkItDown) are dropped.
    */
   async models(): Promise<EngineModelInfo[]> {
-    const res = await this.request<StatusResponse & { model?: string }>('GET', '/v1/status')
-    if (res.model_manager?.models) {
-      return res.model_manager.models.map((m) => ({
-        id: m.id,
-        state: m.status ?? (m.loaded ? 'loaded' : 'unloaded'),
-        memoryGB: typeof m.memory_gb === 'number' ? m.memory_gb : null
-      }))
-    }
-    return res.model ? [{ id: res.model, state: 'loaded', memoryGB: null }] : []
+    const res = await this.request<ModelsStatusResponse>('GET', '/v1/models/status')
+    return (res.models ?? [])
+      .filter((m) => typeof m.source_repo_id === 'string' && m.source_repo_id.length > 0)
+      .map((m) => {
+        const bytes = m.loaded ? (m.actual_size ?? m.estimated_size) : null
+        return {
+          id: m.source_repo_id as string,
+          state: m.loaded ? ('loaded' as const) : m.is_loading ? ('loading' as const) : ('unloaded' as const),
+          memoryGB: typeof bytes === 'number' ? Math.round((bytes / 1e9) * 100) / 100 : null
+        }
+      })
   }
 
   /** Liveness subset — used to avoid restarting mid-generation. */
   async status(): Promise<{ running: boolean; numRunning: number }> {
-    const res = await this.request<StatusResponse>('GET', '/v1/status')
+    const res = await this.request<ApiStatusResponse>('GET', '/api/status')
+    // models_loading counts: a request parked inside a lazy cold load (e.g.
+    // opencode traffic that bypasses this client) registers in neither
+    // active nor waiting, and the cached engineModels snapshot lags by a poll.
+    const busy =
+      (res.active_requests ?? 0) + (res.waiting_requests ?? 0) + (res.models_loading ?? 0)
     return {
-      running: res.status === 'running',
-      numRunning: Math.max(res.num_running ?? 0, this.inflightCount)
+      running: res.status === 'ok',
+      numRunning: Math.max(busy, this.inflightCount)
     }
   }
 
@@ -158,14 +170,14 @@ export class EngineClient {
    * Streaming chat completion. Yields raw deltas; tool calls are accumulated
    * (index-keyed, arguments appended) and delivered complete on 'done'.
    * Counts against the same inflight counter as request() — busy() health
-   * suppression and the idle-unload timer depend on every generation passing
-   * through it. The finally block keeps the counter balanced on abort/throw,
-   * including a consumer abandoning the iterator (generator return()).
+   * suppression depends on every generation passing through it. The finally
+   * block keeps the counter balanced on abort/throw, including a consumer
+   * abandoning the iterator (generator return()).
    */
   async *streamChat(opts: StreamChatOptions): AsyncGenerator<ChatStreamEvent, void, void> {
     this.inflightCount += 1
-    // First token can be minutes away (cold model load blocks the event loop),
-    // so there is no overall timeout — only inactivity between chunks.
+    // First token can be minutes away on a cold load, so there is no overall
+    // timeout — only inactivity between chunks.
     const inactivity = new AbortController()
     let inactivityTimer = setTimeout(() => inactivity.abort(), STREAM_INACTIVITY_MS)
     try {
@@ -174,13 +186,16 @@ export class EngineClient {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          model: opts.model,
+          model: engineModelId(opts.model),
           messages: opts.messages,
           tools: opts.tools?.length ? opts.tools : undefined,
           max_tokens: opts.maxTokens,
           temperature: opts.temperature,
           top_p: opts.topP,
-          stream: true
+          top_k: opts.topK,
+          stream: true,
+          // Usage arrives in the final chunk only when asked for.
+          stream_options: { include_usage: true }
         }),
         signal: AbortSignal.any(signals)
       })
@@ -267,22 +282,13 @@ export class EngineClient {
     }
   }
 
-  /**
-   * "Load" a model: in registry mode the first request naming a model makes
-   * the manager load it (evicting idle models if the budget demands it).
-   * Generous timeout — a cold load pages weights in from disk.
-   */
-  async warm(modelId: string): Promise<void> {
-    await this.request(
-      'POST',
-      '/v1/chat/completions',
-      {
-        model: modelId,
-        messages: [{ role: 'user', content: 'Hi' }],
-        max_tokens: 1,
-        stream: false
-      },
-      300_000
-    )
+  /** Explicit load — blocks until the model is in memory (cold loads page weights). */
+  async warm(repoId: string): Promise<void> {
+    await this.request('POST', `/v1/models/${engineModelId(repoId)}/load`, {}, 300_000)
+  }
+
+  /** Explicit per-model unload — frees the weights without touching other models. */
+  async unloadModel(repoId: string): Promise<void> {
+    await this.request('POST', `/v1/models/${engineModelId(repoId)}/unload`, {}, 60_000)
   }
 }

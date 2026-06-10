@@ -3,6 +3,7 @@ import type { OrionEvent } from '@shared/ipc'
 import type { Collection, LibraryDoc, LibraryDocStatus } from '@shared/types'
 import { EMBEDDING_MODEL } from '@shared/model-tiers'
 import type { OrionDatabase } from './db'
+import { engineModelId } from './engine-client'
 import type { ToolsClient } from './tools-client'
 import type { ProcessManager } from './process-manager'
 import { dataDir } from './paths'
@@ -225,7 +226,7 @@ export class LibraryService {
         markdown: extracted.markdown,
         title: extracted.title,
         embeddingsUrl: this.embeddingsUrl(),
-        embeddingModel: EMBEDDING_MODEL,
+        embeddingModel: engineModelId(EMBEDDING_MODEL),
         lancedbDir: this.lancedbDir()
       })
       this.activeIngests.set(docId, job_id)
@@ -278,8 +279,10 @@ export class LibraryService {
   }
 
   /**
-   * The engine runs --offline, so the embedder must be in the HF cache before
-   * the first embed. Download through the tools sidecar when missing.
+   * The engine runs offline, so the embedder must be in the HF cache before
+   * the first embed. Download through the tools sidecar when missing — and
+   * because oMLX discovers cache models at startup only, a freshly downloaded
+   * embedder is invisible to an already-running engine until a restart.
    */
   async ensureEmbeddingModel(): Promise<void> {
     const { models } = await this.deps.tools.localModels()
@@ -294,14 +297,20 @@ export class LibraryService {
       if (job.status !== 'done') {
         throw new Error(`embedding model download ${job.status}: ${job.error ?? 'unknown error'}`)
       }
-      return
+      break
     }
+    const engine = this.deps.processManager.get('engine')
+    if (engine?.snapshot().state === 'running') {
+      await engine.restart('embedding model downloaded — rediscover the HF cache')
+    }
+    return
   }
 
   /**
-   * /v1/embeddings needs a live engine process (any registry — embeddings
-   * bypass it). Mirrors ModelService's wait loop; load orchestration stays
-   * ModelService's job, this only guarantees the HTTP server is up.
+   * /v1/embeddings resolves through the same startup-time discovery and
+   * memory guard as chat models under oMLX. Mirrors ModelService's wait loop;
+   * load orchestration stays ModelService's job, this only guarantees the
+   * HTTP server is up.
    */
   async ensureEngineRunning(): Promise<void> {
     const engine = this.deps.processManager.get('engine')

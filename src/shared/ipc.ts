@@ -31,13 +31,7 @@ export const systemStatusSchema = z.object({
 export const tierSchema = z.enum(['low', 'medium', 'high', 'extraHigh', 'ultra'])
 export const featureSchema = z.enum(['chat', 'agent', 'code', 'research', 'news'])
 
-export const engineModelStateSchema = z.enum([
-  'unloaded',
-  'loading',
-  'loaded',
-  'unloading',
-  'preempting'
-])
+export const engineModelStateSchema = z.enum(['unloaded', 'loading', 'loaded'])
 
 export const engineModelInfoSchema = z.object({
   id: z.string(),

@@ -32,8 +32,8 @@ export interface SystemStatus {
 // Models / engine (M1)
 // ---------------------------------------------------------------------------
 
-/** Lifecycle of one registry entry inside the vllm-mlx engine. */
-export type EngineModelState = 'unloaded' | 'loading' | 'loaded' | 'unloading' | 'preempting'
+/** Lifecycle of one model inside the oMLX engine. */
+export type EngineModelState = 'unloaded' | 'loading' | 'loaded'
 
 export interface EngineModelInfo {
   id: string
@@ -50,8 +50,8 @@ export interface EngineStatus {
 
 /**
  * The model's own recommended sampling, from its generation_config.json.
- * topK is carried for completeness but never sent: vllm-mlx's chat
- * completions path does not plumb top_k into generation.
+ * All three are sent per request — oMLX plumbs top_k, so gemma's
+ * recommended top_k 64 finally applies.
  */
 export interface ModelSampling {
   temperature: number | null

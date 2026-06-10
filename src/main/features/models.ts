@@ -22,8 +22,9 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
     port: () => ports.engine || null,
     healthUrl: () => `http://127.0.0.1:${ports.engine}/health`,
     startTimeoutMs: 180_000, // first uv run may resolve the venv
-    // Cold model loads block the engine's event loop, so /health stalls for
-    // their whole duration — a request in flight means work, not a hang.
+    // A request in flight through main's client (generation, or a blocking
+    // /load via warm()) means work, not a hang — never escalate failed
+    // probes to a kill mid-generation.
     busy: () => engineClient.inflight > 0,
     command: async () => {
       ports.engine = await allocatePort(47621)

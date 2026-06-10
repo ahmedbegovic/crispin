@@ -1,19 +1,18 @@
 /**
- * Per-model-family quirks. Live-verified against vllm-mlx 0.3.0 (2026-06-10):
+ * Per-model-family quirks. Updated for oMLX 0.4.3 (2026-06-10):
  *
- * gemma-4 emits a raw thought channel inside content:
- *   `<|channel>thought\n...reasoning...<channel|>...answer...`
- * The opener is `<|channel>` + a label line ending in `\n` (only "thought"
- * observed); the closer `<channel|>` arrives glued mid-chunk to surrounding
- * text (observed: `" factors).<channel|>No,"`). When the model decides to call
- * a tool the thought is left UNCLOSED — content just stops, then a complete
- * delta.tool_calls chunk follows — so flush() must finalize an open thought.
+ * Thinking now arrives pre-parsed: the engine runs gemma with
+ * enable_thinking and streams reasoning as delta.reasoning_content, so
+ * content should never contain raw `<|channel>thought` markers anymore.
+ * GemmaSplitter is retained as a defensive net for marker leaks (it
+ * passes clean text through untouched).
  *
- * gemma-4 is also served by vllm-mlx's MLLM path, which drops assistant
- * tool_calls and role:tool messages before templating (MLLM.chat() keeps only
- * text content) — OpenAI-shaped tool round-trips silently never reach the
- * model. Live-verified: the model re-issues the identical call forever. Tool
- * history for gemma must therefore be encoded as plain text turns.
+ * Tool history: oMLX templates OpenAI-shaped gemma tool history natively
+ * (the Agent tab's opencode traffic relies on that), so text-encoding it
+ * here is a retained legacy choice, not a serving-path workaround — the
+ * text shapes were live-verified across two engines. Candidate follow-up:
+ * live-verify a gemma OpenAI-shaped tool round-trip through the Chat tab
+ * and flip encodesToolHistoryAsText to false.
  */
 
 export type ModelFamily = 'gemma' | 'qwen' | 'other'

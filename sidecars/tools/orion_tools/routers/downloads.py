@@ -163,7 +163,7 @@ def _context_length(repo: CachedRepoInfo) -> Optional[int]:
 def _sampling_defaults(repo: CachedRepoInfo) -> Optional[dict[str, Any]]:
     """The model's recommended sampling from generation_config.json, or None.
 
-    Engines default to generic values (vllm-mlx: 0.7/0.9) instead of reading
+    Engines default to generic values (e.g. 0.7/0.9) instead of reading
     this file — main passes these per request so models run as their authors
     intended (gemma: temperature 1.0, top_k 64, top_p 0.95).
     """

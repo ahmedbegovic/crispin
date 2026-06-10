@@ -2,6 +2,7 @@ import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { InstalledModel } from '@shared/types'
 import { TIERS, TIER_ORDER, modelDisplayName, type TierSpec } from '@shared/model-tiers'
+import { engineModelId } from './engine-client'
 import { dataDir, resourcesDir } from './paths'
 
 export interface OpencodeConfigOptions {
@@ -44,7 +45,9 @@ export function writeOpencodeConfig(opts: OpencodeConfigOptions): string {
   const models: Record<string, unknown> = {}
   for (const m of opts.models) {
     const spec = tierSpecFor(m.repoId)
-    models[m.repoId] = {
+    // Keyed by the ENGINE id: opencode forwards the key verbatim as the
+    // OpenAI model param, and oMLX knows models by their flattened form.
+    models[engineModelId(m.repoId)] = {
       name: modelDisplayName(m.repoId),
       limit: {
         context: m.contextLength ?? spec?.defaultCtx ?? 32768,

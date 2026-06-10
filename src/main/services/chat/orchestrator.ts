@@ -7,11 +7,12 @@ import type { OrionDatabase } from '../db'
 import * as settings from '../settings'
 import { dataDir } from '../paths'
 import { scopedLogger } from '../logger'
-import type {
-  ChatCompletionMessage,
-  ChatContentPart,
-  EngineClient,
-  WireToolCall
+import {
+  engineModelId,
+  type ChatCompletionMessage,
+  type ChatContentPart,
+  type EngineClient,
+  type WireToolCall
 } from '../engine-client'
 import type { ToolsClient } from '../tools-client'
 import type { ModelService } from '../model-service'
@@ -351,7 +352,7 @@ export class ChatOrchestrator {
         sources,
         collectionId: conversation.collectionId,
         embeddingsUrl: this.deps.library.embeddingsUrl(),
-        embeddingModel: EMBEDDING_MODEL,
+        embeddingModel: engineModelId(EMBEDDING_MODEL),
         lancedbDir: this.deps.library.lancedbDir(),
         searxngUrl: settings.get(this.deps.db, 'search.searxngUrl', 'http://127.0.0.1:8080'),
         signal: controller.signal
@@ -382,6 +383,7 @@ export class ChatOrchestrator {
           maxTokens: maxTokensFor(modelId),
           temperature: sampling?.temperature ?? undefined,
           topP: sampling?.topP ?? undefined,
+          topK: sampling?.topK ?? undefined,
           signal: controller.signal
         })) {
           if (event.type === 'content') consume(splitter.push(event.text))
@@ -627,7 +629,7 @@ export class ChatOrchestrator {
   /**
    * Replay a persisted assistant turn. Thought parts NEVER go back to the
    * model; tool round-trips become OpenAI tool messages — or plain text for
-   * families whose serving path drops them (see family.ts).
+   * families still configured for text encoding (see family.ts).
    */
   private assistantMessages(parts: MessagePart[], family: ModelFamily): ChatCompletionMessage[] {
     const asText = encodesToolHistoryAsText(family)
@@ -781,7 +783,7 @@ export class ChatOrchestrator {
     for await (const event of this.deps.engine.streamChat({
       model: lowModel,
       messages: titleMessages(userText, assistantText),
-      maxTokens: 200 // gemma spends tokens on the thought channel before the title
+      maxTokens: 200 // thinking tokens count against max_tokens before the title
     })) {
       if (event.type === 'content') raw += event.text
     }

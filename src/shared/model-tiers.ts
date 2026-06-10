@@ -61,9 +61,9 @@ export const TIERS: Record<Tier, TierSpec> = {
     defaultCtx: 32768
   },
   ultra: {
-    // KV stays fp16: vllm-mlx only quantizes KV under continuous batching,
-    // which cannot generate with gemma-4 — so the 32k output cap and noCoload
-    // are what keep this one inside the budget.
+    // KV cache stays at oMLX defaults (TurboQuant KV quant not enabled yet),
+    // so the 32k output cap and noCoload are what keep this one inside the
+    // budget.
     candidates: ['mlx-community/Qwen3.6-27B-4bit'],
     caps: ['text', 'vision', 'video'],
     approxGB: 16.5,
@@ -110,9 +110,10 @@ export const FEATURE_DEFAULTS: Record<Feature, Tier> = {
 export const UTILITY_MODEL = TIERS.low.candidates[0]
 
 /**
- * The library RAG embedder. Lives in the HF cache like any model but is
- * NOT a chat model: it must stay out of the engine chat registry and its
- * memory budget (served via /v1/embeddings, which bypasses the registry).
+ * The library RAG embedder. Lives in the HF cache like any model and is
+ * served from the engine pool like any model (oMLX discovers it at startup,
+ * /v1/embeddings counts against the memory guard) — but it is NOT a chat
+ * model: it stays out of Orion's chat registry, tiers, and the Models tab.
  */
 export const EMBEDDING_MODEL = 'mlx-community/embeddinggemma-300m-6bit'
 

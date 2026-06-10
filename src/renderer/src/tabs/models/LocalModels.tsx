@@ -31,7 +31,7 @@ export default function LocalModels({ overview }: { overview: ModelsOverview }) 
             {registryIds.has(model.repoId) && (
               <span
                 className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"
-                title="In the engine registry"
+                title="Served by the engine"
               />
             )}
             <span className="flex-1 truncate text-[12px] text-zinc-200" title={model.repoId}>

@@ -72,12 +72,6 @@ function CandidateChip({
     )
   } else if (engineState === 'loading') {
     action = <span className="animate-pulse text-[11px] text-amber-400">Loading…</span>
-  } else if (engineState === 'unloading' || engineState === 'preempting') {
-    action = (
-      <span className="text-[11px] text-amber-400">
-        {engineState === 'unloading' ? 'Unloading…' : 'Preempting…'}
-      </span>
-    )
   } else {
     action = (
       <button
@@ -132,8 +126,8 @@ export default function TierTable({ overview }: { overview: ModelsOverview }) {
 
   const onUnload = async (repoId: string): Promise<void> => {
     try {
-      // On success the engine restarts and re-warms the other loaded models;
-      // status events update the chips on their own.
+      // The engine frees just this model (per-model unload, others stay
+      // loaded); status events update the chips on their own.
       const result = await unload(repoId)
       if (!result.ok) pushToast('error', result.reason ?? 'Unload failed.')
     } catch (err) {
