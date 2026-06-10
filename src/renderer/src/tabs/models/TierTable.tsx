@@ -25,6 +25,8 @@ interface ChipProps {
   /** Live state from overview.engine; falls back to the overview snapshot. */
   engineState: EngineModelState | null
   download: DownloadInfo | undefined
+  /** Most recent cancelled/failed download with bytes on disk — resumable. */
+  partial: DownloadInfo | undefined
   onLoad: (repoId: string) => void
   onUnload: (repoId: string) => void
   onDownload: (repoId: string) => void
@@ -35,6 +37,7 @@ function CandidateChip({
   active,
   engineState,
   download,
+  partial,
   onLoad,
   onUnload,
   onDownload
@@ -50,9 +53,14 @@ function CandidateChip({
     ) : (
       <button
         onClick={() => onDownload(candidate.repoId)}
+        title={
+          partial
+            ? `${(partial.bytesDone / 1e9).toFixed(1)} GB already fetched — resumes where it left off`
+            : undefined
+        }
         className="rounded-md border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
       >
-        Download
+        {partial ? 'Resume' : 'Download'}
       </button>
     )
   } else if (engineState === 'loaded') {
@@ -110,6 +118,16 @@ export default function TierTable({ overview }: { overview: ModelsOverview }) {
   const activeDownload = (repoId: string): DownloadInfo | undefined =>
     overview.downloads.find(
       (d) => d.repoId === repoId && (d.status === 'queued' || d.status === 'downloading')
+    )
+
+  // HF downloads keep their fetched files on cancel/failure and resume where
+  // they left off — label the button honestly. downloads is newest-first.
+  const partialDownload = (repoId: string): DownloadInfo | undefined =>
+    overview.downloads.find(
+      (d) =>
+        d.repoId === repoId &&
+        (d.status === 'cancelled' || d.status === 'failed') &&
+        d.bytesDone > 0
     )
 
   const onLoad = async (repoId: string, force = false): Promise<void> => {
@@ -180,6 +198,7 @@ export default function TierTable({ overview }: { overview: ModelsOverview }) {
                     active={resolution?.active === candidate.repoId}
                     engineState={liveState(candidate.repoId, candidate.engineState)}
                     download={activeDownload(candidate.repoId)}
+                    partial={partialDownload(candidate.repoId)}
                     onLoad={(repoId) => void onLoad(repoId)}
                     onUnload={(repoId) => void onUnload(repoId)}
                     onDownload={(repoId) => void download(repoId).catch(toastError)}

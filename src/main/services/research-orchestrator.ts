@@ -42,9 +42,16 @@ const SELECT_CANDIDATE_LIMIT = 36
  */
 const STRUCTURED_TEMPERATURE = 0.3
 
-const SYSTEM_JSON =
+// Local models default to their training-data era (queries dated "2024" were
+// observed live) — every prompt states today's date so searches and judgments
+// target the present.
+const todayLine = (): string =>
+  `Today's date is ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. ` +
+  'Prefer recent sources, and include the current year in time-sensitive search queries.'
+
+const SYSTEM_JSON = (): string =>
   'You are a rigorous research agent. Reply with a single JSON object that matches the ' +
-  'requested schema exactly — no prose, no markdown fences.'
+  `requested schema exactly — no prose, no markdown fences. ${todayLine()}`
 
 const clip = (text: string, limit: number): string =>
   text.length > limit ? `${text.slice(0, limit)}…` : text
@@ -749,6 +756,10 @@ export class ResearchOrchestrator {
         maxTokens,
         temperature: STRUCTURED_TEMPERATURE,
         responseFormat,
+        // Thinking tokens count against max_tokens and the reasoning channel
+        // is discarded here anyway — without this, gemma burns the whole JSON
+        // budget thinking and every structured step truncates.
+        chatTemplateKwargs: { enable_thinking: false },
         signal: opts.signal
       })) {
         if (event.type === 'content') raw += event.text
@@ -823,6 +834,7 @@ export class ResearchOrchestrator {
       ],
       maxTokens: 700,
       temperature: STRUCTURED_TEMPERATURE,
+      chatTemplateKwargs: { enable_thinking: false },
       signal
     })) {
       if (event.type === 'content') raw += event.text
@@ -898,7 +910,7 @@ export class ResearchOrchestrator {
 
   private planMessages(question: string): ChatCompletionMessage[] {
     return [
-      { role: 'system', content: SYSTEM_JSON },
+      { role: 'system', content: SYSTEM_JSON() },
       {
         role: 'user',
         content:
@@ -954,7 +966,7 @@ export class ResearchOrchestrator {
       .map((r) => `- url: ${r.url}\n  ${clip(r.title, 160)} — ${clip(r.snippet, 280)}`)
       .join('\n')
     return [
-      { role: 'system', content: SYSTEM_JSON },
+      { role: 'system', content: SYSTEM_JSON() },
       {
         role: 'user',
         content:
@@ -974,7 +986,7 @@ export class ResearchOrchestrator {
     content: string
   ): ChatCompletionMessage[] {
     return [
-      { role: 'system', content: SYSTEM_JSON },
+      { role: 'system', content: SYSTEM_JSON() },
       {
         role: 'user',
         content:
@@ -1020,7 +1032,7 @@ export class ResearchOrchestrator {
           : '')
     )
     return [
-      { role: 'system', content: SYSTEM_JSON },
+      { role: 'system', content: SYSTEM_JSON() },
       { role: 'user', content: parts.join('\n\n') }
     ]
   }
@@ -1039,7 +1051,7 @@ export class ResearchOrchestrator {
       ? `Findings (compressed per round):\n${roundReports.map((r, i) => `Round ${i + 1}: ${r}`).join('\n')}\n\nNumbered sources:\n${sourceList}`
       : this.workspaceText(question, plan, numbered, roundReports, false)
     return [
-      { role: 'system', content: SYSTEM_JSON },
+      { role: 'system', content: SYSTEM_JSON() },
       {
         role: 'user',
         content:

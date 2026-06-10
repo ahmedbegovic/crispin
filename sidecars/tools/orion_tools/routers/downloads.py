@@ -130,7 +130,13 @@ def _snapshot_complete(repo: CachedRepoInfo) -> bool:
     if job is not None:
         # Mid-download: only revisions other than the one being fetched can be
         # complete (a new-revision update of an installed model still counts).
-        return any(rev.commit_hash != job.data.get("revision") for rev in repo.revisions)
+        # Before model_info returns, the job has no target revision yet — we
+        # cannot tell which revision is being fetched, so report incomplete
+        # rather than blessing a possible resume-in-progress partial.
+        target = job.data.get("revision")
+        if target is None:
+            return False
+        return any(rev.commit_hash != target for rev in repo.revisions)
     # No live job: leftover *.incomplete temp blobs mean a download died
     # mid-file (process killed). A cancelled/failed download unlinks its temps
     # on the way out, so this is a heuristic, not a full validation.

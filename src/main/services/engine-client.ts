@@ -53,6 +53,12 @@ export interface StreamChatOptions {
   topK?: number
   /** OpenAI response_format, e.g. {type:'json_schema', json_schema:{name, schema}}. */
   responseFormat?: unknown
+  /**
+   * Per-request chat-template kwargs, e.g. {enable_thinking: false} — beats
+   * the per-model setting (verified live), so structured calls can reclaim
+   * the budget thinking tokens would otherwise burn from max_tokens.
+   */
+  chatTemplateKwargs?: Record<string, unknown>
   signal?: AbortSignal
 }
 
@@ -196,6 +202,7 @@ export class EngineClient {
           top_p: opts.topP,
           top_k: opts.topK,
           response_format: opts.responseFormat,
+          chat_template_kwargs: opts.chatTemplateKwargs,
           stream: true,
           // Usage arrives in the final chunk only when asked for.
           stream_options: { include_usage: true }
