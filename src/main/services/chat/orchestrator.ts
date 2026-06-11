@@ -1,7 +1,13 @@
 import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { CrispinEvent } from '@shared/ipc'
-import type { AttachmentInput, Conversation, MessagePart, Tier } from '@shared/types'
+import type {
+  AttachmentInput,
+  Conversation,
+  MessagePart,
+  ModelSampling,
+  Tier
+} from '@shared/types'
 import { TIERS, tierOfRepo } from '@shared/model-tiers'
 import type { CrispinDatabase } from '../db'
 import * as settings from '../settings'
@@ -11,6 +17,7 @@ import {
   engineModelId,
   type ChatCompletionMessage,
   type ChatContentPart,
+  type ChatToolDef,
   type EngineClient,
   type WireToolCall
 } from '../engine-client'
@@ -67,6 +74,27 @@ const visionCapable = (modelId: string): boolean => {
 const maxTokensFor = (modelId: string): number | undefined => {
   const tier = tierOfRepo(modelId)
   return tier ? TIERS[tier].maxOutputTokens : undefined
+}
+
+/**
+ * Append text to the trailing user message — gemma's template rejects
+ * non-alternating roles, so corrections and evidence blocks extend the user
+ * turn instead of pushing a second one. Falls back to a new user message
+ * when the history doesn't end with one.
+ */
+function appendToTrailingUserMessage(messages: ChatCompletionMessage[], text: string): void {
+  const last = messages[messages.length - 1]
+  if (last && last.role === 'user' && typeof last.content === 'string') {
+    last.content = `${last.content}\n\n${text}`
+  } else if (last && last.role === 'user' && Array.isArray(last.content)) {
+    // Vision message: extend its text part rather than appending a second
+    // user turn the alternating template would reject.
+    const textPart = last.content.findLast((p) => p.type === 'text')
+    if (textPart && textPart.type === 'text') textPart.text = `${textPart.text}\n\n${text}`
+    else last.content.push({ type: 'text', text })
+  } else {
+    messages.push({ role: 'user', content: text })
+  }
 }
 
 /**
@@ -400,194 +428,17 @@ export class ChatOrchestrator {
       // without it the engine falls back to its generic 0.7/0.9 defaults.
       const sampling = this.deps.modelService.samplingFor(modelId)
 
-      let parseErrorLastIteration = false
-      let toolBudgetExhausted = false
-      let nudgedEmptyTurn = false
-      // <= cap: one extra tools-disabled round so a cap exit still produces an answer.
-      for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
-        const splitter = createContentSplitter(family)
-        let visibleText = ''
-        let toolCalls: WireToolCall[] = []
-        const consume = (segments: ReturnType<typeof splitter.push>): void => {
-          for (const seg of segments) {
-            stream.append(seg.channel, seg.text)
-            if (seg.channel === 'text') visibleText += seg.text
-          }
-        }
-
-        for await (const event of this.deps.engine.streamChat({
-          model: modelId,
-          messages,
-          tools: !toolBudgetExhausted && toolDefs.length > 0 ? toolDefs : undefined,
-          maxTokens: maxTokensFor(modelId),
-          temperature: sampling?.temperature ?? undefined,
-          topP: sampling?.topP ?? undefined,
-          topK: sampling?.topK ?? undefined,
-          signal: controller.signal
-        })) {
-          if (event.type === 'content') consume(splitter.push(event.text))
-          else if (event.type === 'reasoning') stream.append('thought', event.text)
-          else {
-            toolCalls = event.toolCalls
-            // Last round only, NOT summed: the final prompt already re-encodes
-            // every earlier round's output, so tokensIn + tokensOut is the true
-            // end-of-generation context size (the donut's numerator).
-            tokensIn = event.tokensIn ?? tokensIn
-            tokensOut = event.tokensOut ?? tokensOut
-          }
-        }
-        consume(splitter.flush())
-
-        // Imitated textual tool calls: the text-encoded history teaches gemma
-        // the literal '[tool_call] name(args)' shape and it sometimes emits
-        // that as content instead of a native call — execute those instead of
-        // ending the turn with dead prose. cleanedText keeps the history from
-        // recording the call twice (the round's callText re-encodes it).
-        if (toolCalls.length === 0 && !toolBudgetExhausted && encodesToolHistoryAsText(family)) {
-          const salvage = salvageTextualToolCalls(visibleText, knownToolNames)
-          if (salvage.calls.length > 0) {
-            toolCalls = salvage.calls
-            visibleText = salvage.cleanedText
-          }
-        }
-
-        // Reasoning-only turn: gemma sometimes plans a tool call in its
-        // thinking ("The best tool for this is web_search…") and then stops
-        // without emitting the call or any visible text. One corrective round;
-        // a second empty turn ends the generation as before. The nudge is
-        // appended to the trailing user message when there is one — gemma's
-        // template rejects non-alternating roles.
-        // iteration guard: never trade the budget-exhausted round for a nudge —
-        // the loop's "tools disabled on the final round" invariant must hold.
-        if (
-          toolCalls.length === 0 &&
-          !visibleText.trim() &&
-          !toolBudgetExhausted &&
-          !nudgedEmptyTurn &&
-          iteration < MAX_TOOL_ITERATIONS - 1
-        ) {
-          nudgedEmptyTurn = true
-          // The nudged round runs no tools, so it cannot "fail again" — a
-          // stale parse-error flag from the round before it must not pair
-          // with a later error as 'consecutive' (adversarial-review finding).
-          parseErrorLastIteration = false
-          const nudge =
-            '(Your previous turn produced no reply — only internal thinking. ' +
-            'Continue now: call the tool you decided on, or answer the user directly. ' +
-            'Do not mention this reminder.)'
-          const last = messages[messages.length - 1]
-          if (last && last.role === 'user' && typeof last.content === 'string') {
-            last.content = `${last.content}\n\n${nudge}`
-          } else if (last && last.role === 'user' && Array.isArray(last.content)) {
-            // Vision message: extend its text part rather than appending a
-            // second user turn the alternating template would reject.
-            const textPart = last.content.findLast((p) => p.type === 'text')
-            if (textPart && textPart.type === 'text') textPart.text = `${textPart.text}\n\n${nudge}`
-            else last.content.push({ type: 'text', text: nudge })
-          } else {
-            messages.push({ role: 'user', content: nudge })
-          }
-          continue
-        }
-
-        if (toolCalls.length === 0 || toolBudgetExhausted) break
-
-        if (iteration === MAX_TOOL_ITERATIONS - 1) {
-          // Budget spent: drop this round's calls and force one final text answer.
-          if (visibleText.trim()) {
-            messages.push({ role: 'assistant', content: visibleText.trim() })
-          }
-          messages.push({
-            role: 'user',
-            content:
-              'Tool budget exhausted — do not call any more tools. ' +
-              'Answer the original question now from the tool results you already have.'
-          })
-          toolBudgetExhausted = true
-          continue
-        }
-
-        // Record the assistant turn the way this family can actually read back.
-        if (encodesToolHistoryAsText(family)) {
-          const callText = toolCalls
-            .map((c) => `[tool_call] ${c.function.name}(${c.function.arguments})`)
-            .join('\n')
-          messages.push({
-            role: 'assistant',
-            content: [visibleText.trim(), callText].filter(Boolean).join('\n\n')
-          })
-        } else {
-          messages.push({ role: 'assistant', content: visibleText || null, tool_calls: toolCalls })
-        }
-
-        const resultTexts: string[] = []
-        let parseErrorThisIteration = false
-        for (const call of toolCalls) {
-          if (controller.signal.aborted) throw new Error('aborted')
-          const name = call.function.name
-          stream.add({ type: 'tool_call', id: call.id, name, args: call.function.arguments })
-          this.toolEvent(ctx, call.id, name, 'start', clip(call.function.arguments, 200))
-
-          let args: Record<string, unknown> | null = null
-          let parseError: string | null = null
-          try {
-            args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>
-          } catch (err) {
-            parseError = err instanceof Error ? err.message : String(err)
-            parseErrorThisIteration = true
-          }
-
-          let outcome: { result: string; sourceIds?: number[]; failed: boolean }
-          if (args === null) {
-            outcome = {
-              result: `Error: tool arguments are not valid JSON (${parseError}). Retry the call with corrected JSON.`,
-              failed: true
-            }
-          } else {
-            try {
-              const execution = await executeTool(name, args, toolCtx)
-              outcome = { ...execution, result: clip(execution.result, TOOL_RESULT_LIMIT), failed: false }
-            } catch (err) {
-              // A Stop mid-fetch surfaces as an AbortError — finalize, don't persist it.
-              if (controller.signal.aborted) throw new Error('aborted')
-              // Malformed args are a model fault like unparseable call JSON —
-              // they share the two-strike rule (give up only after the model
-              // saw the corrective result and still failed).
-              if (err instanceof InvalidToolArgsError) parseErrorThisIteration = true
-              outcome = { result: `Error: ${err instanceof Error ? err.message : String(err)}`, failed: true }
-            }
-          }
-
-          stream.add({
-            type: 'tool_result',
-            toolCallId: call.id,
-            name,
-            result: outcome.result,
-            sourceIds: outcome.sourceIds
-          })
-          this.toolEvent(ctx, call.id, name, outcome.failed ? 'error' : 'result', clip(outcome.result, 200))
-          if (encodesToolHistoryAsText(family)) {
-            resultTexts.push(`[tool_result ${name}] ${outcome.result}`)
-          } else {
-            messages.push({ role: 'tool', tool_call_id: call.id, content: outcome.result })
-          }
-        }
-
-        if (encodesToolHistoryAsText(family)) {
-          messages.push({
-            role: 'user',
-            content:
-              `${resultTexts.join('\n\n')}\n\n` +
-              'Use these tool results to continue answering the original question. ' +
-              'Cite sources with their [n] markers where applicable. Do not repeat a tool call you already made.'
-          })
-        }
-        // Give up only after the model saw the corrective result and still failed.
-        if (parseErrorThisIteration && parseErrorLastIteration) {
-          throw new Error('model kept producing malformed tool calls')
-        }
-        parseErrorLastIteration = parseErrorThisIteration
-      }
+      const finished = await this.runModelLoop({
+        ctx,
+        stream,
+        messages,
+        toolDefs,
+        knownToolNames,
+        toolCtx,
+        sampling
+      })
+      tokensIn = finished.tokensIn
+      tokensOut = finished.tokensOut
 
       if (sources.all().length > 0) {
         stream.add({ type: 'sources', sources: sources.all() })
@@ -623,6 +474,206 @@ export class ChatOrchestrator {
         this.log.warn(`title generation failed: ${err instanceof Error ? err.message : err}`)
       })
     }
+  }
+
+  /**
+   * The model-owned ReAct loop: stream a round, execute its tool calls,
+   * repeat until the model answers in text or the budget forces a final
+   * tools-disabled round. Extracted from run() verbatim — behavior-neutral.
+   */
+  private async runModelLoop(args: {
+    ctx: RunContext
+    stream: PartStream
+    messages: ChatCompletionMessage[]
+    toolDefs: ChatToolDef[]
+    knownToolNames: Set<string>
+    toolCtx: ToolExecutionContext
+    sampling: ModelSampling | null
+  }): Promise<{ tokensIn: number | null; tokensOut: number | null }> {
+    const { ctx, stream, messages, toolDefs, knownToolNames, toolCtx, sampling } = args
+    const { modelId, family, controller } = ctx
+    let tokensIn: number | null = null
+    let tokensOut: number | null = null
+
+    let parseErrorLastIteration = false
+    let toolBudgetExhausted = false
+    let nudgedEmptyTurn = false
+    // <= cap: one extra tools-disabled round so a cap exit still produces an answer.
+    for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
+      const splitter = createContentSplitter(family)
+      let visibleText = ''
+      let toolCalls: WireToolCall[] = []
+      const consume = (segments: ReturnType<typeof splitter.push>): void => {
+        for (const seg of segments) {
+          stream.append(seg.channel, seg.text)
+          if (seg.channel === 'text') visibleText += seg.text
+        }
+      }
+
+      for await (const event of this.deps.engine.streamChat({
+        model: modelId,
+        messages,
+        tools: !toolBudgetExhausted && toolDefs.length > 0 ? toolDefs : undefined,
+        maxTokens: maxTokensFor(modelId),
+        temperature: sampling?.temperature ?? undefined,
+        topP: sampling?.topP ?? undefined,
+        topK: sampling?.topK ?? undefined,
+        signal: controller.signal
+      })) {
+        if (event.type === 'content') consume(splitter.push(event.text))
+        else if (event.type === 'reasoning') stream.append('thought', event.text)
+        else {
+          toolCalls = event.toolCalls
+          // Last round only, NOT summed: the final prompt already re-encodes
+          // every earlier round's output, so tokensIn + tokensOut is the true
+          // end-of-generation context size (the donut's numerator).
+          tokensIn = event.tokensIn ?? tokensIn
+          tokensOut = event.tokensOut ?? tokensOut
+        }
+      }
+      consume(splitter.flush())
+
+      // Imitated textual tool calls: the text-encoded history teaches gemma
+      // the literal '[tool_call] name(args)' shape and it sometimes emits
+      // that as content instead of a native call — execute those instead of
+      // ending the turn with dead prose. cleanedText keeps the history from
+      // recording the call twice (the round's callText re-encodes it).
+      if (toolCalls.length === 0 && !toolBudgetExhausted && encodesToolHistoryAsText(family)) {
+        const salvage = salvageTextualToolCalls(visibleText, knownToolNames)
+        if (salvage.calls.length > 0) {
+          toolCalls = salvage.calls
+          visibleText = salvage.cleanedText
+        }
+      }
+
+      // Reasoning-only turn: gemma sometimes plans a tool call in its
+      // thinking ("The best tool for this is web_search…") and then stops
+      // without emitting the call or any visible text. One corrective round;
+      // a second empty turn ends the generation as before. The nudge is
+      // appended to the trailing user message when there is one — gemma's
+      // template rejects non-alternating roles.
+      // iteration guard: never trade the budget-exhausted round for a nudge —
+      // the loop's "tools disabled on the final round" invariant must hold.
+      if (
+        toolCalls.length === 0 &&
+        !visibleText.trim() &&
+        !toolBudgetExhausted &&
+        !nudgedEmptyTurn &&
+        iteration < MAX_TOOL_ITERATIONS - 1
+      ) {
+        nudgedEmptyTurn = true
+        // The nudged round runs no tools, so it cannot "fail again" — a
+        // stale parse-error flag from the round before it must not pair
+        // with a later error as 'consecutive' (adversarial-review finding).
+        parseErrorLastIteration = false
+        const nudge =
+          '(Your previous turn produced no reply — only internal thinking. ' +
+          'Continue now: call the tool you decided on, or answer the user directly. ' +
+          'Do not mention this reminder.)'
+        appendToTrailingUserMessage(messages, nudge)
+        continue
+      }
+
+      if (toolCalls.length === 0 || toolBudgetExhausted) break
+
+      if (iteration === MAX_TOOL_ITERATIONS - 1) {
+        // Budget spent: drop this round's calls and force one final text answer.
+        if (visibleText.trim()) {
+          messages.push({ role: 'assistant', content: visibleText.trim() })
+        }
+        messages.push({
+          role: 'user',
+          content:
+            'Tool budget exhausted — do not call any more tools. ' +
+            'Answer the original question now from the tool results you already have.'
+        })
+        toolBudgetExhausted = true
+        continue
+      }
+
+      // Record the assistant turn the way this family can actually read back.
+      if (encodesToolHistoryAsText(family)) {
+        const callText = toolCalls
+          .map((c) => `[tool_call] ${c.function.name}(${c.function.arguments})`)
+          .join('\n')
+        messages.push({
+          role: 'assistant',
+          content: [visibleText.trim(), callText].filter(Boolean).join('\n\n')
+        })
+      } else {
+        messages.push({ role: 'assistant', content: visibleText || null, tool_calls: toolCalls })
+      }
+
+      const resultTexts: string[] = []
+      let parseErrorThisIteration = false
+      for (const call of toolCalls) {
+        if (controller.signal.aborted) throw new Error('aborted')
+        const name = call.function.name
+        stream.add({ type: 'tool_call', id: call.id, name, args: call.function.arguments })
+        this.toolEvent(ctx, call.id, name, 'start', clip(call.function.arguments, 200))
+
+        let args: Record<string, unknown> | null = null
+        let parseError: string | null = null
+        try {
+          args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>
+        } catch (err) {
+          parseError = err instanceof Error ? err.message : String(err)
+          parseErrorThisIteration = true
+        }
+
+        let outcome: { result: string; sourceIds?: number[]; failed: boolean }
+        if (args === null) {
+          outcome = {
+            result: `Error: tool arguments are not valid JSON (${parseError}). Retry the call with corrected JSON.`,
+            failed: true
+          }
+        } else {
+          try {
+            const execution = await executeTool(name, args, toolCtx)
+            outcome = { ...execution, result: clip(execution.result, TOOL_RESULT_LIMIT), failed: false }
+          } catch (err) {
+            // A Stop mid-fetch surfaces as an AbortError — finalize, don't persist it.
+            if (controller.signal.aborted) throw new Error('aborted')
+            // Malformed args are a model fault like unparseable call JSON —
+            // they share the two-strike rule (give up only after the model
+            // saw the corrective result and still failed).
+            if (err instanceof InvalidToolArgsError) parseErrorThisIteration = true
+            outcome = { result: `Error: ${err instanceof Error ? err.message : String(err)}`, failed: true }
+          }
+        }
+
+        stream.add({
+          type: 'tool_result',
+          toolCallId: call.id,
+          name,
+          result: outcome.result,
+          sourceIds: outcome.sourceIds
+        })
+        this.toolEvent(ctx, call.id, name, outcome.failed ? 'error' : 'result', clip(outcome.result, 200))
+        if (encodesToolHistoryAsText(family)) {
+          resultTexts.push(`[tool_result ${name}] ${outcome.result}`)
+        } else {
+          messages.push({ role: 'tool', tool_call_id: call.id, content: outcome.result })
+        }
+      }
+
+      if (encodesToolHistoryAsText(family)) {
+        messages.push({
+          role: 'user',
+          content:
+            `${resultTexts.join('\n\n')}\n\n` +
+            'Use these tool results to continue answering the original question. ' +
+            'Cite sources with their [n] markers where applicable. Do not repeat a tool call you already made.'
+        })
+      }
+      // Give up only after the model saw the corrective result and still failed.
+      if (parseErrorThisIteration && parseErrorLastIteration) {
+        throw new Error('model kept producing malformed tool calls')
+      }
+      parseErrorLastIteration = parseErrorThisIteration
+    }
+
+    return { tokensIn, tokensOut }
   }
 
   private toolEvent(
