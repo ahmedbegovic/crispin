@@ -1,7 +1,7 @@
 {
   "name": "orion",
   "productName": "Orion",
-  "version": "0.1.0",
+  "version": "0.20.0",
   "description": "Personal local-LLM desktop app for macOS (MLX)",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
     "rebuild": "electron-builder install-app-deps",
     "postinstall": "electron-builder install-app-deps",
     "dist": "electron-vite build && electron-builder",
-    "predist": "uv lock --check --project sidecars/tools && uv lock --check --project sidecars/engine && mkdir -p build build/mcp && cp \"$(which uv)\" build/uv && chmod +x build/uv && npx esbuild resources/orion-web-mcp.mjs --bundle --platform=node --format=esm --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" --outfile=build/mcp/orion-web-mcp.mjs"
+    "predist": "uv lock --check --project sidecars/tools && uv lock --check --project sidecars/engine && mkdir -p build build/mcp && rm -f build/uv && cp \"$(which uv)\" build/uv && chmod +x build/uv && npx esbuild resources/orion-web-mcp.mjs --bundle --platform=node --format=esm --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" --outfile=build/mcp/orion-web-mcp.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
