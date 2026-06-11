@@ -91,10 +91,18 @@ export interface HFSearchResult {
   warning: string | null
 }
 
+export type CatalogFamily = 'gemma' | 'qwen' | 'experimental'
+export type ModelFit = 'perfect' | 'good' | 'risky' | 'unable'
+
 export interface TierCandidateInfo {
   repoId: string
   installed: boolean
   engineState: EngineModelState | null
+  /** Grid column: curated brand or Experimental (HF-downloaded). */
+  family: CatalogFamily
+  /** Estimated load footprint, GB. */
+  estGB: number
+  fit: ModelFit
 }
 
 export interface TierResolution {
@@ -123,6 +131,8 @@ export interface ModelsOverview {
   downloads: DownloadInfo[]
   tiers: TierResolution[]
   defaults: FeatureDefaults
+  /** Per-tier explicit model picks (Settings-backed); resolution honors them. */
+  tierSelections: Partial<Record<Tier, string>>
   ram: RamReport
 }
 

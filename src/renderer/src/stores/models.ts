@@ -17,6 +17,7 @@ interface ModelsStore {
   unload: (repoId: string) => Promise<{ ok: boolean; reason?: string }>
   unloadAll: () => Promise<void>
   setDefault: (feature: Feature, tier: Tier) => Promise<void>
+  setTierSelection: (tier: Tier, repoId: string | null) => Promise<void>
 }
 
 function upsertDownload(downloads: DownloadInfo[], download: DownloadInfo): DownloadInfo[] {
@@ -108,6 +109,12 @@ export const useModelsStore = create<ModelsStore>((set, get) => ({
 
   unloadAll: async () => {
     await call('models.unloadAll')
+  },
+
+  setTierSelection: async (tier, repoId) => {
+    await call('models.setTierSelection', { tier, repoId })
+    // Selection changes the tier's active model — refetch the resolved view.
+    await get().refresh()
   },
 
   setDefault: async (feature, tier) => {

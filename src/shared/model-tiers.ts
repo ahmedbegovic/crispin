@@ -34,13 +34,14 @@ export interface TierSpec {
  */
 export const TIERS: Record<Tier, TierSpec> = {
   low: {
-    candidates: ['mlx-community/gemma-4-E2B-it-qat-4bit'],
+    // gemma stays first: UTILITY_MODEL is candidates[0].
+    candidates: ['mlx-community/gemma-4-E2B-it-qat-4bit', 'mlx-community/Qwen3.5-2B-4bit'],
     caps: ['text', 'vision', 'audio'],
     approxGB: 3,
     defaultCtx: 8192
   },
   medium: {
-    candidates: ['mlx-community/gemma-4-E4B-it-qat-4bit'],
+    candidates: ['mlx-community/gemma-4-E4B-it-qat-4bit', 'mlx-community/Qwen3.5-4B-4bit'],
     caps: ['text', 'vision', 'audio'],
     approxGB: 5,
     defaultCtx: 16384
@@ -62,9 +63,10 @@ export const TIERS: Record<Tier, TierSpec> = {
   },
   ultra: {
     // KV cache stays at oMLX defaults (TurboQuant KV quant not enabled yet),
-    // so the 32k output cap and noCoload are what keep this one inside the
-    // budget.
-    candidates: ['mlx-community/Qwen3.6-27B-4bit'],
+    // so the 32k output cap and noCoload are what keep these inside the
+    // budget. The 31B (~18.4 GB weights) only fits machines above 24 GB —
+    // the fit badge tells that story honestly.
+    candidates: ['mlx-community/Qwen3.6-27B-4bit', 'mlx-community/gemma-4-31b-it-4bit'],
     caps: ['text', 'vision', 'video'],
     approxGB: 16.5,
     defaultCtx: 32768,
@@ -73,12 +75,24 @@ export const TIERS: Record<Tier, TierSpec> = {
   }
 }
 
+/** Single source for tier display names — the "Extra High" rename lands here. */
+export const TIER_LABELS: Record<Tier, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  extraHigh: 'Extra High',
+  ultra: 'Ultra'
+}
+
 /** Curated short names; repos outside the tier table get a prettified id. */
 const MODEL_DISPLAY_NAMES: Record<string, string> = {
   'mlx-community/gemma-4-E2B-it-qat-4bit': 'Gemma 4 E2B',
   'mlx-community/gemma-4-E4B-it-qat-4bit': 'Gemma 4 E4B',
   'mlx-community/gemma-4-12B-it-qat-4bit': 'Gemma 4 12B',
   'mlx-community/gemma-4-26B-A4B-it-qat-4bit': 'Gemma 4 26B',
+  'mlx-community/gemma-4-31b-it-4bit': 'Gemma 4 31B',
+  'mlx-community/Qwen3.5-2B-4bit': 'Qwen 3.5 2B',
+  'mlx-community/Qwen3.5-4B-4bit': 'Qwen 3.5 4B',
   'mlx-community/Qwen3.5-9B-MLX-4bit': 'Qwen 3.5 9B',
   'mlx-community/Qwen3.6-27B-4bit': 'Qwen 3.6 27B'
 }
@@ -122,9 +136,17 @@ export interface RepoValidation {
   warning?: string
 }
 
+/**
+ * Non-QAT Gemma 4 repos that are known-good despite the validator's rule:
+ * the PLE quantization bug concerns the E-series; the 31B regular 4-bit quant
+ * is explicitly accepted (curated in the ultra tier).
+ */
+export const NON_QAT_GEMMA_WHITELIST = new Set(['mlx-community/gemma-4-31b-it-4bit'])
+
 /** Reject known-broken quants unless the user explicitly overrides. */
 export function validateModelRepo(repoId: string): RepoValidation {
   const id = repoId.toLowerCase()
+  if (NON_QAT_GEMMA_WHITELIST.has(repoId)) return { ok: true }
   if (id.includes('gemma-4') && !id.includes('qat')) {
     return {
       ok: false,
@@ -133,4 +155,61 @@ export function validateModelRepo(repoId: string): RepoValidation {
     }
   }
   return { ok: true }
+}
+
+// --- classification / fit (P2-5) --------------------------------------------
+
+export type CatalogFamily = 'gemma' | 'qwen' | 'experimental'
+export type ModelFit = 'perfect' | 'good' | 'risky' | 'unable'
+
+const CURATED_REPOS = new Set(TIER_ORDER.flatMap((tier) => TIERS[tier].candidates))
+
+export function isCuratedRepo(repoId: string): boolean {
+  return CURATED_REPOS.has(repoId)
+}
+
+/** Models grid column: curated repos go under their brand, everything else is Experimental. */
+export function familyOf(repoId: string): CatalogFamily {
+  if (!CURATED_REPOS.has(repoId)) return 'experimental'
+  return repoId.toLowerCase().includes('gemma') ? 'gemma' : 'qwen'
+}
+
+/**
+ * First "<n>B" token in the repo basename ("26B-A4B"→26, "E2B"→2); the
+ * lookahead rejects "4bit". Null when nothing parses.
+ */
+function paramsBFromName(repoId: string): number | null {
+  const base = repoId.split('/').pop() ?? repoId
+  const match = /(\d+(?:\.\d+)?)[bB](?![A-Za-z])/.exec(base)
+  return match ? Number(match[1]) : null
+}
+
+/** Which tier an arbitrary (HF-downloaded) model belongs to, by parameter count. */
+export function classifyByParams(repoId: string, sizeBytes?: number | null): Tier {
+  // ≈0.55 GB per B parameters at 4-bit when the name doesn't say.
+  const params = paramsBFromName(repoId) ?? (sizeBytes ? sizeBytes / 1e9 / 0.55 : null)
+  if (params === null) return 'high' // unparseable and sizeless — middle of the road
+  if (params <= 4) return 'low'
+  if (params <= 8) return 'medium'
+  if (params <= 12) return 'high'
+  if (params <= 27) return 'extraHigh'
+  return 'ultra'
+}
+
+/** Estimated load footprint in GB; null when not installed and the name doesn't parse. */
+export function estimateGB(repoId: string, sizeBytes?: number | null): number | null {
+  if (sizeBytes) return (sizeBytes / 1e9) * 1.1 // weights + ~10% runtime overhead
+  const params = paramsBFromName(repoId)
+  return params === null ? null : params * 0.55 + 0.6
+}
+
+/** Traffic-light fit against the engine budget and live available memory. */
+export function fitFor(
+  estGB: number,
+  ram: { budgetGB: number; availableGB: number | null }
+): ModelFit {
+  if (estGB > ram.budgetGB) return 'unable'
+  if (ram.availableGB !== null && estGB > ram.availableGB - 2) return 'risky'
+  if (estGB > ram.budgetGB * 0.7) return 'good'
+  return 'perfect'
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Loader2, Search } from 'lucide-react'
+import { estimateGB, fitFor, type ModelFit } from '@shared/model-tiers'
 import type { HFSearchResult } from '@shared/types'
 import { useModelsStore } from '@/stores/models'
 import { toastError } from '@/stores/toasts'
@@ -8,12 +9,20 @@ import ConfirmDialog from '@/components/ConfirmDialog'
 
 const compact = new Intl.NumberFormat('en', { notation: 'compact' })
 
+const FIT_STYLES: Record<ModelFit, { label: string; className: string }> = {
+  perfect: { label: 'Perfect fit', className: 'bg-emerald-500/15 text-emerald-400' },
+  good: { label: 'Good fit', className: 'bg-yellow-500/15 text-yellow-400' },
+  risky: { label: 'Risky fit', className: 'bg-orange-500/15 text-orange-400' },
+  unable: { label: "Won't fit", className: 'bg-red-500/15 text-red-400' }
+}
+
 /** Search MLX repos on Hugging Face; the tools sidecar does the actual fetch. */
 export default function HFSearch() {
   const search = useModelsStore((s) => s.search)
   const download = useModelsStore((s) => s.download)
   const results = useModelsStore((s) => s.searchResults)
   const searching = useModelsStore((s) => s.searching)
+  const ram = useModelsStore((s) => s.overview?.ram)
   const [query, setQuery] = useState('')
   // Result whose validator warning the user must acknowledge before downloading.
   const [forceTarget, setForceTarget] = useState<HFSearchResult | null>(null)
@@ -69,12 +78,24 @@ export default function HFSearch() {
         <p className="mt-2 text-[11px] text-zinc-600">No results.</p>
       ) : (
         <div className="mt-2 divide-y divide-zinc-800/70 rounded-lg border border-zinc-800 bg-zinc-900/30">
-          {results.map((result) => (
+          {results.map((result) => {
+            // Params-only estimate (nothing on disk yet); omit when unparseable.
+            const estGB = estimateGB(result.repoId)
+            const fit = estGB !== null && ram ? FIT_STYLES[fitFor(estGB, ram)] : null
+            return (
             <div key={result.repoId} className="px-3 py-2">
               <div className="flex items-center gap-3">
                 <span className="flex-1 truncate text-[12px] text-zinc-200" title={result.repoId}>
                   {result.repoId}
                 </span>
+                {fit && (
+                  <span
+                    title={`~${estGB?.toFixed(1)} GB estimated`}
+                    className={`rounded px-1 py-px text-[9.5px] font-medium ${fit.className}`}
+                  >
+                    {fit.label}
+                  </span>
+                )}
                 <span className="text-[11px] tabular-nums text-zinc-500">
                   {compact.format(result.downloads)} downloads · {compact.format(result.likes)}{' '}
                   likes
@@ -97,7 +118,8 @@ export default function HFSearch() {
                 </div>
               )}
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
 

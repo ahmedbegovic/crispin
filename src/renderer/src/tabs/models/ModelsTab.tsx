@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useModelsStore } from '@/stores/models'
 import RamMeter from './RamMeter'
-import TierTable from './TierTable'
+import TierGrid from './TierGrid'
 import DefaultsMatrix from './DefaultsMatrix'
 import DownloadsPanel from './DownloadsPanel'
 import LocalModels from './LocalModels'
@@ -27,7 +27,7 @@ export default function ModelsTab() {
       <div className="mx-auto flex max-w-5xl flex-col gap-8 px-8 pb-12 pt-6">
         {overview ? (
           <>
-            <TierTable overview={overview} />
+            <TierGrid overview={overview} />
             <DefaultsMatrix overview={overview} />
             <DownloadsPanel overview={overview} />
             <LocalModels overview={overview} />

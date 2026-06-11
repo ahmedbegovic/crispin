@@ -25,6 +25,8 @@ Apple Silicon only; dev machine has 24GB unified memory — RAM headroom is the 
   Electron). Migrations in `src/main/services/db/migrations/*.sql`, applied by user_version.
 - Model policy lives in `src/shared/model-tiers.ts`. Gemma 4 quants MUST be `qat` variants —
   non-QAT MLX quants produce garbage output (PLE quantization bug). Never bypass the validator.
+  Sole exception: repos in `NON_QAT_GEMMA_WHITELIST` (the 31B regular 4-bit quant — the PLE bug
+  concerns the E-series; the 31B is explicitly accepted).
 
 ## Conventions
 

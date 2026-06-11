@@ -18,6 +18,11 @@ import {
   FEATURE_DEFAULTS,
   TIERS,
   TIER_ORDER,
+  classifyByParams,
+  estimateGB,
+  familyOf,
+  fitFor,
+  isCuratedRepo,
   validateModelRepo,
   type TierSpec
 } from '@shared/model-tiers'
@@ -608,8 +613,29 @@ export class ModelService {
       downloads: this.recentDownloads(20),
       tiers: TIER_ORDER.map((tier) => this.resolveTier(tier)),
       defaults: this.featureDefaults(),
+      tierSelections: this.deps.appSettings.tierSelections(),
       ram: this.deps.ramGuard.report(this.loadedGB())
     }
+  }
+
+  /**
+   * Persist a per-tier model pick. Resolution-only: no registry churn, no
+   * engine restart — resolveTier() simply prefers the pick from now on.
+   */
+  setTierSelection(tier: Tier, repoId: string | null): void {
+    const current = this.deps.appSettings.get()
+    const next = { ...current.tierSelections }
+    if (repoId === null) {
+      delete next[tier]
+    } else {
+      const model = this.installed.find((m) => m.repoId === repoId)
+      if (!model) throw new Error(`${repoId} is not downloaded`)
+      if (!TIERS[tier].candidates.includes(repoId) && classifyByParams(repoId, model.sizeBytes) !== tier) {
+        throw new Error(`${repoId} does not belong to the ${tier} tier`)
+      }
+      next[tier] = repoId
+    }
+    this.deps.appSettings.update({ ...current, tierSelections: next })
   }
 
   setDefault(feature: Feature, tier: Tier): void {
@@ -625,12 +651,37 @@ export class ModelService {
   }
 
   private resolveTier(tier: Tier): TierResolution {
-    const candidates = TIERS[tier].candidates.map((repoId) => ({
-      repoId,
-      installed: this.installed.some((m) => m.repoId === repoId),
-      engineState: this.engineModels.find((m) => m.id === repoId)?.state ?? null
-    }))
-    return { tier, candidates, active: candidates.find((c) => c.installed)?.repoId ?? null }
+    const ram = this.deps.ramGuard.report(0)
+    const curated = TIERS[tier].candidates
+    // HF-downloaded repos outside every curated list join their classified
+    // tier — this is what makes arbitrary downloads loadable and selectable.
+    const experimental = this.installed
+      .filter((m) => !isCuratedRepo(m.repoId))
+      .filter((m) => classifyByParams(m.repoId, m.sizeBytes) === tier)
+      .map((m) => m.repoId)
+    const candidates = [...curated, ...experimental].map((repoId) => {
+      const model = this.installed.find((m) => m.repoId === repoId)
+      const estGB = estimateGB(repoId, model?.sizeBytes) ?? TIERS[tier].approxGB
+      return {
+        repoId,
+        installed: model !== undefined,
+        engineState: this.engineModels.find((m) => m.id === repoId)?.state ?? null,
+        family: familyOf(repoId),
+        estGB: round2(estGB),
+        fit: fitFor(estGB, ram)
+      }
+    })
+    // Explicit pick first (when still installed); else first installed curated.
+    const selection = this.deps.appSettings.tierSelections()[tier]
+    const picked =
+      selection && candidates.some((c) => c.repoId === selection && c.installed)
+        ? selection
+        : null
+    const active =
+      picked ??
+      candidates.find((c) => c.installed && curated.includes(c.repoId))?.repoId ??
+      null
+    return { tier, candidates, active }
   }
 
   private recentDownloads(limit: number): DownloadInfo[] {

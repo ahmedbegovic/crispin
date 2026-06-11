@@ -72,4 +72,9 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
     modelService.setDefault(feature, tier)
     return { ok: true }
   })
+
+  handle('models.setTierSelection', ({ tier, repoId }) => {
+    modelService.setTierSelection(tier, repoId)
+    return { ok: true }
+  })
 }

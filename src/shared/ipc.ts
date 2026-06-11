@@ -82,15 +82,23 @@ export const hfSearchResultSchema = z.object({
   warning: z.string().nullable()
 })
 
+export const catalogFamilySchema = z.enum(['gemma', 'qwen', 'experimental'])
+export const modelFitSchema = z.enum(['perfect', 'good', 'risky', 'unable'])
+
+export const tierCandidateSchema = z.object({
+  repoId: z.string(),
+  installed: z.boolean(),
+  engineState: engineModelStateSchema.nullable(),
+  /** Grid column: curated brand or Experimental (HF-downloaded). */
+  family: catalogFamilySchema,
+  /** Estimated load footprint, GB. */
+  estGB: z.number(),
+  fit: modelFitSchema
+})
+
 export const tierResolutionSchema = z.object({
   tier: tierSchema,
-  candidates: z.array(
-    z.object({
-      repoId: z.string(),
-      installed: z.boolean(),
-      engineState: engineModelStateSchema.nullable()
-    })
-  ),
+  candidates: z.array(tierCandidateSchema),
   active: z.string().nullable()
 })
 
@@ -117,6 +125,8 @@ export const modelsOverviewSchema = z.object({
   downloads: z.array(downloadInfoSchema),
   tiers: z.array(tierResolutionSchema),
   defaults: featureDefaultsSchema,
+  /** Per-tier explicit model picks (Settings-backed); resolution honors them. */
+  tierSelections: z.partialRecord(tierSchema, z.string()),
   ram: ramReportSchema
 })
 
@@ -426,6 +436,11 @@ export const contract = {
   },
   'models.setDefault': {
     input: z.object({ feature: featureSchema, tier: tierSchema }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'models.setTierSelection': {
+    /** null clears the pick (back to the first installed curated candidate). */
+    input: z.object({ tier: tierSchema, repoId: z.string().nullable() }),
     output: z.object({ ok: z.boolean() })
   },
 
