@@ -440,7 +440,6 @@ export class ChatOrchestrator {
         ...builtinToolDefs({ webEnabled, hasCollection, skills }),
         ...(await this.deps.mcp.toolDefsFor('chat'))
       ]
-      const knownToolNames = new Set(toolDefs.map((d) => d.function.name))
       if (controller.signal.aborted) throw new Error('aborted')
       const toolCtx: ToolExecutionContext = {
         tools: this.deps.tools,
@@ -481,7 +480,6 @@ export class ChatOrchestrator {
         stream,
         messages,
         toolDefs: loopToolDefs,
-        knownToolNames,
         toolCtx,
         sampling
       })
@@ -616,12 +614,15 @@ export class ChatOrchestrator {
     stream: PartStream
     messages: ChatCompletionMessage[]
     toolDefs: ChatToolDef[]
-    knownToolNames: Set<string>
     toolCtx: ToolExecutionContext
     sampling: ModelSampling | null
   }): Promise<{ tokensIn: number | null; tokensOut: number | null }> {
-    const { ctx, stream, messages, toolDefs, knownToolNames, toolCtx, sampling } = args
+    const { ctx, stream, messages, toolDefs, toolCtx, sampling } = args
     const { modelId, family, controller } = ctx
+    // Derived from THIS loop's defs: in the post-pipeline synthesis round
+    // (toolDefs: []) the salvage net must not convert gemma's imitated
+    // '[tool_call]' lines into real executions — empty set, no matches.
+    const knownToolNames = new Set(toolDefs.map((d) => d.function.name))
     let tokensIn: number | null = null
     let tokensOut: number | null = null
 
