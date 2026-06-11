@@ -1,5 +1,6 @@
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import type { AppSettings } from '@shared/ipc'
 import type { InstalledModel } from '@shared/types'
 import { TIERS, TIER_ORDER, modelDisplayName, type TierSpec } from '@shared/model-tiers'
 import { engineModelId } from './engine-client'
@@ -10,6 +11,29 @@ export interface OpencodeConfigOptions {
   toolsPort: number
   /** Installed chat models (modelService.overview().installed). */
   models: InstalledModel[]
+  /** Rendered Settings profile + instructions markdown; '' = nothing to inject. */
+  instructionsText: string
+}
+
+/** Settings → Profile/Instructions rendered for opencode's instructions array. */
+export function renderInstructionsText(settings: AppSettings): string {
+  const parts: string[] = []
+  const userName = settings.profile.userName.trim()
+  if (userName) parts.push(`The user's name is ${userName}.`)
+  const assistantName = settings.profile.assistantName.trim()
+  if (assistantName && assistantName !== 'Orion') {
+    parts.push(`The user calls this assistant ${assistantName}.`)
+  }
+  const global = settings.instructions.global.trim()
+  if (global) parts.push(global)
+  for (const [module, label] of [
+    ['agent', 'Agent'],
+    ['code', 'Code']
+  ] as const) {
+    const text = settings.instructions.perModule[module]?.trim()
+    if (text) parts.push(`When working in the ${label} module:\n${text}`)
+  }
+  return parts.join('\n\n')
 }
 
 const tierSpecFor = (repoId: string): TierSpec | undefined => {
@@ -30,7 +54,10 @@ export function opencodeConfigKey(opts: OpencodeConfigOptions): string {
   return JSON.stringify([
     opts.enginePort,
     opts.toolsPort,
-    opts.models.map((m) => [m.repoId, m.contextLength]).sort()
+    opts.models.map((m) => [m.repoId, m.contextLength]).sort(),
+    // Instructions ride the config (instructions.md) — edited Settings must
+    // respawn stale servers exactly like a moved port.
+    opts.instructionsText
   ])
 }
 
@@ -88,11 +115,20 @@ export function writeOpencodeConfig(opts: OpencodeConfigOptions): string {
   }
   const path = opencodeConfigPath()
   mkdirSync(dirname(path), { recursive: true })
+  if (opts.instructionsText.trim()) {
+    const instructionsPath = join(dirname(path), 'instructions.md')
+    atomicWrite(instructionsPath, opts.instructionsText.trim() + '\n')
+    config.instructions.push(instructionsPath)
+  }
   // Write-temp-then-rename (atomic on APFS): both pool slots read this one
   // path at boot, and a reader must never observe a truncated file — losing
   // the permission block would drop the edit/bash ask gate for that server.
-  const tmp = `${path}.${crypto.randomUUID()}.tmp`
-  writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n')
-  renameSync(tmp, path)
+  atomicWrite(path, JSON.stringify(config, null, 2) + '\n')
   return path
+}
+
+function atomicWrite(path: string, content: string): void {
+  const tmp = `${path}.${crypto.randomUUID()}.tmp`
+  writeFileSync(tmp, content)
+  renameSync(tmp, path)
 }

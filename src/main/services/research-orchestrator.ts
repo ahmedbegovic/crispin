@@ -21,6 +21,7 @@ import { engineModelId, type ChatCompletionMessage, type EngineClient } from './
 import type { ToolsClient, WebSearchEntry } from './tools-client'
 import type { ModelService } from './model-service'
 import { EMBEDDING_MODEL, type LibraryService } from './library-service'
+import type { AppSettingsService } from './app-settings'
 import { familyOf, stripThoughts } from './chat/family'
 import { renderReportHtml, type ResearchReport } from './report-template'
 
@@ -220,6 +221,7 @@ export interface ResearchOrchestratorDeps {
   tools: ToolsClient
   modelService: ModelService
   library: LibraryService
+  appSettings: AppSettingsService
   broadcast: (event: OrionEvent) => void
 }
 
@@ -908,9 +910,20 @@ export class ResearchOrchestrator {
 
   // --- prompts ------------------------------------------------------------------------------
 
+  /** Shared JSON system prompt + the user's Settings → Instructions research line. */
+  private systemJson(): string {
+    const extra = [
+      this.deps.appSettings.globalInstruction(),
+      this.deps.appSettings.moduleInstruction('research')
+    ]
+      .filter(Boolean)
+      .join('\n')
+    return extra ? `${SYSTEM_JSON()}\n${extra}` : SYSTEM_JSON()
+  }
+
   private planMessages(question: string): ChatCompletionMessage[] {
     return [
-      { role: 'system', content: SYSTEM_JSON() },
+      { role: 'system', content: this.systemJson() },
       {
         role: 'user',
         content:
@@ -966,7 +979,7 @@ export class ResearchOrchestrator {
       .map((r) => `- url: ${r.url}\n  ${clip(r.title, 160)} — ${clip(r.snippet, 280)}`)
       .join('\n')
     return [
-      { role: 'system', content: SYSTEM_JSON() },
+      { role: 'system', content: this.systemJson() },
       {
         role: 'user',
         content:
@@ -986,7 +999,7 @@ export class ResearchOrchestrator {
     content: string
   ): ChatCompletionMessage[] {
     return [
-      { role: 'system', content: SYSTEM_JSON() },
+      { role: 'system', content: this.systemJson() },
       {
         role: 'user',
         content:
@@ -1032,7 +1045,7 @@ export class ResearchOrchestrator {
           : '')
     )
     return [
-      { role: 'system', content: SYSTEM_JSON() },
+      { role: 'system', content: this.systemJson() },
       { role: 'user', content: parts.join('\n\n') }
     ]
   }
@@ -1051,7 +1064,7 @@ export class ResearchOrchestrator {
       ? `Findings (compressed per round):\n${roundReports.map((r, i) => `Round ${i + 1}: ${r}`).join('\n')}\n\nNumbered sources:\n${sourceList}`
       : this.workspaceText(question, plan, numbered, roundReports, false)
     return [
-      { role: 'system', content: SYSTEM_JSON() },
+      { role: 'system', content: this.systemJson() },
       {
         role: 'user',
         content:

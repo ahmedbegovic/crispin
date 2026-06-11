@@ -329,6 +329,26 @@ export const newsItemSchema = z.object({
   createdAt: z.number()
 })
 
+// --- app settings (P2) -------------------------------------------------------
+
+export const appSettingsSchema = z.object({
+  profile: z.object({ userName: z.string(), assistantName: z.string() }),
+  instructions: z.object({
+    global: z.string(),
+    perModule: z.partialRecord(featureSchema, z.string())
+  }),
+  /** Optional-module toggles keyed by module id; core modules are always on. */
+  modulesEnabled: z.record(z.string(), z.boolean()),
+  /** Unload all models after this many seconds without app activity; 0 disables. */
+  idleUnloadSeconds: z.number().int().min(0),
+  /** News topic filter applied at fetch time; empty = keep everything. */
+  newsTopics: z.array(z.string()),
+  /** Per-tier model picks (repo ids) honored by resolveTier. */
+  tierSelections: z.partialRecord(tierSchema, z.string())
+})
+
+export type AppSettings = z.infer<typeof appSettingsSchema>
+
 // ---------------------------------------------------------------------------
 // Method contract: renderer -> main request/response over `orion:call`.
 // Every method is zod-validated on both sides of the bridge.
@@ -345,6 +365,17 @@ export const contract = {
   },
   'system.openLogs': {
     input: z.undefined(),
+    output: z.object({ ok: z.boolean() })
+  },
+
+  // --- app settings ----------------------------------------------------------
+  'settings.get': {
+    input: z.undefined(),
+    output: appSettingsSchema
+  },
+  'settings.update': {
+    /** Full-object PUT — single user, no merge races. */
+    input: z.object({ settings: appSettingsSchema }),
     output: z.object({ ok: z.boolean() })
   },
 
@@ -782,6 +813,11 @@ export const orionEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('system.ramReport'),
     ram: ramReportSchema
+  }),
+  z.object({
+    /** App settings were updated (Settings page or main-side mutators). */
+    type: z.literal('settings.changed'),
+    settings: appSettingsSchema
   }),
   z.object({
     type: z.literal('models.downloadProgress'),

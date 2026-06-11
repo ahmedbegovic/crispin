@@ -26,6 +26,8 @@ export interface OpencodePoolDeps {
   getEnginePort: () => number
   getToolsPort: () => number
   installedModels: () => InstalledModel[]
+  /** Rendered Settings instructions — part of the config fingerprint. */
+  getInstructionsText: () => string
 }
 
 interface PoolServer {
@@ -170,7 +172,8 @@ export class OpencodePool {
         const configOpts = {
           enginePort: this.deps.getEnginePort(),
           toolsPort: this.deps.getToolsPort(),
-          models: this.deps.installedModels()
+          models: this.deps.installedModels(),
+          instructionsText: this.deps.getInstructionsText()
         }
         server.configKey = opencodeConfigKey(configOpts)
         const configPath = writeOpencodeConfig(configOpts)
@@ -220,7 +223,8 @@ export class OpencodePool {
     return opencodeConfigKey({
       enginePort: this.deps.getEnginePort(),
       toolsPort: this.deps.getToolsPort(),
-      models: this.deps.installedModels()
+      models: this.deps.installedModels(),
+      instructionsText: this.deps.getInstructionsText()
     })
   }
 

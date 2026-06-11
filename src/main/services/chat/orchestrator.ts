@@ -18,6 +18,7 @@ import type { ToolsClient } from '../tools-client'
 import type { ModelService } from '../model-service'
 import type { McpManager } from '../mcp-manager'
 import type { SkillsService } from '../skills'
+import type { AppSettingsService } from '../app-settings'
 import { EMBEDDING_MODEL, type LibraryService } from '../library-service'
 import type { ChatRepo } from './repo'
 import { buildSystemPrompt, cleanTitle, titleMessages } from './prompts'
@@ -150,6 +151,7 @@ export interface ChatOrchestratorDeps {
   mcp: McpManager
   skills: SkillsService
   library: LibraryService
+  appSettings: AppSettingsService
   broadcast: (event: OrionEvent) => void
 }
 
@@ -333,11 +335,18 @@ export class ChatOrchestrator {
       const path = this.deps.repo
         .activePath(conversationId)
         .filter((m) => m.id !== assistantMessageId)
+      const appSettings = this.deps.appSettings.get()
       const messages = this.buildHistory(path, family, visionCapable(modelId), {
         customPrompt: conversation.systemPrompt,
         skills,
         webEnabled,
-        ragEnabled: hasCollection
+        ragEnabled: hasCollection,
+        userName: appSettings.profile.userName,
+        assistantName: appSettings.profile.assistantName,
+        instructions: [
+          appSettings.instructions.global,
+          appSettings.instructions.perModule.chat ?? ''
+        ]
       })
 
       const toolDefs = [

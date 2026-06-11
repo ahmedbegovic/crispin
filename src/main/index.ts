@@ -26,11 +26,14 @@ import { ResearchOrchestrator } from './services/research-orchestrator'
 import { NewsScheduler } from './services/news-scheduler'
 import { McpManager } from './services/mcp-manager'
 import { SkillsService } from './services/skills'
+import { AppSettingsService } from './services/app-settings'
+import { renderInstructionsText } from './services/opencode-config'
 import { OpencodePool } from './services/opencode-pool'
 import { AgentService } from './services/agent-service'
 import { WorkspaceFs } from './services/workspace-fs'
 import { TermService } from './services/term-service'
 import { registerModelsFeature } from './features/models'
+import { registerSettingsFeature } from './features/settings'
 import { registerChatFeature } from './features/chat'
 import { registerLibraryFeature } from './features/library'
 import { registerMcpFeature } from './features/mcp'
@@ -226,6 +229,9 @@ app.whenReady().then(async () => {
   registerSidecars()
   registerIpcHandlers()
 
+  const appSettings = new AppSettingsService({ db, broadcast })
+  registerSettingsFeature(appSettings)
+
   modelService = new ModelService({
     db,
     tools: toolsClient,
@@ -260,6 +266,7 @@ app.whenReady().then(async () => {
     mcp: mcpManager,
     skills: skillsService,
     library: libraryService,
+    appSettings,
     broadcast
   })
   registerChatFeature({ repo: chatRepo, orchestrator, modelService })
@@ -273,6 +280,7 @@ app.whenReady().then(async () => {
     tools: toolsClient,
     modelService,
     library: libraryService,
+    appSettings,
     broadcast
   })
   registerResearchFeature(researchOrchestrator)
@@ -282,6 +290,7 @@ app.whenReady().then(async () => {
     tools: toolsClient,
     engine: engineClient,
     modelService,
+    appSettings,
     broadcast
   })
   registerNewsFeature(newsScheduler)
@@ -290,7 +299,8 @@ app.whenReady().then(async () => {
     processManager,
     getEnginePort: () => ports.engine,
     getToolsPort: () => ports.tools,
-    installedModels: () => models.overview().installed
+    installedModels: () => models.overview().installed,
+    getInstructionsText: () => renderInstructionsText(appSettings.get())
   })
   const agentService = new AgentService({ db, pool: opencodePool, modelService, broadcast })
   agentService.init()

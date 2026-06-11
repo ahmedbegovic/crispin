@@ -6,19 +6,28 @@ export interface SystemPromptOptions {
   skills: SkillMeta[]
   webEnabled: boolean
   ragEnabled: boolean
+  /** Settings → Profile; empty strings fall back to defaults. */
+  userName: string
+  assistantName: string
+  /** Settings → Instructions (global + this module's), in priority order. */
+  instructions: string[]
 }
 
-const BASE_PERSONA =
-  'You are Orion, a capable assistant running fully locally on the user’s Mac. ' +
+const basePersona = (assistantName: string): string =>
+  `You are ${assistantName}, a capable assistant running fully locally on the user’s Mac. ` +
   'Be direct and concise; use Markdown when it helps. ' +
   'You only know what is in this conversation and your training data — use the available tools for anything current or document-specific.'
 
 export function buildSystemPrompt(opts: SystemPromptOptions): string {
-  const sections: string[] = [opts.customPrompt?.trim() || BASE_PERSONA]
+  const assistantName = opts.assistantName.trim() || 'Orion'
+  const sections: string[] = [opts.customPrompt?.trim() || basePersona(assistantName)]
 
   sections.push(
     `Today is ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.`
   )
+
+  const userName = opts.userName.trim()
+  if (userName) sections.push(`The user's name is ${userName}.`)
 
   if (opts.skills.length > 0) {
     const list = opts.skills.map((s) => `- ${s.name}: ${s.description}`).join('\n')
@@ -38,6 +47,11 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
         'Numbering restarts every assistant turn: only cite numbers from tool results ' +
         'in your current response, never [n] markers from earlier turns.'
     )
+  }
+
+  for (const instruction of opts.instructions) {
+    const text = instruction.trim()
+    if (text) sections.push(text)
   }
 
   return sections.join('\n\n')

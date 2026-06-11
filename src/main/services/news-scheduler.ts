@@ -6,6 +6,7 @@ import { scopedLogger } from './logger'
 import type { EngineClient } from './engine-client'
 import type { ToolsClient } from './tools-client'
 import type { ModelService } from './model-service'
+import type { AppSettingsService } from './app-settings'
 import { familyOf, stripThoughts } from './chat/family'
 
 const FETCH_INTERVAL_MS = 30 * 60_000
@@ -103,6 +104,7 @@ export interface NewsSchedulerDeps {
   tools: ToolsClient
   engine: EngineClient
   modelService: ModelService
+  appSettings: AppSettingsService
   broadcast: (event: OrionEvent) => void
 }
 
@@ -466,7 +468,15 @@ export class NewsScheduler {
     for await (const event of this.deps.engine.streamChat({
       model: modelId,
       messages: [
-        { role: 'system', content: 'You summarize news articles faithfully and concisely.' },
+        {
+          role: 'system',
+          content: [
+            'You summarize news articles faithfully and concisely.',
+            this.deps.appSettings.moduleInstruction('news')
+          ]
+            .filter(Boolean)
+            .join('\n')
+        },
         {
           role: 'user',
           content: `${SUMMARY_PROMPT}\n\n${heading}${clip(item.extracted_text ?? '', ARTICLE_MAX_CHARS)}`
