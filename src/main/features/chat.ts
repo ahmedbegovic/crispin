@@ -21,7 +21,11 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
     contextLength: number | null
   } => {
     const view = repo.view(conversationId)
-    return { ...view, contextLength: orchestrator.contextForTier(view.conversation.defaultTier) }
+    // Un-pinned conversations follow the chat feature default live.
+    const tier = view.conversation.tierPinned
+      ? view.conversation.defaultTier
+      : modelService.overview().defaults.chat
+    return { ...view, contextLength: orchestrator.contextForTier(tier) }
   }
 
   handle('chat.list', (input) => ({
@@ -31,6 +35,8 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
   handle('chat.create', ({ tier, collectionId, webEnabled }) => ({
     conversation: repo.createConversation({
       tier: tier ?? modelService.overview().defaults.chat,
+      // No explicit tier = keep following featureDefaults.chat as it changes.
+      tierPinned: tier !== undefined,
       collectionId,
       webEnabled
     })

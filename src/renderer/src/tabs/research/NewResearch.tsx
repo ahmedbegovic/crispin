@@ -1,20 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Loader2, Telescope } from 'lucide-react'
-import { FEATURE_DEFAULTS, TIER_ORDER } from '@shared/model-tiers'
+import { FEATURE_DEFAULTS, TIER_LABELS, TIER_ORDER } from '@shared/model-tiers'
 import type { ResearchMode, Tier } from '@shared/types'
 import { useLibraryStore } from '@/stores/library'
 import { useModelsStore } from '@/stores/models'
 import { useResearchStore } from '@/stores/research'
 import { toastError } from '@/stores/toasts'
 import LibraryDialog from '../chat/LibraryDialog'
-
-const TIER_LABELS: Record<Tier, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  extraHigh: 'Extra high',
-  ultra: 'Ultra'
-}
 
 const MODE_EXPLAINERS: Record<ResearchMode, string> = {
   standard: 'Search rounds accumulate raw notes — fast, fits most questions.',

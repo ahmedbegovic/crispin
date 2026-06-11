@@ -14,6 +14,7 @@ interface ConversationRow {
   system_prompt: string | null
   head_message_id: string | null
   default_tier: Tier
+  tier_pinned: number
   collection_id: string | null
   web_enabled: number
   archived: number
@@ -39,6 +40,7 @@ const rowToConversation = (row: ConversationRow): Conversation => ({
   systemPrompt: row.system_prompt,
   headMessageId: row.head_message_id,
   defaultTier: row.default_tier,
+  tierPinned: row.tier_pinned === 1,
   collectionId: row.collection_id,
   webEnabled: row.web_enabled === 1,
   archived: row.archived === 1,
@@ -82,6 +84,8 @@ export class ChatRepo {
 
   createConversation(input: {
     tier: Tier
+    /** False = follow featureDefaults.chat live; picking a tier later pins it. */
+    tierPinned: boolean
     collectionId?: string | null
     webEnabled?: boolean
   }): Conversation {
@@ -89,10 +93,18 @@ export class ChatRepo {
     const id = crypto.randomUUID()
     this.db
       .prepare(
-        `INSERT INTO conversations (id, default_tier, collection_id, web_enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO conversations (id, default_tier, tier_pinned, collection_id, web_enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(id, input.tier, input.collectionId ?? null, input.webEnabled ? 1 : 0, now, now)
+      .run(
+        id,
+        input.tier,
+        input.tierPinned ? 1 : 0,
+        input.collectionId ?? null,
+        input.webEnabled ? 1 : 0,
+        now,
+        now
+      )
     return this.getConversation(id)
   }
 
@@ -109,7 +121,8 @@ export class ChatRepo {
     fields: {
       title?: string
       systemPrompt?: string | null
-      defaultTier?: Tier
+      /** A tier pins the conversation; null un-pins (follow featureDefaults.chat). */
+      defaultTier?: Tier | null
       collectionId?: string | null
       webEnabled?: boolean
       archived?: boolean
@@ -123,7 +136,14 @@ export class ChatRepo {
     }
     if (fields.title !== undefined) set('title', fields.title)
     if (fields.systemPrompt !== undefined) set('system_prompt', fields.systemPrompt)
-    if (fields.defaultTier !== undefined) set('default_tier', fields.defaultTier)
+    if (fields.defaultTier !== undefined) {
+      if (fields.defaultTier === null) {
+        set('tier_pinned', 0)
+      } else {
+        set('default_tier', fields.defaultTier)
+        set('tier_pinned', 1)
+      }
+    }
     if (fields.collectionId !== undefined) set('collection_id', fields.collectionId)
     if (fields.webEnabled !== undefined) set('web_enabled', fields.webEnabled ? 1 : 0)
     if (fields.archived !== undefined) set('archived', fields.archived ? 1 : 0)

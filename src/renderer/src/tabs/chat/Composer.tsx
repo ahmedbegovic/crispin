@@ -10,24 +10,17 @@ import {
   Square,
   X
 } from 'lucide-react'
-import { TIER_ORDER } from '@shared/model-tiers'
+import { FEATURE_DEFAULTS, TIER_LABELS, TIER_ORDER } from '@shared/model-tiers'
 import type { AttachmentInput, Conversation, SkillMeta, Tier } from '@shared/types'
 import { call } from '@/lib/ipc'
 import { useChatStore } from '@/stores/chat'
 import { useLibraryStore } from '@/stores/library'
+import { useModelsStore } from '@/stores/models'
 import { pushToast, toastError } from '@/stores/toasts'
 import { basename, kindForPath, pathForFile } from './attachments'
 import McpDialog from './McpDialog'
 import LibraryDialog from './LibraryDialog'
 import ContextDonut from './ContextDonut'
-
-const TIER_LABELS: Record<Tier, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  extraHigh: 'Extra high',
-  ultra: 'Ultra'
-}
 
 const FILE_ACCEPT =
   'image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.pptx,.xlsx,.md,.txt,.html,.csv,.epub'
@@ -50,6 +43,8 @@ export default function Composer({ conversation }: Props) {
   const streaming = useChatStore((s) => conversation.id in s.streaming)
   const usage = useChatStore((s) => s.usage[conversation.id])
   const collections = useLibraryStore((s) => s.collections)
+  const chatDefaultTier =
+    useModelsStore((s) => s.overview?.defaults.chat) ?? FEATURE_DEFAULTS.chat
 
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<AttachmentInput[]>([])
@@ -178,6 +173,7 @@ export default function Composer({ conversation }: Props) {
                 e.target.value = ''
               }}
             />
+            {/* Order per the PDF: attach, web, MCP adjacent — then tier, then RAG. */}
             <button
               onClick={() => fileRef.current?.click()}
               title="Attach images or documents"
@@ -185,23 +181,6 @@ export default function Composer({ conversation }: Props) {
             >
               <Paperclip size={14} />
             </button>
-
-            <select
-              value={conversation.defaultTier}
-              onChange={(e) =>
-                void update(conversation.id, { defaultTier: e.target.value as Tier }).catch(
-                  toastError
-                )
-              }
-              title="Model tier"
-              className={selectClass}
-            >
-              {TIER_ORDER.map((tier) => (
-                <option key={tier} value={tier}>
-                  {TIER_LABELS[tier]}
-                </option>
-              ))}
-            </select>
 
             <button
               onClick={() =>
@@ -218,6 +197,33 @@ export default function Composer({ conversation }: Props) {
             >
               <Globe size={14} />
             </button>
+
+            <button
+              onClick={() => setMcpOpen(true)}
+              title="MCP servers"
+              className="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              <Settings2 size={14} />
+            </button>
+
+            <select
+              value={conversation.tierPinned ? conversation.defaultTier : ''}
+              onChange={(e) =>
+                void update(conversation.id, {
+                  // '' = un-pin: follow the chat feature default live.
+                  defaultTier: e.target.value === '' ? null : (e.target.value as Tier)
+                }).catch(toastError)
+              }
+              title="Model tier"
+              className={selectClass}
+            >
+              <option value="">Default ({TIER_LABELS[chatDefaultTier]})</option>
+              {TIER_ORDER.map((tier) => (
+                <option key={tier} value={tier}>
+                  {TIER_LABELS[tier]}
+                </option>
+              ))}
+            </select>
 
             <select
               value={conversation.collectionId ?? ''}
@@ -242,14 +248,6 @@ export default function Composer({ conversation }: Props) {
               ))}
               <option value={MANAGE_SENTINEL}>Manage library…</option>
             </select>
-
-            <button
-              onClick={() => setMcpOpen(true)}
-              title="MCP servers"
-              className="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-            >
-              <Settings2 size={14} />
-            </button>
 
             {skills.length > 0 && (
               <span

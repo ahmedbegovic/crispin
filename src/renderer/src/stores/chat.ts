@@ -19,10 +19,25 @@ export interface ToolPhaseInfo {
 export interface ConversationPatch {
   title?: string
   systemPrompt?: string | null
-  defaultTier?: Tier
+  /** A tier pins the conversation; null un-pins (follow featureDefaults.chat). */
+  defaultTier?: Tier | null
   collectionId?: string | null
   webEnabled?: boolean
   archived?: boolean
+}
+
+/** Mirror main's tier-pin semantics for the optimistic conversation merge. */
+function applyPatch(conversation: Conversation, patch: ConversationPatch): Conversation {
+  const { defaultTier, ...rest } = patch
+  const next = { ...conversation, ...rest }
+  if (defaultTier !== undefined) {
+    if (defaultTier === null) next.tierPinned = false
+    else {
+      next.defaultTier = defaultTier
+      next.tierPinned = true
+    }
+  }
+  return next
 }
 
 interface ChatStore {
@@ -553,7 +568,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const prevList = get().conversations
     set((s) => ({
       conversationById: prevConversation
-        ? { ...s.conversationById, [conversationId]: { ...prevConversation, ...patch } }
+        ? { ...s.conversationById, [conversationId]: applyPatch(prevConversation, patch) }
         : s.conversationById,
       conversations: s.conversations.map((c) =>
         c.id === conversationId

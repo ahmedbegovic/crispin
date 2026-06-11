@@ -1,7 +1,8 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, net, protocol, shell } from 'electron'
 import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { initLogging, log } from './services/logger'
 import { openDatabase, type OrionDatabase } from './services/db'
 import { allocatePort } from './services/ports'
@@ -46,6 +47,12 @@ import { attachRouter, handle } from './ipc/router'
 import { broadcast } from './ipc/events'
 
 app.setName('Orion')
+
+// Must run before app ready: chat markdown references copied attachments as
+// orion-attachment://<name>, served strictly from dataDir()/attachments.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'orion-attachment', privileges: { secure: true, stream: true } }
+])
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -231,6 +238,18 @@ app.whenReady().then(async () => {
   log.info(`Orion ${app.getVersion()} starting (packaged: ${app.isPackaged})`)
 
   db = openDatabase(join(dataDir(), 'orion.db'))
+
+  // Serve chat-attachment images to the renderer; the prefix check jails the
+  // lookup inside the attachments dir whatever the URL says.
+  const attachmentsDir = join(dataDir(), 'attachments')
+  protocol.handle('orion-attachment', (request) => {
+    const rel = decodeURIComponent(request.url.replace(/^orion-attachment:\/*/i, ''))
+    const target = resolve(attachmentsDir, rel)
+    if (!target.startsWith(attachmentsDir + sep)) {
+      return new Response('forbidden', { status: 403 })
+    }
+    return net.fetch(pathToFileURL(target).toString())
+  })
 
   macosMemory.start()
   sweepStaleProcesses()

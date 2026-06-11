@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { OrionEvent } from '@shared/ipc'
-import type { AttachmentInput, MessagePart, Tier } from '@shared/types'
+import type { AttachmentInput, Conversation, MessagePart, Tier } from '@shared/types'
 import { TIERS, TIER_ORDER } from '@shared/model-tiers'
 import type { OrionDatabase } from '../db'
 import * as settings from '../settings'
@@ -21,7 +21,7 @@ import type { SkillsService } from '../skills'
 import type { AppSettingsService } from '../app-settings'
 import { EMBEDDING_MODEL, type LibraryService } from '../library-service'
 import type { ChatRepo } from './repo'
-import { buildSystemPrompt, cleanTitle, titleMessages } from './prompts'
+import { buildSystemPrompt, cleanTitle, instantTitle, titleMessages } from './prompts'
 import {
   createContentSplitter,
   encodesToolHistoryAsText,
@@ -189,7 +189,7 @@ export class ChatOrchestrator {
     const conversation = this.deps.repo.getConversation(input.conversationId)
     const controller = this.claim(input.conversationId)
     try {
-      const modelId = this.resolveModel(input.tier ?? conversation.defaultTier)
+      const modelId = this.resolveModel(input.tier ?? this.effectiveTier(conversation))
       const prepared = await this.prepareUserParts(input.text, input.attachments ?? [], conversation.collectionId)
       const messageId = this.deps.repo.insertMessage({
         conversationId: conversation.id,
@@ -199,6 +199,15 @@ export class ChatOrchestrator {
       })
       for (const att of prepared.attachments) {
         this.deps.repo.insertAttachment({ ...att, messageId })
+      }
+      // Instant title: the truncated first question, broadcast before any
+      // tokens stream. The low-tier refinement may improve on it later.
+      if (conversation.title === 'New chat' && conversation.headMessageId === null) {
+        const title = instantTitle(input.text)
+        if (title) {
+          this.deps.repo.setTitle(conversation.id, title)
+          this.deps.broadcast({ type: 'chat.titleChanged', conversationId: conversation.id, title })
+        }
       }
       const assistantMessageId = this.deps.repo.insertMessage({
         conversationId: conversation.id,
@@ -222,7 +231,7 @@ export class ChatOrchestrator {
     if (message.role !== 'assistant') throw new Error('Can only regenerate assistant messages')
     const controller = this.claim(conversationId)
     try {
-      const modelId = this.resolveModel(conversation.defaultTier)
+      const modelId = this.resolveModel(this.effectiveTier(conversation))
       const assistantMessageId = this.deps.repo.insertMessage({
         conversationId,
         parentId: message.parentId, // sibling of the regenerated message
@@ -249,7 +258,7 @@ export class ChatOrchestrator {
     if (edited.role !== 'user') throw new Error('Can only edit user messages')
     const controller = this.claim(conversationId)
     try {
-      const modelId = this.resolveModel(conversation.defaultTier)
+      const modelId = this.resolveModel(this.effectiveTier(conversation))
       const newMessageId = this.deps.repo.insertMessage({
         conversationId,
         parentId: edited.parentId, // sibling of the edited message
@@ -284,6 +293,12 @@ export class ChatOrchestrator {
   }
 
   // --- generation --------------------------------------------------------------
+
+  /** Pinned conversations keep their snapshot; un-pinned follow featureDefaults.chat live. */
+  private effectiveTier(conversation: Conversation): Tier {
+    if (conversation.tierPinned) return conversation.defaultTier
+    return this.deps.modelService.overview().defaults.chat
+  }
 
   /** Reserve the conversation's single generation slot before any awaits. */
   private claim(conversationId: string): AbortController {
@@ -771,11 +786,6 @@ export class ChatOrchestrator {
   /** Fire-and-forget after the first completed exchange, on the LOW tier model. */
   private async maybeGenerateTitle(conversationId: string): Promise<void> {
     const conversation = this.deps.repo.getConversation(conversationId)
-    if (conversation.title !== 'New chat') return
-    const lowModel = this.deps.modelService
-      .overview()
-      .tiers.find((t) => t.tier === 'low')?.active
-    if (!lowModel) return
 
     const path = this.deps.repo.activePath(conversationId)
     const textOf = (parts: MessagePart[]): string =>
@@ -786,6 +796,20 @@ export class ChatOrchestrator {
     const userText = textOf(path.find((m) => m.role === 'user')?.parts ?? [])
     const assistantText = textOf(path.findLast((m) => m.role === 'assistant')?.parts ?? [])
     if (!userText || !assistantText) return
+
+    // Refine only the instant truncated title — never overwrite a user rename
+    // or an earlier refinement.
+    if (conversation.title !== 'New chat' && conversation.title !== instantTitle(userText)) return
+
+    const overview = this.deps.modelService.overview()
+    const lowModel = overview.tiers.find((t) => t.tier === 'low')?.active
+    if (!lowModel) return
+    // Never trigger a model load just for a title: refine opportunistically
+    // while the low model is already resident.
+    const lowLoaded =
+      overview.engine.running &&
+      overview.engine.models.some((m) => m.id === lowModel && m.state === 'loaded')
+    if (!lowLoaded) return
 
     // Title generation goes through EngineClient too — inflight stays truthful.
     let raw = ''

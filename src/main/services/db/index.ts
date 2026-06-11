@@ -3,8 +3,9 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { scopedLogger } from '../logger'
 import migration0001 from './migrations/0001_init.sql?raw'
+import migration0002 from './migrations/0002_conversation_tier_pin.sql?raw'
 
-const MIGRATIONS: string[] = [migration0001]
+const MIGRATIONS: string[] = [migration0001, migration0002]
 
 export type OrionDatabase = DatabaseSync
 

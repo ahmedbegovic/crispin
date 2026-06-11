@@ -58,7 +58,28 @@ const components: Components = {
     />
   ),
   td: ({ node: _, ...props }) => <td className="border border-zinc-800 px-2 py-1" {...props} />,
-  hr: ({ node: _, ...props }) => <hr className="my-3 border-zinc-800" {...props} />
+  hr: ({ node: _, ...props }) => <hr className="my-3 border-zinc-800" {...props} />,
+  img: ({ node: _, src, alt, ...props }) => {
+    const url = typeof src === 'string' ? src : ''
+    // https remote images and our own attachment protocol only; anything else
+    // (file:, data:, http:) renders as a labeled placeholder.
+    if (!/^(https:|orion-attachment:)/i.test(url)) {
+      return <span className="text-zinc-500">[image: {alt || 'unsupported source'}]</span>
+    }
+    return (
+      <img
+        {...props}
+        src={url}
+        alt={alt ?? ''}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={(e) => {
+          e.currentTarget.style.display = 'none'
+        }}
+        className="my-2 max-h-80 max-w-full rounded-lg border border-zinc-800"
+      />
+    )
+  }
 }
 
 interface Props {

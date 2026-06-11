@@ -57,6 +57,15 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
   return sections.join('\n\n')
 }
 
+/**
+ * Instant title for a brand-new conversation: the first question, flattened
+ * and truncated. The LLM refinement only ever replaces exactly this string.
+ */
+export function instantTitle(text: string): string {
+  const flat = text.replaceAll('\n', ' ').replace(/\s+/g, ' ').trim()
+  return flat.length > 60 ? `${flat.slice(0, 59).trimEnd()}…` : flat
+}
+
 /** Messages for the fire-and-forget low-tier title generation. */
 export function titleMessages(
   userText: string,

@@ -161,6 +161,8 @@ export const conversationSchema = z.object({
   systemPrompt: z.string().nullable(),
   headMessageId: z.string().nullable(),
   defaultTier: tierSchema,
+  /** False = the effective tier follows featureDefaults.chat live. */
+  tierPinned: z.boolean(),
   collectionId: z.string().nullable(),
   webEnabled: z.boolean(),
   archived: z.boolean(),
@@ -495,7 +497,8 @@ export const contract = {
       conversationId: z.string(),
       title: z.string().optional(),
       systemPrompt: z.string().nullable().optional(),
-      defaultTier: tierSchema.optional(),
+      /** A tier pins the conversation; null un-pins (follow featureDefaults.chat). */
+      defaultTier: tierSchema.nullable().optional(),
       collectionId: z.string().nullable().optional(),
       webEnabled: z.boolean().optional(),
       archived: z.boolean().optional()

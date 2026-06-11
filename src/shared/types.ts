@@ -169,6 +169,8 @@ export interface Conversation {
   systemPrompt: string | null
   headMessageId: string | null
   defaultTier: Tier
+  /** False = the effective tier follows featureDefaults.chat live. */
+  tierPinned: boolean
   collectionId: string | null
   webEnabled: boolean
   archived: boolean

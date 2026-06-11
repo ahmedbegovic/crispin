@@ -1,18 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { SendHorizontal, Square } from 'lucide-react'
-import { FEATURE_DEFAULTS, TIER_ORDER } from '@shared/model-tiers'
+import { FEATURE_DEFAULTS, TIER_LABELS, TIER_ORDER } from '@shared/model-tiers'
 import type { Tier } from '@shared/types'
 import { useAgentStore } from '@/stores/agent'
 import { useModelsStore } from '@/stores/models'
 import { toastError } from '@/stores/toasts'
-
-const TIER_LABELS: Record<Tier, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  extraHigh: 'Extra high',
-  ultra: 'Ultra'
-}
 
 const MAX_TEXTAREA_PX = 180
 

@@ -1,16 +1,8 @@
-import { TIER_ORDER } from '@shared/model-tiers'
+import { TIER_LABELS, TIER_ORDER } from '@shared/model-tiers'
 import type { Feature, ModelsOverview, Tier } from '@shared/types'
 import { useModelsStore } from '@/stores/models'
 
 const FEATURES: Feature[] = ['chat', 'agent', 'code', 'research', 'news']
-
-const TIER_LABELS: Record<Tier, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  extraHigh: 'Extra high',
-  ultra: 'Ultra'
-}
 
 /** Feature -> tier mapping. Persisted in settings by the main process. */
 export default function DefaultsMatrix({ overview }: { overview: ModelsOverview }) {
