@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, ChevronsLeft, ChevronsRight, Plus, SendHorizontal, Square } from 'lucide-react'
+import { Bot, ChevronsLeft, ChevronsRight, Plus, SendHorizontal, Square, Workflow } from 'lucide-react'
 import 'highlight.js/styles/github-dark.css'
 import { FEATURE_DEFAULTS, TIER_LABELS, TIER_ORDER } from '@shared/model-tiers'
 import type { PermissionMode, Tier } from '@shared/types'
@@ -9,6 +9,7 @@ import { toastError } from '@/stores/toasts'
 import { relativeTime } from '@/lib/format'
 import Timeline from '../agent/Timeline'
 import { MODE_LABELS, MODE_ORDER } from '../agent/AgentComposer'
+import PipelineBar from '../agent/PipelineBar'
 import SkillPicker from '../agent/SkillPicker'
 import { useSlashSkills } from '../agent/useSlashSkills'
 import DiffPermission from './DiffPermission'
@@ -23,6 +24,12 @@ function PanelComposer({ sessionId }: { sessionId: string }) {
   const busy = useAgentStore((s) => Boolean(s.busyBySession[sessionId]))
   const mode = useAgentStore((s) => s.modeBySession[sessionId] ?? 'normal')
   const setMode = useAgentStore((s) => s.setMode)
+  const startPipeline = useAgentStore((s) => s.startPipeline)
+  const pipelineActive = useAgentStore((s) => {
+    const p = s.pipelineBySession[sessionId]
+    return p !== undefined && (p.status === 'running' || p.status === 'waiting_user')
+  })
+  const [pipelineMode, setPipelineMode] = useState(false)
 
   const [text, setText] = useState('')
   // null = untouched: main then resolves the user's persisted code default.
@@ -41,15 +48,20 @@ function PanelComposer({ sessionId }: { sessionId: string }) {
 
   const submit = (): void => {
     const trimmed = text.trim()
-    if (busy || !trimmed) return
-    const toSend = slash.transformForSubmit(trimmed)
+    if (busy || pipelineActive || !trimmed) return
     setText('')
-    void prompt(sessionId, toSend, tier ?? undefined).catch((err) => {
+    const restore = (err: unknown): void => {
       // A rejected prompt persisted nothing — put the draft back so the user
       // doesn't retype it, unless newer input has been entered meanwhile.
       setText((cur) => cur || trimmed)
       toastError(err)
-    })
+    }
+    if (pipelineMode) {
+      // Narrow panel: commit gate on, docs off (the Agent tab has the toggles).
+      void startPipeline(sessionId, trimmed, { commit: true, docs: false }).catch(restore)
+      return
+    }
+    void prompt(sessionId, slash.transformForSubmit(trimmed), tier ?? undefined).catch(restore)
   }
 
   return (
@@ -111,6 +123,18 @@ function PanelComposer({ sessionId }: { sessionId: string }) {
             ))}
           </select>
 
+          <button
+            onClick={() => setPipelineMode((v) => !v)}
+            title="Pipeline mode: Plan → Implement → Verify → Commit"
+            className={`rounded-md border p-1.5 ${
+              pipelineMode
+                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
+                : 'border-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+            }`}
+          >
+            <Workflow size={13} />
+          </button>
+
           <div className="ml-auto flex items-center gap-2">
             {busy ? (
               <button
@@ -123,8 +147,8 @@ function PanelComposer({ sessionId }: { sessionId: string }) {
             ) : (
               <button
                 onClick={submit}
-                disabled={!text.trim()}
-                title="Send"
+                disabled={!text.trim() || pipelineActive}
+                title={pipelineActive ? 'A pipeline is running' : 'Send'}
                 className="rounded-lg bg-emerald-600 p-1.5 text-white enabled:hover:bg-emerald-500 disabled:opacity-40"
               >
                 <SendHorizontal size={13} />
@@ -263,6 +287,7 @@ export default function AgentPanel({ root }: Props) {
 
       {session ? (
         <>
+          <PipelineBar sessionId={session.id} />
           <Timeline key={session.id} sessionId={session.id} />
           {ask && <DiffPermission ask={ask} sessionLabel={askLabel} />}
           <PanelComposer key={`composer-${session.id}`} sessionId={session.id} />

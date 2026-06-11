@@ -277,6 +277,33 @@ export const workspaceEntrySchema = z.object({
   kind: z.enum(['file', 'dir'])
 })
 
+// --- pipeline (P2) -------------------------------------------------------------
+
+export const pipelineStageIdSchema = z.enum([
+  'plan',
+  'implement',
+  'verify',
+  'debug',
+  'commit',
+  'document'
+])
+
+export const pipelineStageSchema = z.object({
+  id: pipelineStageIdSchema,
+  status: z.enum(['pending', 'running', 'done', 'failed', 'skipped'])
+})
+
+export const pipelineSnapshotSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  task: z.string(),
+  stages: z.array(pipelineStageSchema),
+  currentIndex: z.number(),
+  /** waiting_user = the commit gate is showing Approve/Skip. */
+  status: z.enum(['running', 'waiting_user', 'done', 'failed', 'aborted']),
+  error: z.string().nullable()
+})
+
 // --- runtimes (P2) -------------------------------------------------------------
 
 export const runtimeComponentSchema = z.enum(['engine', 'tools', 'opencode'])
@@ -789,6 +816,34 @@ export const contract = {
     })
   },
 
+  // --- pipeline ----------------------------------------------------------------------
+  'pipeline.start': {
+    /** Staged Plan→Implement→Verify(→Debug)→Commit→Document run over one session. */
+    input: z.object({
+      sessionId: z.string(),
+      task: z.string(),
+      options: z.object({
+        commit: z.boolean(),
+        docs: z.boolean(),
+        permissionMode: permissionModeSchema.optional()
+      })
+    }),
+    output: z.object({ pipelineId: z.string() })
+  },
+  'pipeline.abort': {
+    input: z.object({ pipelineId: z.string() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'pipeline.approve': {
+    /** The commit gate: approve=false skips the commit stage. */
+    input: z.object({ pipelineId: z.string(), approve: z.boolean() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'pipeline.get': {
+    input: z.object({ sessionId: z.string() }),
+    output: z.object({ pipeline: pipelineSnapshotSchema.nullable() })
+  },
+
   // --- runtimes ----------------------------------------------------------------------
   'runtimes.status': {
     input: z.undefined(),
@@ -1090,6 +1145,11 @@ export const orionEventSchema = z.discriminatedUnion('type', [
   z.object({
     /** A runtime update/reset finished — refetch runtimes.status. */
     type: z.literal('runtimes.changed')
+  }),
+  z.object({
+    /** Pipeline state changed (stage transitions, commit gate, terminal states). */
+    type: z.literal('pipeline.update'),
+    pipeline: pipelineSnapshotSchema
   }),
   z.object({
     /** A research step was created or changed state. */

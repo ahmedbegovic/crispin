@@ -63,6 +63,8 @@ export class AgentService {
   private readonly memoryDir = join(dataDir(), 'memory')
   /** Last prompt's permission mode per session — drives the ask auto-replies. */
   private readonly modeBySession = new Map<string, PermissionMode>()
+  /** Typed taps on the per-session event stream (pipeline-service). */
+  private readonly sessionEventListeners: Array<(sessionId: string, event: unknown) => void> = []
 
   constructor(private readonly deps: AgentServiceDeps) {
     deps.pool.onEvent((directory, event) => this.onPoolEvent(directory, event))
@@ -72,6 +74,26 @@ export class AgentService {
     mkdirSync(this.memoryDir, { recursive: true })
     const agentsMd = join(this.memoryDir, 'AGENTS.md')
     if (!existsSync(agentsMd)) writeFileSync(agentsMd, MEMORY_TEMPLATE)
+  }
+
+  /** Subscribe to every opencode event for OUR sessions, keyed by session id. */
+  onSessionEvent(cb: (sessionId: string, event: unknown) => void): void {
+    this.sessionEventListeners.push(cb)
+  }
+
+  /** The session's working directory (pipeline repo checks). */
+  sessionDirectory(sessionId: string): string {
+    return this.row(sessionId).directory
+  }
+
+  private emitSessionEvent(sessionId: string, event: unknown): void {
+    for (const cb of this.sessionEventListeners) {
+      try {
+        cb(sessionId, event)
+      } catch (err) {
+        this.log.warn(`session event listener threw: ${err instanceof Error ? err.message : err}`)
+      }
+    }
   }
 
   // --- sessions ---------------------------------------------------------------
@@ -150,12 +172,9 @@ export class AgentService {
     void this.firePrompt(row, baseUrl, modelId, text, mode).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err)
       this.log.warn(`prompt failed for session ${row.id}: ${message}`)
-      this.deps.broadcast({
-        type: 'agent.event',
-        sessionId: row.id,
-        tab: row.tab,
-        event: { type: 'orion.promptFailed', error: message }
-      })
+      const failed = { type: 'orion.promptFailed', error: message }
+      this.deps.broadcast({ type: 'agent.event', sessionId: row.id, tab: row.tab, event: failed })
+      this.emitSessionEvent(row.id, failed)
     })
   }
 
@@ -348,6 +367,7 @@ export class AgentService {
     }
 
     this.deps.broadcast({ type: 'agent.event', sessionId: row.id, tab: row.tab, event })
+    this.emitSessionEvent(row.id, event)
     // Live 1.16.2 emits 'permission.asked' with properties = the permission
     // object ({id: 'per_…', sessionID, permission, patterns, metadata, …}).
     // The id guard excludes 'permission.replied' (whose properties carry no

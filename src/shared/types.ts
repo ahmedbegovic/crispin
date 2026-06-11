@@ -314,6 +314,29 @@ export interface GitLogEntry {
 /** Per-prompt permission posture, mapped to opencode agents main-side. */
 export type PermissionMode = 'normal' | 'plan' | 'acceptEdits' | 'auto'
 
+// ---------------------------------------------------------------------------
+// Pipeline (P2)
+// ---------------------------------------------------------------------------
+
+export type PipelineStageId = 'plan' | 'implement' | 'verify' | 'debug' | 'commit' | 'document'
+export type PipelineStageStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+
+export interface PipelineStage {
+  id: PipelineStageId
+  status: PipelineStageStatus
+}
+
+export interface PipelineSnapshot {
+  id: string
+  sessionId: string
+  task: string
+  stages: PipelineStage[]
+  currentIndex: number
+  /** waiting_user = the commit gate is showing Approve/Skip. */
+  status: 'running' | 'waiting_user' | 'done' | 'failed' | 'aborted'
+  error: string | null
+}
+
 export type ResearchMode = 'standard' | 'heavy'
 export type ResearchStatus =
   | 'planning'

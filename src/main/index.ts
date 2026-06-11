@@ -33,6 +33,8 @@ import { OpencodePool } from './services/opencode-pool'
 import { engineModelId } from './services/engine-client'
 import { modelDisplayName, TIER_LABELS } from '@shared/model-tiers'
 import { AgentService } from './services/agent-service'
+import { PipelineService } from './services/pipeline-service'
+import { registerPipelineFeature } from './features/pipeline'
 import { WorkspaceFs } from './services/workspace-fs'
 import { GitService } from './services/git-service'
 import { TermService } from './services/term-service'
@@ -73,6 +75,7 @@ let researchOrchestrator: ResearchOrchestrator | null = null
 let newsScheduler: NewsScheduler | null = null
 let mcpManager: McpManager | null = null
 let opencodePool: OpencodePool | null = null
+let pipelineService: PipelineService | null = null
 let workspaceFs: WorkspaceFs | null = null
 let termService: TermService | null = null
 
@@ -384,6 +387,8 @@ app.whenReady().then(async () => {
   const agentService = new AgentService({ db, pool: opencodePool, modelService, broadcast })
   agentService.init()
   registerAgentFeature(agentService)
+  pipelineService = new PipelineService({ agentService, broadcast })
+  registerPipelineFeature(pipelineService)
 
   workspaceFs = new WorkspaceFs({ broadcast })
   termService = new TermService({ broadcast })
@@ -430,6 +435,7 @@ app.on('before-quit', (event) => {
       newsScheduler?.dispose()
       libraryService?.dispose()
       await mcpManager?.dispose()
+      pipelineService?.dispose()
       // The pool's idle timer and opencode servers must stop before the
       // supervisor shutdown so nothing tries to respawn mid-quit.
       await opencodePool?.dispose()

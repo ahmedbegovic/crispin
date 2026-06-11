@@ -1,5 +1,12 @@
 import { create } from 'zustand'
-import type { AgentSessionMeta, AgentTab, PermissionMode, SkillMeta, Tier } from '@shared/types'
+import type {
+  AgentSessionMeta,
+  AgentTab,
+  PermissionMode,
+  PipelineSnapshot,
+  SkillMeta,
+  Tier
+} from '@shared/types'
 import { call, onEvent } from '@/lib/ipc'
 import { pushToast } from '@/stores/toasts'
 
@@ -191,6 +198,18 @@ interface AgentStore {
   /** Per-session permission posture; sent with every prompt. */
   modeBySession: Record<string, PermissionMode>
   setMode: (sessionId: string, mode: PermissionMode) => void
+  /** Staged pipeline runs (PipelineBar). */
+  pipelineBySession: Record<string, PipelineSnapshot>
+  startPipeline: (
+    sessionId: string,
+    task: string,
+    options: { commit: boolean; docs: boolean; permissionMode?: PermissionMode }
+  ) => Promise<void>
+  abortPipeline: (pipelineId: string) => Promise<void>
+  approvePipeline: (pipelineId: string, approve: boolean) => Promise<void>
+  refreshPipeline: (sessionId: string) => Promise<void>
+  /** Hide a finished pipeline's bar. */
+  dismissPipeline: (sessionId: string) => void
   abort: (sessionId: string) => Promise<void>
   permissionReply: (
     sessionId: string,
@@ -368,6 +387,12 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       })
     })
 
+    onEvent('pipeline.update', ({ pipeline }) => {
+      set((s) => ({
+        pipelineBySession: { ...s.pipelineBySession, [pipeline.sessionId]: pipeline }
+      }))
+    })
+
     await get().refresh()
   },
 
@@ -425,6 +450,40 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
   setMode: (sessionId, mode) =>
     set((s) => ({ modeBySession: { ...s.modeBySession, [sessionId]: mode } })),
+
+  pipelineBySession: {},
+
+  startPipeline: async (sessionId, task, options) => {
+    if (get().busyBySession[sessionId])
+      throw new Error('The agent is already working in this session')
+    await call('pipeline.start', { sessionId, task, options })
+    await get().refreshPipeline(sessionId)
+  },
+
+  abortPipeline: async (pipelineId) => {
+    await call('pipeline.abort', { pipelineId })
+  },
+
+  approvePipeline: async (pipelineId, approve) => {
+    await call('pipeline.approve', { pipelineId, approve })
+  },
+
+  refreshPipeline: async (sessionId) => {
+    const { pipeline } = await call('pipeline.get', { sessionId })
+    set((s) => {
+      if (!pipeline) {
+        const { [sessionId]: _gone, ...rest } = s.pipelineBySession
+        return { pipelineBySession: rest }
+      }
+      return { pipelineBySession: { ...s.pipelineBySession, [sessionId]: pipeline } }
+    })
+  },
+
+  dismissPipeline: (sessionId) =>
+    set((s) => {
+      const { [sessionId]: _gone, ...pipelineBySession } = s.pipelineBySession
+      return { pipelineBySession }
+    }),
 
   prompt: async (sessionId, text, tier) => {
     // Reject rather than toast: the composer restores its draft from the rejection.

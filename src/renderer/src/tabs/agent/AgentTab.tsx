@@ -5,6 +5,7 @@ import { useAgentStore } from '@/stores/agent'
 import { toastError } from '@/stores/toasts'
 import SessionSidebar from './SessionSidebar'
 import Timeline from './Timeline'
+import PipelineBar from './PipelineBar'
 import AgentComposer from './AgentComposer'
 import PermissionModal from './PermissionModal'
 import MemoryPanel from './MemoryPanel'
@@ -64,6 +65,7 @@ export default function AgentTab() {
               </button>
             </div>
           </header>
+          <PipelineBar sessionId={session.id} />
           <Timeline key={activeId} sessionId={session.id} />
           <AgentComposer key={`composer-${activeId}`} sessionId={session.id} />
         </div>

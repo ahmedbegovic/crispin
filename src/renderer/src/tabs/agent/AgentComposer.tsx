@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { SendHorizontal, Square } from 'lucide-react'
+import { SendHorizontal, Square, Workflow } from 'lucide-react'
 import { FEATURE_DEFAULTS, TIER_LABELS, TIER_ORDER } from '@shared/model-tiers'
 import type { PermissionMode, Tier } from '@shared/types'
 import { useAgentStore } from '@/stores/agent'
@@ -28,6 +28,14 @@ export default function AgentComposer({ sessionId }: Props) {
   const busy = useAgentStore((s) => Boolean(s.busyBySession[sessionId]))
   const mode = useAgentStore((s) => s.modeBySession[sessionId] ?? 'normal')
   const setMode = useAgentStore((s) => s.setMode)
+  const startPipeline = useAgentStore((s) => s.startPipeline)
+  const pipelineActive = useAgentStore((s) => {
+    const p = s.pipelineBySession[sessionId]
+    return p !== undefined && (p.status === 'running' || p.status === 'waiting_user')
+  })
+  const [pipelineMode, setPipelineMode] = useState(false)
+  const [pipelineCommit, setPipelineCommit] = useState(true)
+  const [pipelineDocs, setPipelineDocs] = useState(false)
 
   const [text, setText] = useState('')
   // null = untouched: main then resolves the user's persisted agent default.
@@ -46,15 +54,22 @@ export default function AgentComposer({ sessionId }: Props) {
 
   const submit = (): void => {
     const trimmed = text.trim()
-    if (busy || !trimmed) return
-    const toSend = slash.transformForSubmit(trimmed)
+    if (busy || pipelineActive || !trimmed) return
     setText('')
-    void prompt(sessionId, toSend, tier ?? undefined).catch((err) => {
+    const restore = (err: unknown): void => {
       // A rejected prompt persisted nothing — put the draft back so the user
       // doesn't retype it, unless newer input has been entered meanwhile.
       setText((cur) => cur || trimmed)
       toastError(err)
-    })
+    }
+    if (pipelineMode) {
+      void startPipeline(sessionId, trimmed, {
+        commit: pipelineCommit,
+        docs: pipelineDocs
+      }).catch(restore)
+      return
+    }
+    void prompt(sessionId, slash.transformForSubmit(trimmed), tier ?? undefined).catch(restore)
   }
 
   return (
@@ -117,6 +132,38 @@ export default function AgentComposer({ sessionId }: Props) {
               ))}
             </select>
 
+            <button
+              onClick={() => setPipelineMode((v) => !v)}
+              title="Pipeline mode: Plan → Implement → Verify → Commit → Document"
+              className={`rounded-md border p-1.5 ${
+                pipelineMode
+                  ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
+                  : 'border-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+              }`}
+            >
+              <Workflow size={14} />
+            </button>
+            {pipelineMode && (
+              <span className="flex items-center gap-2 text-[10.5px] text-zinc-500">
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={pipelineCommit}
+                    onChange={(e) => setPipelineCommit(e.target.checked)}
+                  />
+                  commit
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={pipelineDocs}
+                    onChange={(e) => setPipelineDocs(e.target.checked)}
+                  />
+                  docs
+                </label>
+              </span>
+            )}
+
             <div className="ml-auto flex items-center gap-2">
               {busy ? (
                 <button
@@ -129,8 +176,8 @@ export default function AgentComposer({ sessionId }: Props) {
               ) : (
                 <button
                   onClick={submit}
-                  disabled={!text.trim()}
-                  title="Send"
+                  disabled={!text.trim() || pipelineActive}
+                  title={pipelineActive ? 'A pipeline is running' : 'Send'}
                   className="rounded-lg bg-emerald-600 p-2 text-white enabled:hover:bg-emerald-500 disabled:opacity-40"
                 >
                   <SendHorizontal size={13} />
