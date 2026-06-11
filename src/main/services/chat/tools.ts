@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { SkillMeta, SourceRef } from '@shared/types'
 import type { ChatToolDef } from '../engine-client'
 import type { ToolsClient } from '../tools-client'
@@ -142,21 +143,84 @@ export interface ToolExecution {
 }
 
 /**
+ * The model produced arguments that don't fit the tool — a model fault, not
+ * an execution fault. The orchestrator folds these into the same two-strike
+ * rule as unparseable tool-call JSON.
+ */
+export class InvalidToolArgsError extends Error {}
+
+/** Tolerant count arg: coerces "5"→5, rounds, clamps to [1,max]; garbage → def. */
+const countArg = (def: number, max: number) =>
+  z.coerce
+    .number()
+    .catch(def)
+    .transform((n) => Math.min(Math.max(Math.round(n), 1), max))
+    .default(def)
+
+/**
+ * Small models routinely emit almost-right args ("5" for 5, a stray key, a
+ * missing query). Coerce and clamp what's recoverable; reject with a
+ * corrective message what isn't. MCP tools validate on their own side.
+ */
+const builtinArgSchemas = {
+  web_search: z.object({
+    query: z.string().trim().min(1),
+    max_results: countArg(5, 20)
+  }),
+  web_visit: z.object({
+    url: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((u) => /^https?:\/\//i.test(u), 'must be an absolute http(s) URL')
+  }),
+  image_search: z.object({
+    query: z.string().trim().min(1),
+    max_results: countArg(6, 12)
+  }),
+  rag_search: z.object({
+    query: z.string().trim().min(1),
+    k: countArg(6, 20)
+  }),
+  use_skill: z.object({
+    name: z.string().trim().min(1)
+  })
+}
+
+function validateArgs(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  const schema = (builtinArgSchemas as Record<string, z.ZodType<Record<string, unknown>> | undefined>)[
+    name
+  ]
+  if (!schema) return args
+  const check = schema.safeParse(args)
+  if (!check.success) {
+    const issues = check.error.issues
+      .map((i) => `${i.path.join('.') || '(args)'}: ${i.message}`)
+      .join('; ')
+    throw new InvalidToolArgsError(
+      `invalid arguments for ${name} — ${issues}. Retry the call with corrected arguments.`
+    )
+  }
+  return check.data
+}
+
+/**
  * Execute one tool call with parsed args. Built-in failures throw (the
  * orchestrator turns them into error tool_results); MCP failures already
  * come back as error strings from McpManager.
  */
 export async function executeTool(
   name: string,
-  args: Record<string, unknown>,
+  rawArgs: Record<string, unknown>,
   ctx: ToolExecutionContext
 ): Promise<ToolExecution> {
+  const args = validateArgs(name, rawArgs)
   switch (name) {
     case 'web_search': {
       const { results, backend } = await ctx.tools.search(
         {
-          query: String(args.query ?? ''),
-          maxResults: typeof args.max_results === 'number' ? args.max_results : 5,
+          query: args.query as string,
+          maxResults: args.max_results as number,
           backend: 'auto',
           searxngUrl: ctx.searxngUrl ?? undefined
         },
@@ -172,7 +236,7 @@ export async function executeTool(
       return { result: lines.join('\n\n'), sourceIds }
     }
     case 'web_visit': {
-      const url = String(args.url ?? '')
+      const url = args.url as string
       const page = await ctx.tools.visit(url, undefined, ctx.signal)
       const source = ctx.sources.add(page.url || url, page.title)
       return {
@@ -183,8 +247,8 @@ export async function executeTool(
     case 'image_search': {
       const { results } = await ctx.tools.searchImages(
         {
-          query: String(args.query ?? ''),
-          maxResults: typeof args.max_results === 'number' ? args.max_results : 6
+          query: args.query as string,
+          maxResults: args.max_results as number
         },
         ctx.signal
       )
@@ -204,8 +268,8 @@ export async function executeTool(
       const hits = await ctx.tools.ragQuery(
         {
           collectionId: ctx.collectionId,
-          query: String(args.query ?? ''),
-          k: typeof args.k === 'number' ? args.k : 6,
+          query: args.query as string,
+          k: args.k as number,
           embeddingsUrl: ctx.embeddingsUrl,
           embeddingModel: ctx.embeddingModel,
           lancedbDir: ctx.lancedbDir
@@ -223,7 +287,7 @@ export async function executeTool(
       return { result: lines.join('\n\n'), sourceIds: [...new Set(sourceIds)] }
     }
     case 'use_skill': {
-      const skillName = String(args.name ?? '')
+      const skillName = args.name as string
       // The def's enum only covers chat-enabled skills, but enums are
       // advisory — enforce the same scope here so a hallucinated name can't
       // read a coding pack chat was never given.

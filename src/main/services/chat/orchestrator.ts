@@ -30,7 +30,13 @@ import {
   stripThoughts,
   type ModelFamily
 } from './family'
-import { builtinToolDefs, executeTool, SourceTracker, type ToolExecutionContext } from './tools'
+import {
+  builtinToolDefs,
+  executeTool,
+  InvalidToolArgsError,
+  SourceTracker,
+  type ToolExecutionContext
+} from './tools'
 
 const MAX_TOOL_ITERATIONS = 8
 const DELTA_COALESCE_MS = 30
@@ -544,6 +550,10 @@ export class ChatOrchestrator {
             } catch (err) {
               // A Stop mid-fetch surfaces as an AbortError — finalize, don't persist it.
               if (controller.signal.aborted) throw new Error('aborted')
+              // Malformed args are a model fault like unparseable call JSON —
+              // they share the two-strike rule (give up only after the model
+              // saw the corrective result and still failed).
+              if (err instanceof InvalidToolArgsError) parseErrorThisIteration = true
               outcome = { result: `Error: ${err instanceof Error ? err.message : String(err)}`, failed: true }
             }
           }
