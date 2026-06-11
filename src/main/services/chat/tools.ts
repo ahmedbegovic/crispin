@@ -4,6 +4,7 @@ import type { ChatToolDef } from '../engine-client'
 import type { ToolsClient } from '../tools-client'
 import type { McpManager } from '../mcp-manager'
 import type { SkillsService } from '../skills'
+import { cleanUrl } from './search-router'
 
 /**
  * Per-generation [n] source numbering: web/rag tool results register sources
@@ -149,41 +150,61 @@ export interface ToolExecution {
  */
 export class InvalidToolArgsError extends Error {}
 
-/** Tolerant count arg: coerces "5"→5, rounds, clamps to [1,max]; garbage → def. */
+/**
+ * Tolerant count arg: coerces "5"→5, rounds, clamps to [1,max]. Anything
+ * that isn't a number or a numeric string (null, booleans, "", arrays —
+ * Number() maps several of those to 0, which would clamp to 1, not the
+ * default) falls back to the default.
+ */
 const countArg = (def: number, max: number) =>
-  z.coerce
-    .number()
-    .catch(def)
-    .transform((n) => Math.min(Math.max(Math.round(n), 1), max))
-    .default(def)
+  z.preprocess(
+    (v) => {
+      if (typeof v === 'number') return v
+      if (typeof v === 'string' && v.trim() !== '') return v
+      return undefined
+    },
+    z.coerce
+      .number()
+      .catch(def)
+      .transform((n) => Math.min(Math.max(Math.round(n), 1), max))
+      .default(def)
+  )
+
+/** Required text arg; numbers/booleans stringify (the old String() behavior). */
+const textArg = z.preprocess(
+  (v) => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : v),
+  z.string().trim().min(1)
+)
 
 /**
  * Small models routinely emit almost-right args ("5" for 5, a stray key, a
- * missing query). Coerce and clamp what's recoverable; reject with a
- * corrective message what isn't. MCP tools validate on their own side.
+ * missing query, a markdown-wrapped URL). Coerce and clamp what's
+ * recoverable; reject with a corrective message what isn't. MCP tools
+ * validate on their own side.
  */
 const builtinArgSchemas = {
   web_search: z.object({
-    query: z.string().trim().min(1),
+    query: textArg,
     max_results: countArg(5, 20)
   }),
   web_visit: z.object({
-    url: z
-      .string()
-      .trim()
-      .min(1)
-      .refine((u) => /^https?:\/\//i.test(u), 'must be an absolute http(s) URL')
+    // cleanUrl tolerates markdown links, angle brackets and trailing prose
+    // punctuation — only truly URL-less args reach the refine and fail.
+    url: z.preprocess(
+      (v) => (typeof v === 'string' ? (cleanUrl(v) ?? v.trim()) : v),
+      z.string().refine((u) => /^https?:\/\//i.test(u), 'must be an absolute http(s) URL')
+    )
   }),
   image_search: z.object({
-    query: z.string().trim().min(1),
+    query: textArg,
     max_results: countArg(6, 12)
   }),
   rag_search: z.object({
-    query: z.string().trim().min(1),
+    query: textArg,
     k: countArg(6, 20)
   }),
   use_skill: z.object({
-    name: z.string().trim().min(1)
+    name: textArg
   })
 }
 

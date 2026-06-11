@@ -24,6 +24,16 @@ export const STRUCTURED_TEMPERATURE = 0.3
 const clip = (text: string, limit: number): string =>
   text.length > limit ? `${text.slice(0, limit)}…` : text
 
+/**
+ * Total-request bound scaled to the output budget: ~100ms/token of decode
+ * headroom on top of a 300s floor (queue + possible lazy reload + prefill).
+ * A micro-call stays tightly bounded (~326s at 256 tokens); an 8192-token
+ * research synthesis on a contended 12B gets the time the old streaming
+ * transport effectively gave it (review finding: a flat 600s cap failed
+ * legitimate max-length syntheses deterministically).
+ */
+const timeoutFor = (maxTokens: number): number => 300_000 + maxTokens * 100
+
 export interface StructuredOptions<T> {
   engine: EngineClient
   /** Canonical HF repo id of the model to ask. */
@@ -85,6 +95,7 @@ export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
         // is discarded here anyway — without this, gemma burns the whole JSON
         // budget thinking and every structured step truncates.
         chatTemplateKwargs: { enable_thinking: false },
+        timeoutMs: timeoutFor(maxTokens),
         signal: opts.signal
       })
       raw = res.content
@@ -178,12 +189,14 @@ export interface CondenseOptions {
 
 /** Condense a long page against the question it was fetched for. */
 export async function condense(opts: CondenseOptions): Promise<string> {
+  const maxTokens = opts.maxTokens ?? 700
   const messages: ChatCompletionMessage[] = [
     { role: 'system', content: 'You condense web pages for a research agent.' },
     {
       role: 'user',
       content:
-        `Extract only the factual claims relevant to: "${opts.focus}"\n\n` +
+        // Chat can pass a whole pasted user message as focus — clip it.
+        `Extract only the factual claims relevant to: "${clip(opts.focus, 1000)}"\n\n` +
         `Page content:\n${opts.text.slice(0, 80_000)}\n\n` +
         `Reply with at most ${opts.charLimit} characters of terse claims, one per line. No preamble.`
     }
@@ -193,9 +206,10 @@ export async function condense(opts: CondenseOptions): Promise<string> {
     const res = await opts.engine.chat({
       model: opts.model,
       messages,
-      maxTokens: opts.maxTokens ?? 700,
+      maxTokens,
       temperature: STRUCTURED_TEMPERATURE,
       chatTemplateKwargs: { enable_thinking: false },
+      timeoutMs: timeoutFor(maxTokens),
       signal: opts.signal
     })
     const out = clip(stripThoughts(res.content, familyOf(opts.model)).trim(), opts.charLimit)

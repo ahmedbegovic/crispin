@@ -59,6 +59,16 @@ export interface StreamChatOptions {
    * the budget thinking tokens would otherwise burn from max_tokens.
    */
   chatTemplateKwargs?: Record<string, unknown>
+  /**
+   * Total-request bound for non-streaming chat() only (default 600s); the
+   * streaming path ignores it (inactivity detection covers it there).
+   * Callers with big output budgets (research synthesis: 8192 tokens on a
+   * 12B model under contention) must scale this up — a hard cap that fires
+   * mid-decode fails work the old streaming transport finished. Note the
+   * request holds an inflight slot the whole time, which also suppresses
+   * the wedged-engine auto-restart for that long.
+   */
+  timeoutMs?: number
   signal?: AbortSignal
 }
 
@@ -328,7 +338,7 @@ export class EngineClient {
     this.inflightCount += 1
     try {
       const signals = [
-        AbortSignal.timeout(CHAT_ONCE_TIMEOUT_MS),
+        AbortSignal.timeout(opts.timeoutMs ?? CHAT_ONCE_TIMEOUT_MS),
         ...(opts.signal ? [opts.signal] : [])
       ]
       const res = await fetch(`${this.baseUrl()}/v1/chat/completions`, {

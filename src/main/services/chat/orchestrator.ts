@@ -105,6 +105,17 @@ function appendToTrailingUserMessage(messages: ChatCompletionMessage[], text: st
   }
 }
 
+/** Fold a user message into the previous one (gemma rejects user-after-user). */
+function mergeUserMessage(into: ChatCompletionMessage, from: ChatCompletionMessage): void {
+  if (typeof into.content === 'string' && typeof from.content === 'string') {
+    into.content = `${into.content}\n\n${from.content}`
+    return
+  }
+  const toParts = (c: ChatCompletionMessage['content']): ChatContentPart[] =>
+    typeof c === 'string' ? (c ? [{ type: 'text', text: c }] : []) : (c ?? [])
+  into.content = [...toParts(into.content), ...toParts(from.content)]
+}
+
 /** Last few turns as plain text (thoughts and tool parts dropped) — feeds the
  * router's reference resolution ("what about Montreal?"). */
 function recentTextHistory(
@@ -394,8 +405,13 @@ export class ChatOrchestrator {
     const sources = new SourceTracker()
     let aborted = false
     let error: string | null = null
-    let tokensIn: number | null = null
-    let tokensOut: number | null = null
+    // Mutated in place by runModelLoop as rounds complete, so an abort or
+    // engine failure on a later round still persists the last round's usage
+    // (a return value would be lost on throw — review finding).
+    const usage: { tokensIn: number | null; tokensOut: number | null } = {
+      tokensIn: null,
+      tokensOut: null
+    }
 
     try {
       // A cold load can take minutes and is not itself cancellable (the warm
@@ -465,6 +481,7 @@ export class ChatOrchestrator {
       // loop. Collection chats stay model-owned too: a tools-off synthesis
       // round would take rag_search away from the very turn that needs it.
       let loopToolDefs = toolDefs
+      let loopStep: 'loop' | 'synthesis' = 'loop'
       if (webEnabled && !hasCollection) {
         const evidence = await this.tryGatherWebEvidence({ ctx, stream, path, sources, toolCtx })
         if (evidence) {
@@ -472,19 +489,20 @@ export class ChatOrchestrator {
           // Evidence in hand: tools off, so the model synthesizes instead of
           // re-looping (and cites the [n] numbers the pipeline minted).
           loopToolDefs = []
+          loopStep = 'synthesis'
         }
       }
 
-      const finished = await this.runModelLoop({
+      await this.runModelLoop({
         ctx,
         stream,
         messages,
         toolDefs: loopToolDefs,
+        step: loopStep,
         toolCtx,
-        sampling
+        sampling,
+        usage
       })
-      tokensIn = finished.tokensIn
-      tokensOut = finished.tokensOut
 
       if (sources.all().length > 0) {
         stream.add({ type: 'sources', sources: sources.all() })
@@ -492,6 +510,27 @@ export class ChatOrchestrator {
     } catch (err) {
       if (controller.signal.aborted) {
         aborted = true
+        // Settle dangling tool cards: a Stop between a tool_call part and
+        // its result would leave the renderer spinning forever (and native
+        // replays with a call that has no result) — the pipeline can strand
+        // up to three at once.
+        const parts = stream.snapshot()
+        const answered = new Set(
+          parts
+            .filter((p): p is Extract<MessagePart, { type: 'tool_result' }> => p.type === 'tool_result')
+            .map((p) => p.toolCallId)
+        )
+        for (const part of parts) {
+          if (part.type === 'tool_call' && !answered.has(part.id)) {
+            stream.add({
+              type: 'tool_result',
+              toolCallId: part.id,
+              name: part.name,
+              result: 'Stopped before this completed.'
+            })
+            this.toolEvent(ctx, part.id, part.name, 'error', 'stopped')
+          }
+        }
       } else {
         error = err instanceof Error ? err.message : String(err)
         this.log.warn(`generation failed: ${error}`)
@@ -501,7 +540,7 @@ export class ChatOrchestrator {
         void this.deps.modelService.refreshEngineModels().catch(() => {})
       }
     } finally {
-      stream.finalize({ tokensIn, tokensOut })
+      stream.finalize(usage)
       this.active.delete(conversationId)
       this.deps.broadcast({
         type: 'chat.done',
@@ -509,8 +548,8 @@ export class ChatOrchestrator {
         messageId: assistantMessageId,
         aborted,
         error,
-        tokensIn,
-        tokensOut,
+        tokensIn: usage.tokensIn,
+        tokensOut: usage.tokensOut,
         contextLength: this.deps.modelService.contextLengthFor(modelId)
       })
     }
@@ -614,17 +653,19 @@ export class ChatOrchestrator {
     stream: PartStream
     messages: ChatCompletionMessage[]
     toolDefs: ChatToolDef[]
+    /** Trace label: 'synthesis' = post-pipeline tools-off round. */
+    step: 'loop' | 'synthesis'
     toolCtx: ToolExecutionContext
     sampling: ModelSampling | null
-  }): Promise<{ tokensIn: number | null; tokensOut: number | null }> {
-    const { ctx, stream, messages, toolDefs, toolCtx, sampling } = args
+    /** run()-owned accumulator — survives throws (abort, engine failure). */
+    usage: { tokensIn: number | null; tokensOut: number | null }
+  }): Promise<void> {
+    const { ctx, stream, messages, toolDefs, step, toolCtx, sampling, usage } = args
     const { modelId, family, controller } = ctx
     // Derived from THIS loop's defs: in the post-pipeline synthesis round
     // (toolDefs: []) the salvage net must not convert gemma's imitated
     // '[tool_call]' lines into real executions — empty set, no matches.
     const knownToolNames = new Set(toolDefs.map((d) => d.function.name))
-    let tokensIn: number | null = null
-    let tokensOut: number | null = null
 
     let parseErrorLastIteration = false
     let toolBudgetExhausted = false
@@ -643,32 +684,51 @@ export class ChatOrchestrator {
         }
       }
 
-      for await (const event of this.deps.engine.streamChat({
-        model: modelId,
-        messages,
-        tools: !toolBudgetExhausted && toolDefs.length > 0 ? toolDefs : undefined,
-        maxTokens: maxTokensFor(modelId),
-        temperature: sampling?.temperature ?? undefined,
-        topP: sampling?.topP ?? undefined,
-        topK: sampling?.topK ?? undefined,
-        signal: controller.signal
-      })) {
-        if (event.type === 'content') consume(splitter.push(event.text))
-        else if (event.type === 'reasoning') stream.append('thought', event.text)
-        else {
-          toolCalls = event.toolCalls
-          finishReason = event.finishReason
-          // Last round only, NOT summed: the final prompt already re-encodes
-          // every earlier round's output, so tokensIn + tokensOut is the true
-          // end-of-generation context size (the donut's numerator).
-          tokensIn = event.tokensIn ?? tokensIn
-          tokensOut = event.tokensOut ?? tokensOut
+      try {
+        for await (const event of this.deps.engine.streamChat({
+          model: modelId,
+          messages,
+          tools: !toolBudgetExhausted && toolDefs.length > 0 ? toolDefs : undefined,
+          maxTokens: maxTokensFor(modelId),
+          temperature: sampling?.temperature ?? undefined,
+          topP: sampling?.topP ?? undefined,
+          topK: sampling?.topK ?? undefined,
+          signal: controller.signal
+        })) {
+          if (event.type === 'content') consume(splitter.push(event.text))
+          else if (event.type === 'reasoning') stream.append('thought', event.text)
+          else {
+            toolCalls = event.toolCalls
+            finishReason = event.finishReason
+            // Last round only, NOT summed: the final prompt already re-encodes
+            // every earlier round's output, so tokensIn + tokensOut is the true
+            // end-of-generation context size (the donut's numerator).
+            usage.tokensIn = event.tokensIn ?? usage.tokensIn
+            usage.tokensOut = event.tokensOut ?? usage.tokensOut
+          }
         }
+      } catch (err) {
+        // Failed rounds are exactly what the trace exists to debug.
+        traceLlm({
+          surface: 'chat',
+          step,
+          conversationId: ctx.conversationId,
+          model: modelId,
+          messages,
+          output: visibleText,
+          ok: false,
+          finishReason,
+          tokensIn: usage.tokensIn,
+          tokensOut: usage.tokensOut,
+          ms: Date.now() - roundStartedAt,
+          error: err instanceof Error ? err.message : String(err)
+        })
+        throw err
       }
       consume(splitter.flush())
       traceLlm({
         surface: 'chat',
-        step: toolDefs.length > 0 ? 'loop' : 'synthesis',
+        step,
         conversationId: ctx.conversationId,
         model: modelId,
         messages,
@@ -676,8 +736,8 @@ export class ChatOrchestrator {
         parsed: toolCalls.length > 0 ? toolCalls : undefined,
         ok: true,
         finishReason,
-        tokensIn,
-        tokensOut,
+        tokensIn: usage.tokensIn,
+        tokensOut: usage.tokensOut,
         ms: Date.now() - roundStartedAt
       })
 
@@ -729,12 +789,14 @@ export class ChatOrchestrator {
         if (visibleText.trim()) {
           messages.push({ role: 'assistant', content: visibleText.trim() })
         }
-        messages.push({
-          role: 'user',
-          content:
-            'Tool budget exhausted — do not call any more tools. ' +
+        // Via the append helper: with no visible text, gemma's history ends
+        // on the previous round's tool-results user turn — a pushed second
+        // user message would break alternation.
+        appendToTrailingUserMessage(
+          messages,
+          'Tool budget exhausted — do not call any more tools. ' +
             'Answer the original question now from the tool results you already have.'
-        })
+        )
         toolBudgetExhausted = true
         continue
       }
@@ -820,8 +882,6 @@ export class ChatOrchestrator {
       }
       parseErrorLastIteration = parseErrorThisIteration
     }
-
-    return { tokensIn, tokensOut }
   }
 
   private toolEvent(
@@ -873,11 +933,22 @@ export class ChatOrchestrator {
     const messages: ChatCompletionMessage[] = [
       { role: 'system', content: buildSystemPrompt(promptOpts) }
     ]
+    // An interrupted tool turn can replay ending in (or consisting solely
+    // of) a user-role message — the text-encoded '[tool_result …]' turn, or
+    // an aborted assistant message with no parts at all. Folding consecutive
+    // user messages keeps gemma's alternating template satisfiable; once a
+    // user-after-user pair persisted, every later send in the conversation
+    // would otherwise fail (review finding).
+    const push = (msg: ChatCompletionMessage): void => {
+      const last = messages[messages.length - 1]
+      if (msg.role === 'user' && last && last.role === 'user') mergeUserMessage(last, msg)
+      else messages.push(msg)
+    }
     for (const message of path) {
       if (message.role === 'user') {
-        messages.push(this.userMessage(message.parts, vision))
+        push(this.userMessage(message.parts, vision))
       } else if (message.role === 'assistant') {
-        messages.push(...this.assistantMessages(message.parts, family))
+        for (const m of this.assistantMessages(message.parts, family)) push(m)
       }
     }
     return messages
@@ -1080,12 +1151,27 @@ export class ChatOrchestrator {
     const startedAt = Date.now()
     const messages = titleMessages(userText, assistantText)
     let raw = ''
-    for await (const event of this.deps.engine.streamChat({
-      model: lowModel,
-      messages,
-      maxTokens: 200 // thinking tokens count against max_tokens before the title
-    })) {
-      if (event.type === 'content') raw += event.text
+    try {
+      for await (const event of this.deps.engine.streamChat({
+        model: lowModel,
+        messages,
+        maxTokens: 200 // thinking tokens count against max_tokens before the title
+      })) {
+        if (event.type === 'content') raw += event.text
+      }
+    } catch (err) {
+      traceLlm({
+        surface: 'chat',
+        step: 'title',
+        conversationId,
+        model: lowModel,
+        messages,
+        output: raw,
+        ok: false,
+        ms: Date.now() - startedAt,
+        error: err instanceof Error ? err.message : String(err)
+      })
+      throw err
     }
     const title = cleanTitle(stripThoughts(raw, familyOf(lowModel)))
     traceLlm({

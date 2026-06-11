@@ -88,28 +88,48 @@ const throwIfAborted = (signal: AbortSignal): void => {
 
 // --- search ---------------------------------------------------------------------
 
-/** Run all queries in parallel; emit one web_search call/result pair each. */
+/**
+ * Run all queries in parallel; one web_search call/result pair each. Call
+ * parts are emitted BEFORE the fetches run so the cards appear immediately
+ * (a Stop mid-search leaves dangling calls — run()'s abort sweep settles
+ * them). Results are emitted in query order once everything lands.
+ */
 async function searchAll(
   queries: string[],
   opts: SearchPipelineOptions
 ): Promise<Candidate[]> {
+  const jobs = queries.map((query, queryIndex) => ({
+    query,
+    queryIndex,
+    callId: `pipeline-${crypto.randomUUID()}`
+  }))
+  for (const job of jobs) {
+    opts.emit.addPart({
+      type: 'tool_call',
+      id: job.callId,
+      name: 'web_search',
+      args: JSON.stringify({ query: job.query, max_results: RESULTS_PER_QUERY })
+    })
+    opts.emit.toolEvent(job.callId, 'web_search', 'start', job.query)
+  }
+
   const settled = await Promise.all(
-    queries.map(async (query) => {
+    jobs.map(async (job) => {
       try {
         const res = await opts.tools.search(
           {
-            query,
+            query: job.query,
             maxResults: RESULTS_PER_QUERY,
             backend: 'auto',
             searxngUrl: opts.searxngUrl ?? undefined
           },
           opts.signal
         )
-        return { query, results: res.results, backend: res.backend, error: null as string | null }
+        return { job, results: res.results, backend: res.backend, error: null as string | null }
       } catch (err) {
         if (opts.signal.aborted) throw err
         return {
-          query,
+          job,
           results: [] as WebSearchEntry[],
           backend: '',
           error: err instanceof Error ? err.message : String(err)
@@ -121,20 +141,17 @@ async function searchAll(
 
   const candidates: Candidate[] = []
   const seen = new Set<string>()
-  settled.forEach((s, queryIndex) => {
-    const callId = `pipeline-${crypto.randomUUID()}`
-    opts.emit.addPart({
-      type: 'tool_call',
-      id: callId,
-      name: 'web_search',
-      args: JSON.stringify({ query: s.query, max_results: RESULTS_PER_QUERY })
-    })
-    opts.emit.toolEvent(callId, 'web_search', 'start', s.query)
+  for (const s of settled) {
     if (s.error) {
       const result = `Error: ${s.error}`
-      opts.emit.addPart({ type: 'tool_result', toolCallId: callId, name: 'web_search', result })
-      opts.emit.toolEvent(callId, 'web_search', 'error', clip(result, 200))
-      return
+      opts.emit.addPart({
+        type: 'tool_result',
+        toolCallId: s.job.callId,
+        name: 'web_search',
+        result
+      })
+      opts.emit.toolEvent(s.job.callId, 'web_search', 'error', clip(result, 200))
+      continue
     }
     const lines: string[] = []
     const sourceIds: number[] = []
@@ -144,19 +161,19 @@ async function searchAll(
       lines.push(`[${source.id}] ${r.title}\n${r.url}\n${r.snippet}`)
       if (!seen.has(r.url)) {
         seen.add(r.url)
-        candidates.push({ entry: r, sourceId: source.id, queryIndex })
+        candidates.push({ entry: r, sourceId: source.id, queryIndex: s.job.queryIndex })
       }
     }
     const result = lines.length > 0 ? lines.join('\n\n') : `No results (backend: ${s.backend}).`
     opts.emit.addPart({
       type: 'tool_result',
-      toolCallId: callId,
+      toolCallId: s.job.callId,
       name: 'web_search',
       result,
       sourceIds: [...new Set(sourceIds)]
     })
-    opts.emit.toolEvent(callId, 'web_search', 'result', clip(result, 200))
-  })
+    opts.emit.toolEvent(s.job.callId, 'web_search', 'result', clip(result, 200))
+  }
   return candidates
 }
 
