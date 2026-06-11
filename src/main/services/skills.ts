@@ -20,7 +20,7 @@ import { scopedLogger } from './logger'
 
 /** Bump when the bundled packs change — marker-carrying installs get refreshed. */
 const BUNDLED_PACK_VERSION = 1
-const BUNDLED_MARKER = '.orion-bundled'
+const BUNDLED_MARKER = '.crispin-bundled'
 
 /**
  * Skills are user-authored prompt packs: <dataDir>/skills/<name>/SKILL.md with
@@ -40,7 +40,7 @@ export class SkillsService {
 
   /**
    * Copy the bundled packs (resources/skills/*) into the user dir. The
-   * `.orion-bundled` marker is what distinguishes "ours" from user-authored:
+   * `.crispin-bundled` marker is what distinguishes "ours" from user-authored:
    * marker-carrying dirs refresh when the pack version bumps; dirs WITHOUT a
    * marker (user-created or user-adopted) are never touched.
    */
@@ -147,7 +147,7 @@ export class SkillsService {
       // especially now that installBundledPacks() auto-enables 20 packs.
       const target = resolve(dirname(link), readlinkSync(link))
       if (!target.startsWith(this.dir + sep)) {
-        throw new Error(`${link} points outside Orion's skills — not re-pointing a user-managed link`)
+        throw new Error(`${link} points outside Crispin's skills — not re-pointing a user-managed link`)
       }
       unlinkSync(link)
     }

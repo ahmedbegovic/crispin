@@ -115,7 +115,7 @@ function ProfileSection({
           Assistant name
           <CommitInput
             value={settings.profile.assistantName}
-            placeholder="Orion"
+            placeholder="Crispin"
             onCommit={(assistantName) => update({ profile: { ...settings.profile, assistantName } })}
           />
         </label>
@@ -259,7 +259,7 @@ function ModelsSection({
   return (
     <Section
       title="Models"
-      hint="Loaded models are unloaded after this long without activity in Orion. 0 disables."
+      hint="Loaded models are unloaded after this long without activity in Crispin. 0 disables."
     >
       <label className="flex items-center gap-2 text-[12px] text-zinc-400">
         Unload after
@@ -437,7 +437,7 @@ function RuntimesSection() {
           <>
             <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2">
               <div className="min-w-0 flex-1">
-                <p className="text-[12.5px] font-medium text-zinc-200">Orion</p>
+                <p className="text-[12.5px] font-medium text-zinc-200">Crispin</p>
                 <p className="text-[11px] text-zinc-500">{status.app}</p>
               </div>
             </div>
@@ -482,7 +482,7 @@ function AboutSection() {
   return (
     <Section title="About">
       <p className="text-[12px] text-zinc-500">
-        Orion {version ?? '…'} — local models only; nothing leaves this Mac.
+        Crispin {version ?? '…'} — local models only; nothing leaves this Mac.
       </p>
       {dataDir && <p className="text-[11px] text-zinc-700">Data: {dataDir}</p>}
     </Section>

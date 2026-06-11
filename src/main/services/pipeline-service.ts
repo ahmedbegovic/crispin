@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type { PermissionMode, PipelineSnapshot, PipelineStageId } from '@shared/types'
 import type { AgentService } from './agent-service'
 import { scopedLogger } from './logger'
@@ -33,7 +33,7 @@ interface PipelineRun {
 
 export interface PipelineServiceDeps {
   agentService: AgentService
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 /**
@@ -168,14 +168,14 @@ export class PipelineService {
 
     // Session deleted: events stop routing here forever — drop the run (and
     // its timer) instead of letting it hang 'running' for 90 minutes.
-    if (type === 'orion.sessionDeleted') {
+    if (type === 'crispin.sessionDeleted') {
       this.clearTimer(run)
       this.bySession.delete(sessionId)
       return
     }
     if (run.snapshot.status !== 'running') return
 
-    if (type === 'orion.promptFailed') {
+    if (type === 'crispin.promptFailed') {
       this.fail(run, String((event as { error?: unknown }).error ?? 'prompt failed'))
       return
     }

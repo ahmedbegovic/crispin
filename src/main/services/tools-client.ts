@@ -89,7 +89,7 @@ const SYNC_FETCH_TIMEOUT_MS = 60_000
 const bounded = (signal?: AbortSignal): AbortSignal =>
   AbortSignal.any([AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS), ...(signal ? [signal] : [])])
 
-/** Typed client for the orion-tools FastAPI sidecar. Grows with each milestone. */
+/** Typed client for the crispin-tools FastAPI sidecar. Grows with each milestone. */
 export class ToolsClient {
   constructor(private readonly baseUrl: () => string) {}
 

@@ -14,7 +14,7 @@ import * as fsp from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { shell } from 'electron'
 import { watch, type FSWatcher } from 'chokidar'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type { WorkspaceEntry } from '@shared/types'
 import { scopedLogger } from './logger'
 
@@ -24,7 +24,7 @@ const FS_DEBOUNCE_MS = 250
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 
 export interface WorkspaceFsDeps {
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 interface WatchedRoot {

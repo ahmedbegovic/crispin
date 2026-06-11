@@ -1,7 +1,7 @@
 [project]
-name = "orion-engine"
+name = "crispin-engine"
 version = "0.1.0"
-description = "Orion inference sidecar: oMLX OpenAI-compatible multi-model server"
+description = "Crispin inference sidecar: oMLX OpenAI-compatible multi-model server"
 requires-python = ">=3.12"
 dependencies = [
     "omlx",

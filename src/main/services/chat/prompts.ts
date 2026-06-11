@@ -19,7 +19,7 @@ const basePersona = (assistantName: string): string =>
   'You only know what is in this conversation and your training data — use the available tools for anything current or document-specific.'
 
 export function buildSystemPrompt(opts: SystemPromptOptions): string {
-  const assistantName = opts.assistantName.trim() || 'Orion'
+  const assistantName = opts.assistantName.trim() || 'Crispin'
   const sections: string[] = [opts.customPrompt?.trim() || basePersona(assistantName)]
 
   sections.push(

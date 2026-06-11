@@ -1,6 +1,6 @@
 import { statSync } from 'node:fs'
 import { spawn, type IPty } from 'node-pty'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import { scopedLogger } from './logger'
 
 const MAX_TERMINALS = 4
@@ -8,7 +8,7 @@ const MAX_TERMINALS = 4
 const FLUSH_MS = 16
 
 export interface TermServiceDeps {
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 interface Terminal {

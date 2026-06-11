@@ -9,12 +9,12 @@ You are advising the user on a design or implementation decision that has real t
 
 1. Restate the decision in one or two sentences: the options on the table, the constraints, and what "good" looks like. If the user's question is too vague to evaluate, ask one clarifying question before consulting anyone.
 2. Write down your own view first: which option you favor and the two or three strongest reasons. Commit to this before consulting, so the other model's answer does not anchor you.
-3. Call `orion_web_list_tiers` to see which model tiers are installed. Each entry has a label, model id, and estimated RAM.
+3. Call `crispin_web_list_tiers` to see which model tiers are installed. Each entry has a label, model id, and estimated RAM.
 4. Pick one tier to consult (two at most, and only if the first answer is genuinely inconclusive). Prefer a tier whose model is DIFFERENT from the one you are running on; a different model family is best. If every tier is the same model as you, pick the largest available tier and note this limitation in your output.
 5. Build the consultation prompt. Include: the decision and options, the concrete constraints (language, codebase facts, performance or RAM limits), and an explicit ask such as "Recommend one option and give your top 3 reasons, plus the main risk of your choice." Do NOT include your own opinion in the prompt — you want an independent take.
-6. Call `orion_web_consult_model` with `{ tier, prompt }` (add a short `system` string only if you need to set a role, e.g. "You are a senior backend engineer").
+6. Call `crispin_web_consult_model` with `{ tier, prompt }` (add a short `system` string only if you need to set a role, e.g. "You are a senior backend engineer").
    - WARNING: this call can take SEVERAL MINUTES. The engine swaps models in and out of RAM on a 24GB machine, so loading the consulted model is slow. Be patient and wait for the reply.
-   - Never call `orion_web_consult_model` in a loop or fire several calls back to back. One question, one call. If you need a follow-up, ask one single follow-up at most.
+   - Never call `crispin_web_consult_model` in a loop or fire several calls back to back. One question, one call. If you need a follow-up, ask one single follow-up at most.
    - If the call fails or times out, say so in your output and proceed with your own analysis alone.
 7. Compare the reply against your own view from step 2. List the points of agreement, the points of disagreement, and for each disagreement decide who is right and why, using the user's actual constraints as the tiebreaker.
 8. Make the final call. Agreement between models is supporting evidence, not proof; if you believe the consulted model is wrong, say so and explain.

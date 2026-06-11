@@ -1,9 +1,9 @@
 import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type { AttachmentInput, Conversation, MessagePart, Tier } from '@shared/types'
 import { TIERS, TIER_ORDER } from '@shared/model-tiers'
-import type { OrionDatabase } from '../db'
+import type { CrispinDatabase } from '../db'
 import * as settings from '../settings'
 import { dataDir } from '../paths'
 import { scopedLogger } from '../logger'
@@ -73,7 +73,7 @@ class PartStream {
     private readonly conversationId: string,
     private readonly messageId: string,
     private readonly repo: ChatRepo,
-    private readonly broadcast: (event: OrionEvent) => void
+    private readonly broadcast: (event: CrispinEvent) => void
   ) {}
 
   append(channel: 'text' | 'thought', text: string): void {
@@ -143,7 +143,7 @@ class PartStream {
 }
 
 export interface ChatOrchestratorDeps {
-  db: OrionDatabase
+  db: CrispinDatabase
   repo: ChatRepo
   engine: EngineClient
   tools: ToolsClient
@@ -152,7 +152,7 @@ export interface ChatOrchestratorDeps {
   skills: SkillsService
   library: LibraryService
   appSettings: AppSettingsService
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 interface RunContext {

@@ -54,7 +54,7 @@ export function opencodeBinary(): string {
 }
 
 /**
- * How to run a bundled Node script (the orion-web MCP shim): dev relies on
+ * How to run a bundled Node script (the crispin-web MCP shim): dev relies on
  * PATH, the packaged app reuses its own Electron binary in Node mode — users
  * cannot be assumed to have node installed.
  */

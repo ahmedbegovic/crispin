@@ -25,7 +25,7 @@ export function engineConfigPath(): string {
  * Write the engine config — the contract between Electron main (writer) and
  * run_engine.py (reader). Rewritten at every engine spawn so the port and
  * per-model settings are always current. oMLX discovers models from the HF
- * cache itself; the models list here only carries Orion's per-model settings
+ * cache itself; the models list here only carries Crispin's per-model settings
  * (and fingerprints restarts via registryKey).
  */
 export function writeEngineConfig(opts: EngineConfigOptions): string {

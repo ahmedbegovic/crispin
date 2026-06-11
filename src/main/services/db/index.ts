@@ -9,9 +9,9 @@ import migration0004 from './migrations/0004_research_source_image.sql?raw'
 
 const MIGRATIONS: string[] = [migration0001, migration0002, migration0003, migration0004]
 
-export type OrionDatabase = DatabaseSync
+export type CrispinDatabase = DatabaseSync
 
-export function openDatabase(dbPath: string): OrionDatabase {
+export function openDatabase(dbPath: string): CrispinDatabase {
   const log = scopedLogger('db')
   mkdirSync(dirname(dbPath), { recursive: true })
   const db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: true })

@@ -12,8 +12,8 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
-import type { OrionEvent } from '@shared/ipc'
-import type { OrionDatabase } from './db'
+import type { CrispinEvent } from '@shared/ipc'
+import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 import { dataDir, opencodeBinary, sidecarDir, uvBinary } from './paths'
 import type { EngineClient } from './engine-client'
@@ -50,11 +50,11 @@ const TOOLS_TOP_LEVEL = [
 ]
 
 export interface RuntimeManagerDeps {
-  db: OrionDatabase
+  db: CrispinDatabase
   processManager: ProcessManager
   engine: EngineClient
   pool: OpencodePool
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 /**
@@ -90,7 +90,7 @@ function venvPython(name: 'engine' | 'tools'): string {
 }
 
 /** The opencode binary the pool should spawn — custom update first, else bundled. */
-export function resolveOpencodeBinary(db: OrionDatabase): string {
+export function resolveOpencodeBinary(db: CrispinDatabase): string {
   const custom = settings.get<string | null>(db, 'runtimes.opencodePath', null)
   return custom && existsSync(custom) ? custom : opencodeBinary()
 }

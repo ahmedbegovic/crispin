@@ -14,11 +14,11 @@ mechanical tasks, answer directly and skip the consultation entirely.
 1. Restate the user's question as one self-contained prompt. Inline all needed context
    (code snippets, error text, constraints) — consulted models cannot see this
    conversation; they see only the prompt you send.
-2. Call `orion_web_list_tiers` to see which model tiers are installed. Note each tier's
+2. Call `crispin_web_list_tiers` to see which model tiers are installed. Note each tier's
    label, model id, and estimated RAM.
 3. Pick 2-3 tiers. Prefer tiers whose model differs from the one you are running as —
    model diversity is the point. If only one other tier exists, consult just that one.
-4. Call `orion_web_consult_model` with `{ tier, prompt }` for the FIRST tier and wait for
+4. Call `crispin_web_consult_model` with `{ tier, prompt }` for the FIRST tier and wait for
    the reply. IMPORTANT: each call can take several minutes, because the engine swaps
    models in and out of RAM on this 24GB machine. Be patient: never call tiers in
    parallel, never retry just because a call is slow, and never call in a tight loop.

@@ -1,7 +1,7 @@
 [project]
-name = "orion-tools"
+name = "crispin-tools"
 version = "0.1.0"
-description = "Orion helper sidecar: downloads, extraction, RAG, search, news"
+description = "Crispin helper sidecar: downloads, extraction, RAG, search, news"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

@@ -19,7 +19,7 @@ export function basename(path: string): string {
  * bogus path to main.
  */
 export function pathForFile(file: File): string | null {
-  const bridge = window.orion as typeof window.orion & {
+  const bridge = window.crispin as typeof window.crispin & {
     getPathForFile?: (file: File) => string
   }
   if (typeof bridge.getPathForFile === 'function') {

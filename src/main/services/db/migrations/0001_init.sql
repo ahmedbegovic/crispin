@@ -1,4 +1,4 @@
--- Orion schema v1. Timestamps are unix epoch milliseconds. Ids are UUIDs.
+-- Crispin schema v1. Timestamps are unix epoch milliseconds. Ids are UUIDs.
 
 CREATE TABLE settings (
   key   TEXT PRIMARY KEY,

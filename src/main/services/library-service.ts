@@ -1,8 +1,8 @@
 import { extname, join } from 'node:path'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type { Collection, LibraryDoc, LibraryDocStatus } from '@shared/types'
 import { EMBEDDING_MODEL } from '@shared/model-tiers'
-import type { OrionDatabase } from './db'
+import type { CrispinDatabase } from './db'
 import { engineModelId } from './engine-client'
 import type { ToolsClient } from './tools-client'
 import type { ProcessManager } from './process-manager'
@@ -56,13 +56,13 @@ const kindFromSource = (path?: string, url?: string): string => {
 }
 
 export interface LibraryServiceDeps {
-  db: OrionDatabase
+  db: CrispinDatabase
   tools: ToolsClient
   processManager: ProcessManager
   getEnginePort: () => number
   /** Whether the engine chat registry would be non-empty (the embedder never counts). */
   hasRegistryModels: () => boolean
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 /**

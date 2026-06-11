@@ -7,7 +7,7 @@ import type {
   MessagePart,
   Tier
 } from '@shared/types'
-import type { OrionEventOf } from '@shared/ipc'
+import type { CrispinEventOf } from '@shared/ipc'
 import { call, onEvent } from '@/lib/ipc'
 import { pushToast } from '@/stores/toasts'
 
@@ -135,7 +135,7 @@ function assistantStub(
   }
 }
 
-function applyDelta(message: ChatMessage, event: OrionEventOf<'chat.delta'>): ChatMessage {
+function applyDelta(message: ChatMessage, event: CrispinEventOf<'chat.delta'>): ChatMessage {
   const parts = message.parts.slice()
   const existing = parts[event.partIndex]
   if (

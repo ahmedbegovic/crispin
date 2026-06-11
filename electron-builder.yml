@@ -1,5 +1,5 @@
-appId: dev.ahmed.orion
-productName: Orion
+appId: dev.ahmed.crispin
+productName: Crispin
 directories:
   output: dist
   buildResources: build

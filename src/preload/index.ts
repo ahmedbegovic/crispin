@@ -2,12 +2,12 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 const api = {
   call: (method: string, input: unknown): Promise<unknown> =>
-    ipcRenderer.invoke('orion:call', method, input),
+    ipcRenderer.invoke('crispin:call', method, input),
   onEvent: (callback: (event: unknown) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => callback(payload)
-    ipcRenderer.on('orion:event', listener)
+    ipcRenderer.on('crispin:event', listener)
     return () => {
-      ipcRenderer.removeListener('orion:event', listener)
+      ipcRenderer.removeListener('crispin:event', listener)
     }
   },
   /**
@@ -17,6 +17,6 @@ const api = {
   getPathForFile: (file: File): string => webUtils.getPathForFile(file)
 }
 
-contextBridge.exposeInMainWorld('orion', api)
+contextBridge.exposeInMainWorld('crispin', api)
 
-export type OrionBridge = typeof api
+export type CrispinBridge = typeof api

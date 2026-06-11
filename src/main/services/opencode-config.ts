@@ -28,7 +28,7 @@ export function renderInstructionsText(settings: AppSettings): string {
   const userName = settings.profile.userName.trim()
   if (userName) parts.push(`The user's name is ${userName}.`)
   const assistantName = settings.profile.assistantName.trim()
-  if (assistantName && assistantName !== 'Orion') {
+  if (assistantName && assistantName !== 'Crispin') {
     parts.push(`The user calls this assistant ${assistantName}.`)
   }
   const global = settings.instructions.global.trim()
@@ -99,28 +99,28 @@ export function writeOpencodeConfig(opts: OpencodeConfigOptions): string {
   const config = {
     $schema: 'https://opencode.ai/config.json',
     provider: {
-      orion: {
+      crispin: {
         npm: '@ai-sdk/openai-compatible',
-        name: 'Orion Local',
+        name: 'Crispin Local',
         options: { baseURL: `http://127.0.0.1:${opts.enginePort}/v1` },
         models
       }
     },
     mcp: {
-      // The key prefixes the tool names (orion_web_web_search). It must stay
+      // The key prefixes the tool names (crispin_web_web_search). It must stay
       // hyphen-free: gemma emits tool calls for hyphenated names in a mangled
       // format the engine's gemma parser cannot parse (verified live).
-      orion_web: {
+      crispin_web: {
         type: 'local',
         // Packaged: the app's own Electron binary in Node mode — users cannot
         // be assumed to have node on PATH.
-        command: [nodeRunner().command, join(resourcesDir(), 'orion-web-mcp.mjs')],
+        command: [nodeRunner().command, join(resourcesDir(), 'crispin-web-mcp.mjs')],
         environment: {
-          ORION_TOOLS_URL: `http://127.0.0.1:${opts.toolsPort}`,
-          // Cross-model consultation (orion_web_consult_model / _list_tiers).
-          ORION_ENGINE_URL: `http://127.0.0.1:${opts.enginePort}`,
-          ORION_TIER_MAP: JSON.stringify(opts.consult.tierMap),
-          ORION_ENGINE_BUDGET_GB: String(opts.consult.budgetGB),
+          CRISPIN_TOOLS_URL: `http://127.0.0.1:${opts.toolsPort}`,
+          // Cross-model consultation (crispin_web_consult_model / _list_tiers).
+          CRISPIN_ENGINE_URL: `http://127.0.0.1:${opts.enginePort}`,
+          CRISPIN_TIER_MAP: JSON.stringify(opts.consult.tierMap),
+          CRISPIN_ENGINE_BUDGET_GB: String(opts.consult.budgetGB),
           ...nodeRunner().env
         },
         enabled: true

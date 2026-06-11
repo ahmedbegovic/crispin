@@ -355,7 +355,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             }))
           break
         }
-        case 'orion.promptFailed': {
+        case 'crispin.promptFailed': {
           // Main's own marker: the fire-and-forget prompt never reached opencode.
           clearBusy(sessionId)
           set((s) => {

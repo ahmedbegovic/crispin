@@ -1,9 +1,9 @@
 import { BrowserWindow } from 'electron'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 
 /** Push an event to every renderer over the single multiplexed channel. */
-export function broadcast(event: OrionEvent): void {
+export function broadcast(event: CrispinEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('orion:event', event)
+    if (!win.isDestroyed()) win.webContents.send('crispin:event', event)
   }
 }

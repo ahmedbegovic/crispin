@@ -1,4 +1,4 @@
-# Orion
+# Crispin
 
 Personal macOS desktop app for running local LLMs via [MLX](https://github.com/ml-explore/mlx).
 Electron + React + TypeScript shell with two uv-managed Python sidecars:
@@ -66,7 +66,7 @@ Other commands:
 - `resources/skills/` — skill packs that ship with the app, copied into app data
   on first run so they can be customized
 
-App data lives in `~/Library/Application Support/Orion/`.
+App data lives in `~/Library/Application Support/Crispin/`.
 
 ## License
 

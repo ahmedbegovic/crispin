@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type { AgentSessionMeta, AgentTab, PermissionMode, Tier } from '@shared/types'
 import { TIER_ORDER } from '@shared/model-tiers'
-import type { OrionDatabase } from './db'
+import type { CrispinDatabase } from './db'
 import { engineModelId } from './engine-client'
 import type { ModelService } from './model-service'
 import type { OpencodePool } from './opencode-pool'
@@ -11,10 +11,10 @@ import { dataDir } from './paths'
 import { scopedLogger } from './logger'
 
 export interface AgentServiceDeps {
-  db: OrionDatabase
+  db: CrispinDatabase
   pool: OpencodePool
   modelService: ModelService
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 interface AgentSessionRow {
@@ -157,7 +157,7 @@ export class AgentService {
   /**
    * Fire-and-forget: POST /session/{id}/prompt_async returns 204 on admission
    * and all progress arrives over the SSE bridge. Errors surface as an
-   * orion.promptFailed agent.event (the renderer's handler owns the toast)
+   * crispin.promptFailed agent.event (the renderer's handler owns the toast)
    * instead of failing the IPC call.
    */
   async prompt(sessionId: string, text: string, tier?: Tier, mode?: PermissionMode): Promise<void> {
@@ -172,7 +172,7 @@ export class AgentService {
     void this.firePrompt(row, baseUrl, modelId, text, mode).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err)
       this.log.warn(`prompt failed for session ${row.id}: ${message}`)
-      const failed = { type: 'orion.promptFailed', error: message }
+      const failed = { type: 'crispin.promptFailed', error: message }
       this.deps.broadcast({ type: 'agent.event', sessionId: row.id, tab: row.tab, event: failed })
       this.emitSessionEvent(row.id, failed)
     })
@@ -213,7 +213,7 @@ export class AgentService {
     const row = this.row(sessionId)
     // Listeners (pipeline) must hear about the deletion — after the row goes,
     // SSE events stop resolving to this session and nothing else tells them.
-    this.emitSessionEvent(sessionId, { type: 'orion.sessionDeleted' })
+    this.emitSessionEvent(sessionId, { type: 'crispin.sessionDeleted' })
     const server = this.deps.pool.runningServer(row.directory)
     if (server) {
       try {
@@ -291,7 +291,7 @@ export class AgentService {
 
   private async createOpencodeSession(baseUrl: string, modelId: string): Promise<string> {
     const res = await this.request(baseUrl, 'POST', '/session', {
-      model: { providerID: 'orion', id: modelId }
+      model: { providerID: 'crispin', id: modelId }
     })
     if (!res.ok) throw new Error(`opencode session create failed: ${res.status}`)
     const session = (await res.json()) as { id: string }
@@ -306,7 +306,7 @@ export class AgentService {
     mode?: PermissionMode
   ): Promise<void> {
     const body = {
-      model: { providerID: 'orion', modelID: modelId },
+      model: { providerID: 'crispin', modelID: modelId },
       // 'plan' is opencode's built-in read-only agent; the other two are ours
       // (opencode-config.ts). Normal omits the field = top-level permissions.
       ...(mode && mode !== 'normal' ? { agent: mode } : {}),

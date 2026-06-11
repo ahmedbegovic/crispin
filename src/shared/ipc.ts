@@ -435,7 +435,7 @@ export const appSettingsSchema = z.object({
 export type AppSettings = z.infer<typeof appSettingsSchema>
 
 // ---------------------------------------------------------------------------
-// Method contract: renderer -> main request/response over `orion:call`.
+// Method contract: renderer -> main request/response over `crispin:call`.
 // Every method is zod-validated on both sides of the bridge.
 // ---------------------------------------------------------------------------
 
@@ -1039,14 +1039,14 @@ export type MethodName = keyof Contract
 export type MethodInput<M extends MethodName> = z.infer<Contract[M]['input']>
 export type MethodOutput<M extends MethodName> = z.infer<Contract[M]['output']>
 
-/** Envelope returned by main for every `orion:call` invoke. */
+/** Envelope returned by main for every `crispin:call` invoke. */
 export type CallResult<T> = { ok: true; data: T } | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
-// Event bus: main -> renderer over the single `orion:event` channel.
+// Event bus: main -> renderer over the single `crispin:event` channel.
 // ---------------------------------------------------------------------------
 
-export const orionEventSchema = z.discriminatedUnion('type', [
+export const crispinEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('system.processState'),
     process: processSnapshotSchema
@@ -1184,6 +1184,6 @@ export const orionEventSchema = z.discriminatedUnion('type', [
   })
 ])
 
-export type OrionEvent = z.infer<typeof orionEventSchema>
-export type OrionEventType = OrionEvent['type']
-export type OrionEventOf<T extends OrionEventType> = Extract<OrionEvent, { type: T }>
+export type CrispinEvent = z.infer<typeof crispinEventSchema>
+export type CrispinEventType = CrispinEvent['type']
+export type CrispinEventOf<T extends CrispinEventType> = Extract<CrispinEvent, { type: T }>

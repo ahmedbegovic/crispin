@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { z } from 'zod'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type {
   ResearchMode,
   ResearchRunMeta,
@@ -13,7 +13,7 @@ import type {
   Tier
 } from '@shared/types'
 import { TIER_ORDER } from '@shared/model-tiers'
-import type { OrionDatabase } from './db'
+import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 import { dataDir } from './paths'
 import { scopedLogger } from './logger'
@@ -219,13 +219,13 @@ const rowToSource = (row: SourceRow): ResearchSource => ({
 })
 
 export interface ResearchOrchestratorDeps {
-  db: OrionDatabase
+  db: CrispinDatabase
   engine: EngineClient
   tools: ToolsClient
   modelService: ModelService
   library: LibraryService
   appSettings: AppSettingsService
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 /**

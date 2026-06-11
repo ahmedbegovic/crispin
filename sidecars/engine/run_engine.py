@@ -35,10 +35,10 @@ def engine_model_id(repo_id: str) -> str:
 
 
 def write_model_settings(models: list[dict[str, Any]]) -> None:
-    """Merge Orion's per-model settings into oMLX's model_settings.json.
+    """Merge Crispin's per-model settings into oMLX's model_settings.json.
 
-    Only the keys Orion manages are overwritten; settings the user tuned in
-    oMLX's own admin UI (and entries for models Orion doesn't know) survive.
+    Only the keys Crispin manages are overwritten; settings the user tuned in
+    oMLX's own admin UI (and entries for models Crispin doesn't know) survive.
     """
     path = Path.home() / ".omlx" / "model_settings.json"
     try:

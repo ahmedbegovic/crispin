@@ -21,7 +21,7 @@ export function handle<M extends MethodName>(method: M, fn: Handler<M>): void {
 export function attachRouter(): void {
   const log = scopedLogger('ipc')
   ipcMain.handle(
-    'orion:call',
+    'crispin:call',
     async (_event, method: string, input: unknown): Promise<CallResult<unknown>> => {
       try {
         const def = contract[method as MethodName]

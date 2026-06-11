@@ -6,7 +6,7 @@ import {
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { McpScope, McpServer } from '@shared/types'
 import type { ChatToolDef } from './engine-client'
-import type { OrionDatabase } from './db'
+import type { CrispinDatabase } from './db'
 import { scopedLogger } from './logger'
 
 const CALL_TIMEOUT_MS = 30_000
@@ -63,7 +63,7 @@ export class McpManager {
   private readonly routes = new Map<string, ToolRoute>()
   private readonly log = scopedLogger('mcp')
 
-  constructor(private readonly db: OrionDatabase) {}
+  constructor(private readonly db: CrispinDatabase) {}
 
   // --- table CRUD (mcp_servers is the source of truth) -------------------------
 
@@ -112,7 +112,7 @@ export class McpManager {
   // --- connections ---------------------------------------------------------------
 
   private async connect(server: McpServer): Promise<Client> {
-    const client = new Client({ name: 'orion', version: '0.1.0' })
+    const client = new Client({ name: 'crispin', version: '0.1.0' })
     const transport =
       server.transport === 'stdio'
         ? new StdioClientTransport({

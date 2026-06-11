@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Stdio MCP server proxying web search/visit to the Orion tools sidecar.
-// Spawned by opencode (config mcp['orion-web']); ORION_TOOLS_URL carries the
+// Stdio MCP server proxying web search/visit to the Crispin tools sidecar.
+// Spawned by opencode (config mcp['crispin-web']); CRISPIN_TOOLS_URL carries the
 // sidecar base url. Standalone on purpose: plain Node ESM, no imports from
 // src/ — bare specifiers resolve against the adjacent node_modules.
 // stdout is the protocol channel — never write anything else to it.
@@ -12,8 +12,8 @@ import { z } from 'zod'
 const FETCH_TIMEOUT_MS = 60_000
 
 async function toolsPost(path, body) {
-  const base = process.env.ORION_TOOLS_URL
-  if (!base) throw new Error('ORION_TOOLS_URL is not set')
+  const base = process.env.CRISPIN_TOOLS_URL
+  if (!base) throw new Error('CRISPIN_TOOLS_URL is not set')
   const res = await fetch(`${base.replace(/\/+$/, '')}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -33,7 +33,7 @@ const errorResult = (err) => ({
   content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }]
 })
 
-const server = new McpServer({ name: 'orion-web', version: '0.1.0' })
+const server = new McpServer({ name: 'crispin-web', version: '0.1.0' })
 
 server.registerTool(
   'web_search',
@@ -92,15 +92,15 @@ const ENGINE_STATUS_TIMEOUT_MS = 15_000
 const CONSULT_TIMEOUT_MS = 10 * 60_000
 
 function engineBase() {
-  const base = process.env.ORION_ENGINE_URL
-  if (!base) throw new Error('ORION_ENGINE_URL is not set')
+  const base = process.env.CRISPIN_ENGINE_URL
+  if (!base) throw new Error('CRISPIN_ENGINE_URL is not set')
   return base.replace(/\/+$/, '')
 }
 
 /** tier -> { modelId (engine id), estGB, label }; written by opencode-config. */
 function tierMap() {
   try {
-    return JSON.parse(process.env.ORION_TIER_MAP ?? '{}')
+    return JSON.parse(process.env.CRISPIN_TIER_MAP ?? '{}')
   } catch {
     return {}
   }
@@ -130,7 +130,7 @@ server.registerTool(
       const map = tierMap()
       const tiers = Object.entries(map)
       if (tiers.length === 0) return textResult('No tiers are installed right now.')
-      const budget = Number(process.env.ORION_ENGINE_BUDGET_GB ?? '0')
+      const budget = Number(process.env.CRISPIN_ENGINE_BUDGET_GB ?? '0')
       const lines = tiers.map(
         ([tier, t]) => `- ${tier} (${t.label}): ${t.modelId} — ~${t.estGB} GB`
       )
@@ -165,7 +165,7 @@ server.registerTool(
           new Error(`Unknown tier "${tier}" — installed tiers: ${Object.keys(map).join(', ') || 'none'}`)
         )
       }
-      const budget = Number(process.env.ORION_ENGINE_BUDGET_GB ?? '0')
+      const budget = Number(process.env.CRISPIN_ENGINE_BUDGET_GB ?? '0')
       if (budget && target.estGB > budget) {
         return errorResult(
           new Error(`${target.label} (~${target.estGB} GB) cannot fit the ${budget} GB memory budget on this machine.`)
@@ -225,6 +225,6 @@ server.registerTool(
 try {
   await server.connect(new StdioServerTransport())
 } catch (err) {
-  console.error(`orion-web-mcp failed to start: ${err instanceof Error ? err.message : err}`)
+  console.error(`crispin-web-mcp failed to start: ${err instanceof Error ? err.message : err}`)
   process.exit(1)
 }

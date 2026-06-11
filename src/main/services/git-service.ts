@@ -3,7 +3,7 @@ import { promisify } from 'node:util'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import { shell } from 'electron'
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type { GitFileStatus, GitLogEntry, GitStatus } from '@shared/types'
 import { scopedLogger } from './logger'
 
@@ -17,7 +17,7 @@ const LOG_DEFAULT_LIMIT = 100
 export interface GitServiceDeps {
   /** Roots must be workspaces the renderer actually opened — never arbitrary paths. */
   isOpenRoot: (root: string) => boolean
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 /**

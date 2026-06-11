@@ -4,7 +4,7 @@ from . import __version__
 from .jobs import registry
 from .routers import downloads, extract, news, rag, web
 
-app = FastAPI(title="orion-tools", version=__version__)
+app = FastAPI(title="crispin-tools", version=__version__)
 app.include_router(downloads.router)
 app.include_router(extract.router)
 app.include_router(news.router)
@@ -14,7 +14,7 @@ app.include_router(web.router)
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok", "service": "orion-tools", "version": __version__}
+    return {"status": "ok", "service": "crispin-tools", "version": __version__}
 
 
 @app.get("/jobs/{job_id}")

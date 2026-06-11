@@ -5,9 +5,9 @@ import rehypeHighlight from 'rehype-highlight'
 
 // react-markdown's default urlTransform strips any scheme outside its http(s)
 // allowlist BEFORE component renderers run — without this passthrough the img
-// renderer below would never see an orion-attachment: src.
+// renderer below would never see an crispin-attachment: src.
 const urlTransform = (url: string): string =>
-  /^orion-attachment:/i.test(url) ? url : defaultUrlTransform(url)
+  /^crispin-attachment:/i.test(url) ? url : defaultUrlTransform(url)
 
 // Tailwind preflight strips element margins, so markdown elements are styled
 // here instead of a global stylesheet (no typography plugin installed).
@@ -69,7 +69,7 @@ const components: Components = {
     const url = typeof src === 'string' ? src : ''
     // https remote images and our own attachment protocol only; anything else
     // (file:, data:, http:) renders as a labeled placeholder.
-    if (!/^(https:|orion-attachment:)/i.test(url)) {
+    if (!/^(https:|crispin-attachment:)/i.test(url)) {
       return <span className="text-zinc-500">[image: {alt || 'unsupported source'}]</span>
     }
     return (

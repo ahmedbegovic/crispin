@@ -1,7 +1,7 @@
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type { NewsItem, NewsItemStatus, NewsSource, Tier } from '@shared/types'
 import { TIER_ORDER, TIERS } from '@shared/model-tiers'
-import type { OrionDatabase } from './db'
+import type { CrispinDatabase } from './db'
 import { scopedLogger } from './logger'
 import type { EngineClient } from './engine-client'
 import type { ToolsClient } from './tools-client'
@@ -103,12 +103,12 @@ const rowToItem = (row: ItemListRow): NewsItem => ({
 })
 
 export interface NewsSchedulerDeps {
-  db: OrionDatabase
+  db: CrispinDatabase
   tools: ToolsClient
   engine: EngineClient
   modelService: ModelService
   appSettings: AppSettingsService
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 /**

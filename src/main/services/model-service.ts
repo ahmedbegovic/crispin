@@ -1,4 +1,4 @@
-import type { OrionEvent } from '@shared/ipc'
+import type { CrispinEvent } from '@shared/ipc'
 import type {
   DownloadInfo,
   DownloadState,
@@ -26,7 +26,7 @@ import {
   validateModelRepo,
   type TierSpec
 } from '@shared/model-tiers'
-import type { OrionDatabase } from './db'
+import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 import type { AppSettingsService } from './app-settings'
 import { writeEngineConfig, type EngineConfigModel } from './engine-config'
@@ -91,7 +91,7 @@ const rowToDownload = (row: DownloadRow): DownloadInfo => ({
 })
 
 export interface ModelServiceDeps {
-  db: OrionDatabase
+  db: CrispinDatabase
   tools: ToolsClient
   engine: EngineClient
   ramGuard: RamGuard
@@ -104,7 +104,7 @@ export interface ModelServiceDeps {
   /** Idle-sweep guards: never unload under active background work. */
   isResearchActive: () => boolean
   isNewsBusy: () => boolean
-  broadcast: (event: OrionEvent) => void
+  broadcast: (event: CrispinEvent) => void
 }
 
 /** Owns model downloads, the engine registry, and load/unload orchestration. */
@@ -707,7 +707,7 @@ export class ModelService {
     return {
       running,
       budgetGB: this.deps.ramGuard.report(0).budgetGB,
-      // Renderer-facing list sticks to Orion-known chat models: oMLX discovers
+      // Renderer-facing list sticks to Crispin-known chat models: oMLX discovers
       // everything in the shared HF cache (embedder, foreign repos), and those
       // must not flip LocalModels' "Unload all" / load badges. loadedGB() keeps
       // using the unfiltered list so the RAM donut stays honest.

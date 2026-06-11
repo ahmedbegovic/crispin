@@ -367,6 +367,17 @@ wheels = [
 ]
 
 [[package]]
+name = "crispin-engine"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "omlx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "omlx", git = "https://github.com/jundot/omlx.git?tag=v0.4.3" }]
+
+[[package]]
 name = "cryptography"
 version = "48.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1468,17 +1479,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/17/de5458312bcb07ddf434d7bfcb24bb52c59635ad58c6e7c751b48949b009/opencv_python-4.13.0.92-cp37-abi3-win32.whl", hash = "sha256:372fe164a3148ac1ca51e5f3ad0541a4a276452273f503441d718fab9c5e5f59", size = 30932638, upload-time = "2026-02-05T07:02:14.98Z" },
     { url = "https://files.pythonhosted.org/packages/e9/a5/1be1516390333ff9be3a9cb648c9f33df79d5096e5884b5df71a588af463/opencv_python-4.13.0.92-cp37-abi3-win_amd64.whl", hash = "sha256:423d934c9fafb91aad38edf26efb46da91ffbc05f3f59c4b0c72e699720706f5", size = 40212062, upload-time = "2026-02-05T07:02:12.724Z" },
 ]
-
-[[package]]
-name = "orion-engine"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "omlx" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "omlx", git = "https://github.com/jundot/omlx.git?tag=v0.4.3" }]
 
 [[package]]
 name = "packaging"

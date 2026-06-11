@@ -1,15 +1,15 @@
-import type { AppSettings, OrionEvent } from '@shared/ipc'
+import type { AppSettings, CrispinEvent } from '@shared/ipc'
 import { defaultModulesEnabled } from '@shared/modules'
 import type { Feature } from '@shared/types'
-import type { OrionDatabase } from './db'
+import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 
 /** One knob for both the main-side idle sweep and the oMLX TTL backstop. */
 export const DEFAULT_IDLE_UNLOAD_SECONDS = 300
 
 export interface AppSettingsServiceDeps {
-  db: OrionDatabase
-  broadcast: (event: OrionEvent) => void
+  db: CrispinDatabase
+  broadcast: (event: CrispinEvent) => void
 }
 
 /**
@@ -23,7 +23,7 @@ export class AppSettingsService {
   get(): AppSettings {
     const db = this.deps.db
     return {
-      profile: settings.get(db, 'profile', { userName: '', assistantName: 'Orion' }),
+      profile: settings.get(db, 'profile', { userName: '', assistantName: 'Crispin' }),
       instructions: settings.get(db, 'instructions', { global: '', perModule: {} }),
       modulesEnabled: {
         ...defaultModulesEnabled(),

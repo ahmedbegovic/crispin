@@ -6,7 +6,7 @@ import type {
   MessageRole,
   Tier
 } from '@shared/types'
-import type { OrionDatabase } from '../db'
+import type { CrispinDatabase } from '../db'
 
 interface ConversationRow {
   id: string
@@ -66,7 +66,7 @@ export interface InsertMessageInput {
 
 /** All chat SQL lives here: conversations CRUD + the message tree. */
 export class ChatRepo {
-  constructor(private readonly db: OrionDatabase) {}
+  constructor(private readonly db: CrispinDatabase) {}
 
   // --- conversations ----------------------------------------------------------
 

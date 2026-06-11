@@ -1,13 +1,13 @@
 import { statSync } from 'node:fs'
 import { BrowserWindow, dialog } from 'electron'
 import { handle } from '../ipc/router'
-import type { OrionDatabase } from '../services/db'
+import type { CrispinDatabase } from '../services/db'
 import * as settings from '../services/settings'
 import type { WorkspaceFs } from '../services/workspace-fs'
 import type { TermService } from '../services/term-service'
 
 export interface CodeFeatureDeps {
-  db: OrionDatabase
+  db: CrispinDatabase
   workspaceFs: WorkspaceFs
   terms: TermService
 }

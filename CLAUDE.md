@@ -1,4 +1,4 @@
-# Orion
+# Crispin
 
 Personal macOS desktop app for using local LLMs via MLX. Electron + React + TS shell,
 two uv-managed Python sidecars, opencode embedded for agentic tabs. Single user, no auth.
@@ -14,7 +14,7 @@ Apple Silicon only; dev machine has 24GB unified memory — RAM headroom is the 
 
 ## Architecture
 
-- `src/shared/ipc.ts` — the typed IPC contract (zod). Renderer calls `window.orion.call(method, input)`;
+- `src/shared/ipc.ts` — the typed IPC contract (zod). Renderer calls `window.crispin.call(method, input)`;
   main pushes events on one channel. Every new feature extends this contract first.
 - `src/main/services/process-manager.ts` — supervises sidecars (spawn/health/backoff/restart,
   process-group kills). Engine restarts are a feature (model swap), not a failure.
@@ -33,5 +33,5 @@ Apple Silicon only; dev machine has 24GB unified memory — RAM headroom is the 
 - Main process owns all orchestration; renderer never talks to sidecars directly.
 - Long sidecar jobs return `{job_id}`; poll `GET /jobs/{id}`.
 - Timestamps: unix ms. Ids: `crypto.randomUUID()`.
-- App data: `~/Library/Application Support/Orion/` (db, logs, reports, skills, memory).
+- App data: `~/Library/Application Support/Crispin/` (db, logs, reports, skills, memory).
   Model weights stay in the shared HF cache (`~/.cache/huggingface/hub`).

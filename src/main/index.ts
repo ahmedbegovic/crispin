@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { initLogging, log } from './services/logger'
-import { openDatabase, type OrionDatabase } from './services/db'
+import { openDatabase, type CrispinDatabase } from './services/db'
 import { allocatePort } from './services/ports'
 import { ProcessManager } from './services/process-manager'
 import { ToolsClient } from './services/tools-client'
@@ -54,12 +54,12 @@ import { registerNewsFeature } from './features/news'
 import { attachRouter, handle } from './ipc/router'
 import { broadcast } from './ipc/events'
 
-app.setName('Orion')
+app.setName('Crispin')
 
 // Must run before app ready: chat markdown references copied attachments as
-// orion-attachment://<name>, served strictly from dataDir()/attachments.
+// crispin-attachment://<name>, served strictly from dataDir()/attachments.
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'orion-attachment', privileges: { secure: true, stream: true } }
+  { scheme: 'crispin-attachment', privileges: { secure: true, stream: true } }
 ])
 
 if (!app.requestSingleInstanceLock()) {
@@ -67,7 +67,7 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 let win: BrowserWindow | null = null
-let db: OrionDatabase | null = null
+let db: CrispinDatabase | null = null
 let modelService: ModelService | null = null
 let orchestrator: ChatOrchestrator | null = null
 let libraryService: LibraryService | null = null
@@ -97,7 +97,7 @@ function sweepStaleProcesses(): void {
       pids?: Record<string, number>
     }
     // Pids get recycled — only kill ones whose command is something the
-    // supervisor itself spawns. Substring matches (e.g. /orion/i) would hit
+    // supervisor itself spawns. Substring matches (e.g. /crispin/i) would hit
     // our own Electron helpers and, in dev, anything with the repo path in argv.
     const ours = [
       `${uvBinary()} run --project ${join(resourcesRoot(), 'sidecars')}`, // tools/engine wrappers
@@ -163,7 +163,7 @@ async function createWindow(): Promise<void> {
     minWidth: 1080,
     minHeight: 700,
     show: false,
-    title: 'Orion',
+    title: 'Crispin',
     titleBarStyle: 'hiddenInset',
     // Centered in the 48px titlebar band every column's content clears (pt-12).
     trafficLightPosition: { x: 12, y: 17 },
@@ -247,7 +247,7 @@ function registerSidecars(): void {
           dir,
           'python',
           '-m',
-          'orion_tools',
+          'crispin_tools',
           '--port',
           String(ports.tools)
         ],
@@ -260,15 +260,15 @@ function registerSidecars(): void {
 
 app.whenReady().then(async () => {
   initLogging()
-  log.info(`Orion ${app.getVersion()} starting (packaged: ${app.isPackaged})`)
+  log.info(`Crispin ${app.getVersion()} starting (packaged: ${app.isPackaged})`)
 
-  db = openDatabase(join(dataDir(), 'orion.db'))
+  db = openDatabase(join(dataDir(), 'crispin.db'))
 
   // Serve chat-attachment images to the renderer; the prefix check jails the
   // lookup inside the attachments dir whatever the URL says.
   const attachmentsDir = join(dataDir(), 'attachments')
-  protocol.handle('orion-attachment', (request) => {
-    const rel = decodeURIComponent(request.url.replace(/^orion-attachment:\/*/i, ''))
+  protocol.handle('crispin-attachment', (request) => {
+    const rel = decodeURIComponent(request.url.replace(/^crispin-attachment:\/*/i, ''))
     const target = resolve(attachmentsDir, rel)
     if (!target.startsWith(attachmentsDir + sep)) {
       return new Response('forbidden', { status: 403 })
@@ -452,7 +452,7 @@ app.on('before-quit', (event) => {
   })()
 })
 
-export function getDb(): OrionDatabase {
+export function getDb(): CrispinDatabase {
   if (!db) throw new Error('Database not open yet')
   return db
 }

@@ -38,7 +38,7 @@ export default function StatusBar() {
         </button>
       ))}
       <div className="ml-auto flex items-center gap-3">
-        <span>Orion {status?.version ?? '…'}</span>
+        <span>Crispin {status?.version ?? '…'}</span>
       </div>
     </footer>
   )

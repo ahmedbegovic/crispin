@@ -127,7 +127,7 @@ export const UTILITY_MODEL = TIERS.low.candidates[0]
  * The library RAG embedder. Lives in the HF cache like any model and is
  * served from the engine pool like any model (oMLX discovers it at startup,
  * /v1/embeddings counts against the memory guard) — but it is NOT a chat
- * model: it stays out of Orion's chat registry, tiers, and the Models tab.
+ * model: it stays out of Crispin's chat registry, tiers, and the Models tab.
  */
 export const EMBEDDING_MODEL = 'mlx-community/embeddinggemma-300m-6bit'
 
