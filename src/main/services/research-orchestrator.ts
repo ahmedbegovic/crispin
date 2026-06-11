@@ -21,7 +21,7 @@ import type { ToolsClient, WebSearchEntry } from './tools-client'
 import type { ModelService } from './model-service'
 import { EMBEDDING_MODEL, type LibraryService } from './library-service'
 import type { AppSettingsService } from './app-settings'
-import { familyOf, stripThoughts } from './chat/family'
+import { condense, structured } from './structured'
 import { renderReportHtml, type ResearchReport } from './report-template'
 
 const MAX_ROUNDS = 4
@@ -35,12 +35,6 @@ const ROUND_REPORT_CHAR_LIMIT = 800
 const VISIT_MAX_CHARS = 60_000
 /** Most recent unvisited results shown to the select step — bounds the prompt. */
 const SELECT_CANDIDATE_LIMIT = 36
-/**
- * All research generations run at 0.3 — synthesis included. Determinism and
- * schema adherence beat the model's recommended sampling here; reports are
- * regenerable, flaky JSON is not debuggable.
- */
-const STRUCTURED_TEMPERATURE = 0.3
 
 // Local models default to their training-data era (queries dated "2024" were
 // observed live) — every prompt states today's date so searches and judgments
@@ -431,12 +425,14 @@ export class ResearchOrchestrator {
     if (!plan) {
       this.setStatus(runId, 'planning', { round: 0 })
       plan = await this.step(runId, 0, 'plan', { question: run.question }, async () => {
-        const out = await this.jsonStep({
+        const out = await structured({
+          engine: this.deps.engine,
           model: modelId,
           name: 'research_plan',
           schema: planOut,
           messages: this.planMessages(run.question),
           maxTokens: 1024,
+          meta: { surface: 'research', step: 'plan', conversationId: runId },
           signal
         })
         return {
@@ -539,12 +535,14 @@ export class ResearchOrchestrator {
           'select',
           { candidates: pool.length },
           async () => {
-            const out = await this.jsonStep({
+            const out = await structured({
+              engine: this.deps.engine,
               model: modelId,
               name: 'select_sources',
               schema: selectOut,
               messages: this.selectMessages(run.question, plan, sources, roundReports, heavy, pool),
               maxTokens: 1024,
+              meta: { surface: 'research', step: 'select', conversationId: runId },
               signal
             })
             const chosen: typeof selections = []
@@ -605,14 +603,24 @@ export class ResearchOrchestrator {
             async () => {
               const content =
                 markdown.length > SUMMARIZE_THRESHOLD
-                  ? await this.summarize(markdown, subquestion, signal)
+                  ? await condense({
+                      engine: this.deps.engine,
+                      model: this.resolveModel('low'),
+                      text: markdown,
+                      focus: subquestion,
+                      charLimit: SUMMARY_CHAR_LIMIT,
+                      meta: { surface: 'research', step: 'condense', conversationId: runId },
+                      signal
+                    })
                   : markdown
-              const out = await this.jsonStep({
+              const out = await structured({
+                engine: this.deps.engine,
                 model: modelId,
                 name: 'source_notes',
                 schema: noteOut,
                 messages: this.noteMessages(run.question, subquestion, sel.url, content),
                 maxTokens: 1200,
+                meta: { surface: 'research', step: 'note', conversationId: runId },
                 signal
               })
               const record: NoteRecord = {
@@ -657,7 +665,8 @@ export class ResearchOrchestrator {
 
       // SUFFICIENCY — also compresses the round in heavy mode (round_report).
       const verdict = await this.step(runId, round, 'sufficiency', { round }, async () => {
-        const out = await this.jsonStep({
+        const out = await structured({
+          engine: this.deps.engine,
           model: modelId,
           name: 'sufficiency',
           schema: sufficiencyOut,
@@ -671,6 +680,7 @@ export class ResearchOrchestrator {
             pastQueries
           ),
           maxTokens: 1500,
+          meta: { surface: 'research', step: 'sufficiency', conversationId: runId },
           signal
         })
         const tried = new Set(pastQueries.map((q) => q.toLowerCase().trim()))
@@ -733,126 +743,9 @@ export class ResearchOrchestrator {
   }
 
   // --- engine helpers ------------------------------------------------------------------
-
-  /**
-   * One structured generation: response_format json_schema derived from the
-   * zod schema, content accumulated, fences/thought-leaks tolerated, ONE
-   * repair retry carrying the parse error before the step fails.
-   */
-  private async jsonStep<T>(opts: {
-    model: string
-    name: string
-    schema: z.ZodType<T>
-    messages: ChatCompletionMessage[]
-    maxTokens: number
-    signal: AbortSignal
-  }): Promise<T> {
-    // The engine rejects nothing here today, but $schema is pure noise to it.
-    const { $schema: _omitted, ...jsonSchema } = z.toJSONSchema(opts.schema) as Record<
-      string,
-      unknown
-    >
-    const responseFormat = {
-      type: 'json_schema',
-      json_schema: { name: opts.name, schema: jsonSchema }
-    }
-    const ask = async (
-      messages: ChatCompletionMessage[],
-      maxTokens: number
-    ): Promise<{ raw: string; finish: string | null }> => {
-      let raw = ''
-      let finish: string | null = null
-      for await (const event of this.deps.engine.streamChat({
-        model: opts.model,
-        messages,
-        maxTokens,
-        temperature: STRUCTURED_TEMPERATURE,
-        responseFormat,
-        // Thinking tokens count against max_tokens and the reasoning channel
-        // is discarded here anyway — without this, gemma burns the whole JSON
-        // budget thinking and every structured step truncates.
-        chatTemplateKwargs: { enable_thinking: false },
-        signal: opts.signal
-      })) {
-        if (event.type === 'content') raw += event.text
-        else if (event.type === 'done') finish = event.finishReason
-      }
-      return { raw, finish }
-    }
-    const parse = (raw: string): T => {
-      const text = stripThoughts(raw, familyOf(opts.model))
-      // Live-verified: streamed json_schema replies can arrive ```json-fenced —
-      // parse the outermost object, not the raw text.
-      const start = text.indexOf('{')
-      const end = text.lastIndexOf('}')
-      if (start < 0 || end <= start) throw new Error('no JSON object in the response')
-      return opts.schema.parse(JSON.parse(text.slice(start, end + 1)))
-    }
-
-    const first = await ask(opts.messages, opts.maxTokens)
-    let reason: string
-    if (first.finish === 'length') {
-      // Truncated output is not a parse problem: retrying at the same budget
-      // would deterministically truncate again — raise it and say so.
-      reason = `the reply was cut off at ${opts.maxTokens} tokens`
-    } else {
-      try {
-        return parse(first.raw)
-      } catch (err) {
-        if (opts.signal.aborted) throw err
-        reason = err instanceof Error ? err.message : String(err)
-      }
-    }
-    const retryTokens =
-      first.finish === 'length' ? Math.min(opts.maxTokens * 2, 8192) : opts.maxTokens
-    const second = await ask(
-      [
-        ...opts.messages,
-        { role: 'assistant', content: clip(first.raw, 4000) },
-        {
-          role: 'user',
-          content:
-            `That response could not be used: ${clip(reason, 500)}. ` +
-            'Reply again with ONLY a valid JSON object matching the requested schema — no prose, no code fences.'
-        }
-      ],
-      retryTokens
-    )
-    if (second.finish === 'length') {
-      throw new Error(`output truncated at ${retryTokens} tokens (finish_reason=length)`)
-    }
-    return parse(second.raw)
-  }
-
-  /** Low-tier condensation of a long page against the subquestion it was picked for. */
-  private async summarize(
-    markdown: string,
-    subquestion: string,
-    signal: AbortSignal
-  ): Promise<string> {
-    const lowModel = this.resolveModel('low')
-    let raw = ''
-    for await (const event of this.deps.engine.streamChat({
-      model: lowModel,
-      messages: [
-        { role: 'system', content: 'You condense web pages for a research agent.' },
-        {
-          role: 'user',
-          content:
-            `Extract only the factual claims relevant to: "${subquestion}"\n\n` +
-            `Page content:\n${markdown.slice(0, 80_000)}\n\n` +
-            `Reply with at most ${SUMMARY_CHAR_LIMIT} characters of terse claims, one per line. No preamble.`
-        }
-      ],
-      maxTokens: 700,
-      temperature: STRUCTURED_TEMPERATURE,
-      chatTemplateKwargs: { enable_thinking: false },
-      signal
-    })) {
-      if (event.type === 'content') raw += event.text
-    }
-    return clip(stripThoughts(raw, familyOf(lowModel)).trim(), SUMMARY_CHAR_LIMIT)
-  }
+  // Structured generation lives in structured.ts now (structured()/condense());
+  // research passes meta {surface:'research', step, conversationId: runId} so
+  // every step lands in the llm-trace JSONL.
 
   /** Requested tier first, then nearest installed below, then above (shared walk). */
   private resolveModel(tier: Tier): string {
@@ -876,12 +769,14 @@ export class ResearchOrchestrator {
     signal: AbortSignal
   ): Promise<ResearchReport> {
     const numbered = sources.filter((s) => s.fetched)
-    const out = await this.jsonStep({
+    const out = await structured({
+      engine: this.deps.engine,
       model: modelId,
       name: 'research_report',
       schema: synthesisOut,
       messages: this.synthesisMessages(question, plan, numbered, roundReports, heavy),
       maxTokens: 8192,
+      meta: { surface: 'research', step: 'synthesis', conversationId: runId },
       signal
     })
     // The sources array is assembled here, not by the model — the numbering is

@@ -78,6 +78,30 @@ interface StreamChunk {
   usage?: { prompt_tokens?: number; completion_tokens?: number } | null
 }
 
+export interface ChatOnceResult {
+  content: string
+  reasoning: string | null
+  toolCalls: WireToolCall[]
+  finishReason: string | null
+  tokensIn: number | null
+  tokensOut: number | null
+}
+
+interface CompletionResponse {
+  choices?: Array<{
+    message?: {
+      content?: string | null
+      reasoning_content?: string | null
+      tool_calls?: WireToolCall[]
+    }
+    finish_reason?: string | null
+  }>
+  usage?: { prompt_tokens?: number; completion_tokens?: number } | null
+}
+
+/** One non-streaming completion, cold load included — generous by design. */
+const CHAT_ONCE_TIMEOUT_MS = 600_000
+
 /** No chunk for this long means a wedged stream, not a slow model — bail out. */
 const STREAM_INACTIVITY_MS = 300_000
 
@@ -288,6 +312,57 @@ export class EngineClient {
       throw err
     } finally {
       clearTimeout(inactivityTimer)
+      this.inflightCount -= 1
+    }
+  }
+
+  /**
+   * Non-streaming chat completion. Structured calls go through here: the
+   * engine only strips fences/thought leaks server-side on the non-streaming
+   * path (streaming gets that treatment only when tools are present), so
+   * json_schema output arrives clean. Counts toward inflight like every
+   * generation; no inactivity signal exists without chunks, so a hard
+   * timeout bounds the whole request instead.
+   */
+  async chat(opts: StreamChatOptions): Promise<ChatOnceResult> {
+    this.inflightCount += 1
+    try {
+      const signals = [
+        AbortSignal.timeout(CHAT_ONCE_TIMEOUT_MS),
+        ...(opts.signal ? [opts.signal] : [])
+      ]
+      const res = await fetch(`${this.baseUrl()}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: engineModelId(opts.model),
+          messages: opts.messages,
+          tools: opts.tools?.length ? opts.tools : undefined,
+          max_tokens: opts.maxTokens,
+          temperature: opts.temperature,
+          top_p: opts.topP,
+          top_k: opts.topK,
+          response_format: opts.responseFormat,
+          chat_template_kwargs: opts.chatTemplateKwargs,
+          stream: false
+        }),
+        signal: AbortSignal.any(signals)
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        throw new Error(`engine POST /v1/chat/completions → ${res.status}: ${text.slice(0, 300)}`)
+      }
+      const data = (await res.json()) as CompletionResponse
+      const choice = data.choices?.[0]
+      return {
+        content: choice?.message?.content ?? '',
+        reasoning: choice?.message?.reasoning_content ?? null,
+        toolCalls: choice?.message?.tool_calls ?? [],
+        finishReason: choice?.finish_reason ?? null,
+        tokensIn: data.usage?.prompt_tokens ?? null,
+        tokensOut: data.usage?.completion_tokens ?? null
+      }
+    } finally {
       this.inflightCount -= 1
     }
   }
