@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { allocatePort } from '../services/ports'
 import { sidecarDir, uvBinary, uvEnvFor } from '../services/paths'
 import { engineConfigPath } from '../services/engine-config'
+import { isPinned } from '../services/runtime-manager'
 import { handle } from '../ipc/router'
 import type { ProcessManager } from '../services/process-manager'
 import type { ModelService } from '../services/model-service'
@@ -35,7 +36,18 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
       const dir = sidecarDir('engine')
       return {
         cmd: uvBinary(),
-        args: ['run', '--project', dir, 'python', 'run_engine.py', '--config', engineConfigPath()],
+        args: [
+          'run',
+          // A runtime-pinned venv must not be re-synced back to the bundled
+          // lock on spawn (see runtime-manager.ts) — reset deletes the marker.
+          ...(isPinned('engine') ? ['--no-sync'] : []),
+          '--project',
+          dir,
+          'python',
+          'run_engine.py',
+          '--config',
+          engineConfigPath()
+        ],
         cwd: dir,
         env: uvEnvFor('engine')
       }

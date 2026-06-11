@@ -34,6 +34,7 @@ import { AgentService } from './services/agent-service'
 import { WorkspaceFs } from './services/workspace-fs'
 import { GitService } from './services/git-service'
 import { TermService } from './services/term-service'
+import { isPinned, resolveOpencodeBinary, RuntimeManager } from './services/runtime-manager'
 import { registerModelsFeature } from './features/models'
 import { registerSettingsFeature } from './features/settings'
 import { registerChatFeature } from './features/chat'
@@ -43,6 +44,7 @@ import { registerSkillsFeature } from './features/skills'
 import { registerAgentFeature } from './features/agent'
 import { registerCodeFeature } from './features/code'
 import { registerGitFeature } from './features/git'
+import { registerRuntimesFeature } from './features/runtimes'
 import { registerResearchFeature } from './features/research'
 import { registerNewsFeature } from './features/news'
 import { attachRouter, handle } from './ipc/router'
@@ -228,7 +230,19 @@ function registerSidecars(): void {
       const dir = sidecarDir('tools')
       return {
         cmd: uvBinary(),
-        args: ['run', '--project', dir, 'python', '-m', 'orion_tools', '--port', String(ports.tools)],
+        args: [
+          'run',
+          // A runtime-pinned venv must not be re-synced back to the bundled
+          // lock on spawn (see runtime-manager.ts) — reset deletes the marker.
+          ...(isPinned('tools') ? ['--no-sync'] : []),
+          '--project',
+          dir,
+          'python',
+          '-m',
+          'orion_tools',
+          '--port',
+          String(ports.tools)
+        ],
         cwd: dir,
         env: uvEnvFor('tools')
       }
@@ -330,13 +344,24 @@ app.whenReady().then(async () => {
   })
   registerNewsFeature(newsScheduler)
 
+  const theDb = db
   opencodePool = new OpencodePool({
     processManager,
     getEnginePort: () => ports.engine,
     getToolsPort: () => ports.tools,
     installedModels: () => models.overview().installed,
-    getInstructionsText: () => renderInstructionsText(appSettings.get())
+    getInstructionsText: () => renderInstructionsText(appSettings.get()),
+    getOpencodeBinary: () => resolveOpencodeBinary(theDb)
   })
+  registerRuntimesFeature(
+    new RuntimeManager({
+      db,
+      processManager,
+      engine: engineClient,
+      pool: opencodePool,
+      broadcast
+    })
+  )
   const agentService = new AgentService({ db, pool: opencodePool, modelService, broadcast })
   agentService.init()
   registerAgentFeature(agentService)

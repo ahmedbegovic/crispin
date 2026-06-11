@@ -5,7 +5,6 @@ import type { InstalledModel } from '@shared/types'
 import type { ManagedProcess, ProcessManager } from './process-manager'
 import { allocatePort } from './ports'
 import { opencodeConfigKey, writeOpencodeConfig } from './opencode-config'
-import { opencodeBinary } from './paths'
 import { scopedLogger } from './logger'
 
 const MAX_SERVERS = 2
@@ -28,6 +27,8 @@ export interface OpencodePoolDeps {
   installedModels: () => InstalledModel[]
   /** Rendered Settings instructions — part of the config fingerprint. */
   getInstructionsText: () => string
+  /** Runtime-updated binary first, bundled otherwise (see runtime-manager). */
+  getOpencodeBinary: () => string
 }
 
 interface PoolServer {
@@ -129,6 +130,11 @@ export class OpencodePool {
     await Promise.all([...this.servers.values()].map((s) => this.stopServer(s)))
   }
 
+  /** Stop every server (binary/runtime swap) — next prompt respawns fresh. */
+  async stopAll(): Promise<void> {
+    await Promise.all([...this.servers.values()].map((s) => this.stopServer(s)))
+  }
+
   // --- lifecycle -------------------------------------------------------------
 
   private baseUrl(server: PoolServer): string {
@@ -178,7 +184,7 @@ export class OpencodePool {
         server.configKey = opencodeConfigKey(configOpts)
         const configPath = writeOpencodeConfig(configOpts)
         return {
-          cmd: opencodeBinary(),
+          cmd: this.deps.getOpencodeBinary(),
           args: ['serve', '--port', String(server.port), '--hostname', '127.0.0.1'],
           cwd: server.directory,
           env: { OPENCODE_CONFIG: configPath }

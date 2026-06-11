@@ -1,11 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { AppSettings } from '@shared/ipc'
+import { Loader2, RefreshCw } from 'lucide-react'
+import type { AppSettings, MethodOutput } from '@shared/ipc'
 import type { Feature } from '@shared/types'
 import { CORE_MODULES, OPTIONAL_MODULES } from '@shared/modules'
+import { call, onEvent } from '@/lib/ipc'
 import { MODULE_ICONS } from '@/lib/module-icons'
 import { useSettingsStore } from '@/stores/settings'
 import { useSystemStore } from '@/stores/system'
-import { toastError } from '@/stores/toasts'
+import { pushToast, toastError } from '@/stores/toasts'
 
 const INSTRUCTION_MODULES: Array<{ id: Feature; label: string }> = [
   { id: 'chat', label: 'Chat' },
@@ -308,6 +310,172 @@ function NewsSection({
   )
 }
 
+type RuntimesStatus = MethodOutput<'runtimes.status'>
+type RuntimesLatest = MethodOutput<'runtimes.checkLatest'>
+type RuntimeComponent = 'engine' | 'tools' | 'opencode'
+
+function RuntimesSection() {
+  const [status, setStatus] = useState<RuntimesStatus | null>(null)
+  const [latest, setLatest] = useState<RuntimesLatest | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [busy, setBusy] = useState<RuntimeComponent | null>(null)
+
+  const refresh = (): void => {
+    void call('runtimes.status')
+      .then(setStatus)
+      .catch(() => {})
+  }
+
+  useEffect(() => {
+    refresh()
+    return onEvent('runtimes.changed', refresh)
+  }, [])
+
+  const checkLatest = (): void => {
+    setChecking(true)
+    void call('runtimes.checkLatest')
+      .then(setLatest)
+      .catch(toastError)
+      .finally(() => setChecking(false))
+  }
+
+  const run = (component: RuntimeComponent, action: 'update' | 'reset', version?: string): void => {
+    setBusy(component)
+    const op =
+      action === 'update'
+        ? call('runtimes.update', { component, version })
+        : call('runtimes.reset', { component })
+    void op
+      .then(() => {
+        if (action === 'reset') pushToast('info', `${component} reset to the bundled version.`)
+      })
+      .catch(toastError)
+      .finally(() => setBusy(null))
+  }
+
+  const row = (opts: {
+    component: RuntimeComponent
+    label: string
+    current: string
+    latestVersion: string | null
+    pinned: boolean
+    caption: string
+  }): ReactNode => {
+    const updatable =
+      opts.latestVersion !== null && !opts.current.includes(opts.latestVersion)
+    return (
+      <div
+        key={opts.component}
+        className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+      >
+        <div className="min-w-0 flex-1">
+          <p className="text-[12.5px] font-medium text-zinc-200">
+            {opts.label}
+            {opts.pinned && (
+              <span className="ml-1.5 rounded-full border border-amber-500/40 px-1.5 text-[9.5px] text-amber-400">
+                updated
+              </span>
+            )}
+          </p>
+          <p className="truncate text-[11px] text-zinc-500">
+            {opts.current}
+            {opts.latestVersion !== null && ` → latest ${opts.latestVersion}`}
+          </p>
+          <p className="text-[10px] text-zinc-700">{opts.caption}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {busy === opts.component ? (
+            <Loader2 size={13} className="animate-spin text-zinc-500" />
+          ) : (
+            <>
+              {(updatable || opts.component === 'tools') && (
+                <button
+                  onClick={() => run(opts.component, 'update', opts.latestVersion ?? undefined)}
+                  className="rounded-md bg-emerald-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-emerald-500"
+                >
+                  Update
+                </button>
+              )}
+              {opts.pinned && (
+                <button
+                  onClick={() => run(opts.component, 'reset')}
+                  className="rounded-md border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+                >
+                  Reset
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <Section
+      title="Runtimes"
+      hint="Updates install into a writable location and survive restarts; Reset returns to the bundled version on the next launch."
+    >
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={checkLatest}
+            disabled={checking}
+            className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 enabled:hover:border-zinc-600 disabled:opacity-40"
+          >
+            {checking ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <RefreshCw size={11} />
+            )}
+            Check for updates
+          </button>
+        </div>
+        {status === null ? (
+          <p className="text-[11.5px] text-zinc-600">Loading versions…</p>
+        ) : (
+          <>
+            <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="text-[12.5px] font-medium text-zinc-200">Orion</p>
+                <p className="text-[11px] text-zinc-500">{status.app}</p>
+              </div>
+            </div>
+            {row({
+              component: 'engine',
+              label: 'Engine (oMLX)',
+              current: status.engine.omlx ? `omlx ${status.engine.omlx}` : 'not installed yet',
+              latestVersion: latest?.omlx ?? null,
+              pinned: status.engine.pinned,
+              caption: 'Updating restarts the engine (waits for generations to finish).'
+            })}
+            {row({
+              component: 'tools',
+              label: 'Tools sidecar',
+              current:
+                Object.entries(status.tools.packages)
+                  .slice(0, 4)
+                  .map(([name, version]) => `${name} ${version}`)
+                  .join(' · ') || 'not installed yet',
+              latestVersion: null,
+              pinned: status.tools.pinned,
+              caption: 'Update upgrades the top-level deps; restarts the sidecar.'
+            })}
+            {row({
+              component: 'opencode',
+              label: 'opencode',
+              current: status.opencode.version ?? 'unknown',
+              latestVersion: latest?.opencode ?? null,
+              pinned: status.opencode.customPath !== null,
+              caption: 'Agents respawn with the new binary on the next prompt.'
+            })}
+          </>
+        )}
+      </div>
+    </Section>
+  )
+}
+
 function AboutSection() {
   const version = useSystemStore((s) => s.status?.version)
   const dataDir = useSystemStore((s) => s.status?.dataDir)
@@ -344,6 +512,7 @@ export default function SettingsTab() {
           <ModulesSection settings={settings} update={update} />
           <ModelsSection settings={settings} update={update} />
           <NewsSection settings={settings} update={update} />
+          <RuntimesSection />
           <AboutSection />
         </div>
       ) : (

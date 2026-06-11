@@ -274,6 +274,17 @@ export const workspaceEntrySchema = z.object({
   kind: z.enum(['file', 'dir'])
 })
 
+// --- runtimes (P2) -------------------------------------------------------------
+
+export const runtimeComponentSchema = z.enum(['engine', 'tools', 'opencode'])
+
+export const runtimesStatusSchema = z.object({
+  app: z.string(),
+  engine: z.object({ omlx: z.string().nullable(), pinned: z.boolean() }),
+  tools: z.object({ packages: z.record(z.string(), z.string()), pinned: z.boolean() }),
+  opencode: z.object({ version: z.string().nullable(), customPath: z.string().nullable() })
+})
+
 // --- git (P2) ----------------------------------------------------------------
 
 export const gitFileStatusSchema = z.object({
@@ -770,6 +781,26 @@ export const contract = {
     })
   },
 
+  // --- runtimes ----------------------------------------------------------------------
+  'runtimes.status': {
+    input: z.undefined(),
+    output: runtimesStatusSchema
+  },
+  'runtimes.checkLatest': {
+    input: z.undefined(),
+    output: z.object({ omlx: z.string().nullable(), opencode: z.string().nullable() })
+  },
+  'runtimes.update': {
+    /** Installs into the writable venv / userData; progress arrives via toasts. */
+    input: z.object({ component: runtimeComponentSchema, version: z.string().optional() }),
+    output: z.object({ ok: z.boolean() })
+  },
+  'runtimes.reset': {
+    /** Deletes the pin marker / custom path — back to the bundled versions. */
+    input: z.object({ component: runtimeComponentSchema }),
+    output: z.object({ ok: z.boolean() })
+  },
+
   // --- git (jailed to open workspaces) ----------------------------------------------
   'git.status': {
     input: z.object({ root: z.string() }),
@@ -1047,6 +1078,10 @@ export const orionEventSchema = z.discriminatedUnion('type', [
     /** A git mutation ran for this workspace — refetch git.status. */
     type: z.literal('git.changed'),
     root: z.string()
+  }),
+  z.object({
+    /** A runtime update/reset finished — refetch runtimes.status. */
+    type: z.literal('runtimes.changed')
   }),
   z.object({
     /** A research step was created or changed state. */
