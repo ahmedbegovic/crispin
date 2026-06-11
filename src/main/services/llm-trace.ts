@@ -38,6 +38,8 @@ export interface LlmTraceInput extends LlmTraceMeta {
   tokensOut?: number | null
   ms: number
   error?: string
+  /** Engine's RFC-7234 Warning header — grammar degraded to prompt injection. */
+  warning?: string | null
 }
 
 const MAX_BYTES = 100 * 1024 * 1024

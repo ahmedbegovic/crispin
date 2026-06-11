@@ -95,6 +95,14 @@ export interface ChatOnceResult {
   finishReason: string | null
   tokensIn: number | null
   tokensOut: number | null
+  /**
+   * RFC-7234 Warning header, set by the engine when a json_schema request
+   * silently degraded to prompt injection (no grammar). Null = constrained
+   * decoding was honored (live-observed: grammar can still leak a synonym
+   * key occasionally — the repair retry covers that — but a non-null value
+   * here means xgrammar is missing or broke, which must not go unnoticed).
+   */
+  warning: string | null
 }
 
 interface CompletionResponse {
@@ -370,7 +378,8 @@ export class EngineClient {
         toolCalls: choice?.message?.tool_calls ?? [],
         finishReason: choice?.finish_reason ?? null,
         tokensIn: data.usage?.prompt_tokens ?? null,
-        tokensOut: data.usage?.completion_tokens ?? null
+        tokensOut: data.usage?.completion_tokens ?? null,
+        warning: res.headers.get('warning')
       }
     } finally {
       this.inflightCount -= 1

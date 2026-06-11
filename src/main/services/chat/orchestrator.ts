@@ -1155,7 +1155,11 @@ export class ChatOrchestrator {
       for await (const event of this.deps.engine.streamChat({
         model: lowModel,
         messages,
-        maxTokens: 200 // thinking tokens count against max_tokens before the title
+        maxTokens: 200,
+        // Live traces showed every refinement failing: gemma burned the whole
+        // 200-token budget in the reasoning channel and content arrived
+        // empty. Titles don't need thinking — reclaim the budget.
+        chatTemplateKwargs: { enable_thinking: false }
       })) {
         if (event.type === 'content') raw += event.text
       }

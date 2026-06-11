@@ -82,6 +82,7 @@ export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
     let finish: string | null = null
     let tokensIn: number | null = null
     let tokensOut: number | null = null
+    let warning: string | null = null
     let parsed: T | undefined
     let failure: string | undefined
     try {
@@ -102,6 +103,7 @@ export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
       finish = res.finishReason
       tokensIn = res.tokensIn
       tokensOut = res.tokensOut
+      warning = res.warning
     } catch (err) {
       failure = err instanceof Error ? err.message : String(err)
       traceLlm({
@@ -142,7 +144,8 @@ export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
       tokensIn,
       tokensOut,
       ms: Date.now() - startedAt,
-      error: failure
+      error: failure,
+      warning
     })
     return { parsed, raw, finish, failure }
   }
