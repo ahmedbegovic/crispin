@@ -17,6 +17,8 @@ export interface ResearchReportSource {
   id: number
   url: string
   title: string | null
+  /** og:image from the visit step; optional so pre-P2-8 reports still render. */
+  imageUrl?: string | null
 }
 
 export interface ResearchReport {
@@ -126,10 +128,18 @@ const CSS = `
     padding: 1px 5px; font: 12.5px/1.5 "SF Mono", ui-monospace, Menlo, monospace;
   }
   .section-cites { color: #8d8d93; font-size: 12px; margin-top: 6px; }
+  .hero {
+    display: block; width: 100%; max-height: 300px; object-fit: cover;
+    border-radius: 12px; margin: 0 0 24px; background: #1c1c21;
+  }
   .sources { border-top: 1px solid #27272a; padding-top: 18px; }
   .sources h2 { border: none; padding: 0; }
   .sources ol { padding-left: 26px; }
-  .sources li { margin: 6px 0; font-size: 13.5px; }
+  .sources li { margin: 6px 0; font-size: 13.5px; overflow: hidden; }
+  .src-thumb {
+    float: left; width: 64px; height: 44px; object-fit: cover;
+    border-radius: 6px; margin: 2px 10px 2px 0; background: #1c1c21;
+  }
   .src-url { display: block; color: #8d8d93; font-size: 12px; word-break: break-all; }
   @media print {
     :root { color-scheme: light; }
@@ -142,9 +152,21 @@ const CSS = `
   }
 `
 
+/** https-only image url, escaped for an attribute; null filters everything else. */
+const imageSrc = (raw: string | null | undefined): string | null =>
+  raw && /^https:\/\//i.test(raw) ? escapeHtml(raw) : null
+
 /** Render the whole report document. Everything model-authored goes through escapeHtml. */
 export function renderReportHtml(report: ResearchReport, meta: ReportMeta): string {
   const valid = new Set(report.sources.map((s) => s.id))
+
+  // Hero: the first CITED source carrying an og:image. No scripts run in the
+  // sandboxed iframe, so a broken url shows as an empty CSS-bounded box.
+  const citedIds = new Set(report.sections.flatMap((s) => s.citations))
+  const heroSrc = imageSrc(
+    report.sources.find((s) => citedIds.has(s.id) && imageSrc(s.imageUrl))?.imageUrl
+  )
+  const hero = heroSrc ? `<img class="hero" src="${heroSrc}" alt="" loading="lazy">` : ''
 
   const sections = report.sections
     .map((section) => {
@@ -170,7 +192,9 @@ export function renderReportHtml(report: ResearchReport, meta: ReportMeta): stri
       const href = /^https?:\/\//.test(src.url) ? escapeHtml(src.url) : null
       const label = escapeHtml(src.title?.trim() || src.url)
       const urlLine = href ? `<span class="src-url">${href}</span>` : ''
-      return `<li id="src-${src.id}" value="${src.id}">${
+      const thumbSrc = imageSrc(src.imageUrl)
+      const thumb = thumbSrc ? `<img class="src-thumb" src="${thumbSrc}" alt="" loading="lazy">` : ''
+      return `<li id="src-${src.id}" value="${src.id}">${thumb}${
         href ? `<a href="${href}" target="_blank" rel="noreferrer">${label}</a>` : label
       }${urlLine}</li>`
     })
@@ -190,6 +214,7 @@ export function renderReportHtml(report: ResearchReport, meta: ReportMeta): stri
 <main>
 <h1>${escapeHtml(report.title)}</h1>
 <p class="meta">${escapeHtml(meta.question)} · ${escapeHtml(generated)}</p>
+${hero}
 ${sections}
 <section class="sources">
 <h2>Sources</h2>

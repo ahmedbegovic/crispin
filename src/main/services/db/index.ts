@@ -5,8 +5,9 @@ import { scopedLogger } from '../logger'
 import migration0001 from './migrations/0001_init.sql?raw'
 import migration0002 from './migrations/0002_conversation_tier_pin.sql?raw'
 import migration0003 from './migrations/0003_news_upgrade.sql?raw'
+import migration0004 from './migrations/0004_research_source_image.sql?raw'
 
-const MIGRATIONS: string[] = [migration0001, migration0002, migration0003]
+const MIGRATIONS: string[] = [migration0001, migration0002, migration0003, migration0004]
 
 export type OrionDatabase = DatabaseSync
 

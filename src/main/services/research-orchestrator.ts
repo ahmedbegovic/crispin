@@ -118,6 +118,8 @@ interface SourceRecord {
   url: string
   title: string | null
   fetched: boolean
+  /** og:image from the visit step; feeds the report hero/thumbnails. */
+  imageUrl: string | null
   note: { claims: string[]; quotes: string[] } | null
 }
 
@@ -162,6 +164,7 @@ interface SourceRow {
   fetched: number
   cited: number
   note: string | null
+  image_url: string | null
 }
 
 const parseJson = <T>(text: string | null): T | null => {
@@ -568,7 +571,7 @@ export class ResearchOrchestrator {
         db.prepare(
           'INSERT INTO research_sources (id, run_id, url, title, fetched, cited) VALUES (?, ?, ?, ?, 0, 0)'
         ).run(sourceId, runId, sel.url, title)
-        sources.push({ id: sourceId, url: sel.url, title, fetched: false, note: null })
+        sources.push({ id: sourceId, url: sel.url, title, fetched: false, imageUrl: null, note: null })
         candidates.delete(sel.url)
       }
 
@@ -580,16 +583,19 @@ export class ResearchOrchestrator {
         const source = sources.find((s) => s.url === sel.url)!
         try {
           let markdown = ''
+          let imageUrl: string | null = null
           const visited = await this.step(runId, round, 'visit', { url: sel.url }, async () => {
             const res = await this.deps.tools.visit(sel.url, VISIT_MAX_CHARS, signal)
             markdown = res.markdown
+            imageUrl = res.image_url
             return { url: res.url, title: res.title, chars: res.markdown.length }
           })
           db.prepare(
-            'UPDATE research_sources SET fetched = 1, title = COALESCE(?, title) WHERE id = ?'
-          ).run(visited.title, source.id)
+            'UPDATE research_sources SET fetched = 1, title = COALESCE(?, title), image_url = COALESCE(?, image_url) WHERE id = ?'
+          ).run(visited.title, imageUrl, source.id)
           source.fetched = true
           source.title = visited.title ?? source.title
+          source.imageUrl = imageUrl ?? source.imageUrl
 
           const subquestion = plan.subquestions[sel.subquestion_index - 1] ?? run.question
           const note = await this.step(
@@ -899,7 +905,12 @@ export class ResearchOrchestrator {
     })
     // The sources array is assembled here, not by the model — the numbering is
     // ours and the urls must be exact. Citations are filtered to valid numbers.
-    const reportSources = numbered.map((s, i) => ({ id: i + 1, url: s.url, title: s.title }))
+    const reportSources = numbered.map((s, i) => ({
+      id: i + 1,
+      url: s.url,
+      title: s.title,
+      imageUrl: s.imageUrl
+    }))
     return {
       title: clip(out.title, 200) || `Research: ${clip(question, 160)}`,
       sections: out.sections.slice(0, 8).map((section) => ({
@@ -1174,6 +1185,7 @@ export class ResearchOrchestrator {
       url: r.url,
       title: r.title,
       fetched: r.fetched === 1,
+      imageUrl: r.image_url,
       note: parseJson<{ claims: string[]; quotes: string[] }>(r.note)
     }))
   }
