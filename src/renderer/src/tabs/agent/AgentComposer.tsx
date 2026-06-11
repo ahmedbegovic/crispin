@@ -5,6 +5,8 @@ import type { Tier } from '@shared/types'
 import { useAgentStore } from '@/stores/agent'
 import { useModelsStore } from '@/stores/models'
 import { toastError } from '@/stores/toasts'
+import SkillPicker from './SkillPicker'
+import { useSlashSkills } from './useSlashSkills'
 
 const MAX_TEXTAREA_PX = 180
 
@@ -22,6 +24,7 @@ export default function AgentComposer({ sessionId }: Props) {
   const [tier, setTier] = useState<Tier | null>(null)
   const defaultTier = useModelsStore((s) => s.overview?.defaults.agent) ?? FEATURE_DEFAULTS.agent
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const slash = useSlashSkills(text, setText)
 
   // Autosize after every text commit (covers programmatic clears on send).
   useEffect(() => {
@@ -34,8 +37,9 @@ export default function AgentComposer({ sessionId }: Props) {
   const submit = (): void => {
     const trimmed = text.trim()
     if (busy || !trimmed) return
+    const toSend = slash.transformForSubmit(trimmed)
     setText('')
-    void prompt(sessionId, trimmed, tier ?? undefined).catch((err) => {
+    void prompt(sessionId, toSend, tier ?? undefined).catch((err) => {
       // A rejected prompt persisted nothing — put the draft back so the user
       // doesn't retype it, unless newer input has been entered meanwhile.
       setText((cur) => cur || trimmed)
@@ -46,12 +50,21 @@ export default function AgentComposer({ sessionId }: Props) {
   return (
     <div className="shrink-0">
       <div className="mx-auto w-full max-w-3xl px-6 pb-4">
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900/80">
+        <div className="relative rounded-xl border border-zinc-800 bg-zinc-900/80">
+          {slash.open && (
+            <SkillPicker
+              skills={slash.skills}
+              highlight={slash.highlight}
+              onHover={slash.setHighlight}
+              onPick={slash.pick}
+            />
+          )}
           <textarea
             ref={textareaRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
+              if (slash.onKeyDown(e)) return
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
                 submit()
