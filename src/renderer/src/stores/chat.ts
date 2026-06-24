@@ -559,12 +559,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const prev = get().messagesById[conversationId] ?? []
       const index = prev.findIndex((m) => m.id === messageId)
       const target = index === -1 ? undefined : prev[index]
+      // Mirror main: preserve the original message's attachments (images +
+      // document text parts), replacing only the typed text (first text part),
+      // so the optimistic bubble doesn't flash without them before the refresh.
+      const editedParts: MessagePart[] = []
+      let replacedText = false
+      for (const p of target?.parts ?? []) {
+        if (p.type === 'text' && !replacedText) {
+          editedParts.push({ type: 'text', text })
+          replacedText = true
+        } else {
+          editedParts.push(p)
+        }
+      }
+      if (!replacedText) editedParts.unshift({ type: 'text', text })
       const userMessage: ChatMessage = {
         id: result.messageId,
         conversationId,
         parentId: target?.parentId ?? null,
         role: 'user',
-        parts: [{ type: 'text', text }],
+        parts: editedParts,
         modelId: null,
         tokensIn: null,
         tokensOut: null,

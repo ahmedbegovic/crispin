@@ -425,11 +425,25 @@ export class ChatOrchestrator {
     const controller = this.claim(conversationId)
     try {
       const modelId = this.resolveModel(this.effectiveTier(conversation))
+      // Preserve the original message's attachments (image parts + document-
+      // extracted text parts): replace ONLY the user's typed text, which is the
+      // first text part. Editing a message used to drop its images/documents.
+      const editedParts: MessagePart[] = []
+      let replacedText = false
+      for (const p of edited.parts) {
+        if (p.type === 'text' && !replacedText) {
+          editedParts.push({ type: 'text', text })
+          replacedText = true
+        } else {
+          editedParts.push(p)
+        }
+      }
+      if (!replacedText) editedParts.unshift({ type: 'text', text })
       const newMessageId = this.deps.repo.insertMessage({
         conversationId,
         parentId: edited.parentId, // sibling of the edited message
         role: 'user',
-        parts: [{ type: 'text', text }]
+        parts: editedParts
       })
       const assistantMessageId = this.deps.repo.insertMessage({
         conversationId,
