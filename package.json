@@ -1,7 +1,7 @@
 {
   "name": "crispin",
   "productName": "Crispin",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "Personal local-LLM desktop app for macOS (MLX)",
   "author": "Ahmed Begovic",
   "license": "MIT",

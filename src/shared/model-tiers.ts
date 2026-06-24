@@ -9,8 +9,13 @@ export interface TierSpec {
   /** Approximate weights footprint on disk / in memory at 4-bit, GB. */
   approxGB: number
   /**
-   * Display fallback when the real context_length (read from the installed
-   * snapshot's config.json) is unknown. Nothing enforces this as a cap.
+   * Display fallback for the context window, used ONLY when the real
+   * context_length — read from the installed snapshot's config.json
+   * (max_position_embeddings) and surfaced via ModelService.contextLengthFor —
+   * is unknown (e.g. the model isn't installed yet). An installed model's own
+   * value always wins; this is never enforced as a cap. Each value mirrors the
+   * preferred candidate's (candidates[0]) max_position_embeddings on Hugging
+   * Face, so the fallback matches what the installed model will report.
    */
   defaultCtx: number
   /**
@@ -44,7 +49,7 @@ export const TIERS: Record<Tier, TierSpec> = {
     candidates: ['mlx-community/gemma-4-E2B-it-qat-4bit', 'mlx-community/Qwen3.5-2B-4bit'],
     caps: ['text', 'vision', 'audio'],
     approxGB: 3,
-    // Display fallback for an empty tier; the Gemma 4 family is 128k across sizes.
+    // candidates[0] gemma-4 E2B reports max_position_embeddings 131072 on HF.
     defaultCtx: 131072,
     maxVisibleTools: 5
   },
@@ -52,6 +57,7 @@ export const TIERS: Record<Tier, TierSpec> = {
     candidates: ['mlx-community/gemma-4-E4B-it-qat-4bit', 'mlx-community/Qwen3.5-4B-MLX-4bit'],
     caps: ['text', 'vision', 'audio'],
     approxGB: 5,
+    // candidates[0] gemma-4 E4B reports max_position_embeddings 131072 on HF.
     defaultCtx: 131072,
     maxVisibleTools: 8
   },
@@ -62,14 +68,16 @@ export const TIERS: Record<Tier, TierSpec> = {
     ],
     caps: ['text', 'vision'],
     approxGB: 7,
-    defaultCtx: 131072,
+    // candidates[0] Qwen3.5 9B reports max_position_embeddings 262144 on HF.
+    defaultCtx: 262144,
     maxVisibleTools: 12
   },
   extraHigh: {
     candidates: ['mlx-community/gemma-4-26B-A4B-it-qat-4bit'],
     caps: ['text', 'vision'],
     approxGB: 15,
-    defaultCtx: 131072,
+    // candidates[0] gemma-4 26B reports max_position_embeddings 262144 on HF.
+    defaultCtx: 262144,
     maxVisibleTools: 20
   },
   ultra: {
@@ -80,7 +88,8 @@ export const TIERS: Record<Tier, TierSpec> = {
     candidates: ['mlx-community/Qwen3.6-27B-4bit', 'mlx-community/gemma-4-31b-it-4bit'],
     caps: ['text', 'vision', 'video'],
     approxGB: 16.5,
-    defaultCtx: 131072,
+    // candidates[0] Qwen3.6 27B reports max_position_embeddings 262144 on HF.
+    defaultCtx: 262144,
     maxOutputTokens: 32768,
     noCoload: true
   }
