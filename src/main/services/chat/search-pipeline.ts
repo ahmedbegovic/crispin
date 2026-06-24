@@ -261,8 +261,14 @@ async function selectCandidates(
 // --- assess sufficiency -------------------------------------------------------------
 
 const sufficiencyOut = z.object({
-  /** Reasoning first — recovers the CoT lost to enable_thinking:false. */
-  reasoning: z.string(),
+  /**
+   * Reasoning first — cues the CoT lost to enable_thinking:false. OPTIONAL: the
+   * grammar enforces structure but not required-presence, so a small model that
+   * skips it would otherwise fail post-validation and burn a repair retry (and a
+   * double miss makes assessSufficiency return null → deepening stops early).
+   * No consumer reads this field.
+   */
+  reasoning: z.string().optional(),
   enough: z.boolean(),
   /** Gap-filling searches when more breadth is needed; empty = just read more. */
   more_queries: z.array(z.string()).default([])

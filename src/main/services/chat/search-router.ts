@@ -34,7 +34,10 @@ const clip = (text: string, limit: number): string =>
 const routeOut = z.object({
   // Reasoning FIRST so the constrained decode "thinks" before committing — the
   // documented ~+4pp on schema-constrained accuracy (enable_thinking is off here).
-  reasoning: z.string(),
+  // OPTIONAL: the json_schema grammar enforces structure but NOT required-presence,
+  // so a small utility model that omits it fails post-validation and burns a repair
+  // retry for nothing (no consumer reads this field; the order still cues the CoT).
+  reasoning: z.string().optional(),
   needs_search: z.boolean(),
   queries: z.array(z.string())
 })
