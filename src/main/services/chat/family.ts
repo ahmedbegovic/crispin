@@ -102,10 +102,33 @@ function trailingEndHold(buf: string): number {
   return hold
 }
 
+/**
+ * Length of a COMPLETE leaked end token at the very end of buf, else 0. At flush
+ * a bare PARTIAL prefix ('<', '<e', …) is real content — an engine emits its stop
+ * token atomically, so it never cuts one short into the content stream — and must
+ * not be stripped (stripping it silently drops the answer's last character).
+ */
+function completeTrailingEndLen(buf: string): number {
+  for (const tok of END_TOKENS) {
+    if (buf.endsWith(tok)) return tok.length
+  }
+  return 0
+}
+
+/**
+ * Gemma reasoning-channel names whose content is hidden as thought. ANY other
+ * channel name (a leaked answer/'final' channel) is treated as visible text:
+ * classifying the answer as thought would silently drop it, which is exactly the
+ * marker-leak degradation GemmaSplitter exists to survive.
+ */
+const THOUGHT_CHANNELS = new Set(['thought', 'thinking', 'reasoning', 'analysis'])
+
 class GemmaSplitter implements ContentSplitter {
   private buf = ''
   /** 'label' = between `<|channel>` and the `\n` that ends the channel name. */
-  private state: 'text' | 'label' | 'thought' = 'text'
+  private state: 'text' | 'label' | 'channel' = 'text'
+  /** Visibility of the channel currently being read, decided at its label. */
+  private channelKind: 'text' | 'thought' = 'thought'
 
   push(text: string): ContentSegment[] {
     this.buf += text
@@ -132,21 +155,25 @@ class GemmaSplitter implements ContentSplitter {
       if (this.state === 'label') {
         const i = this.buf.indexOf('\n')
         if (i < 0) return out // labels are a few tokens; keep buffering
-        this.buf = this.buf.slice(i + 1) // discard the channel name line
-        this.state = 'thought'
+        const name = this.buf.slice(0, i).trim().toLowerCase()
+        this.buf = this.buf.slice(i + 1) // consume the channel name line
+        // Only a recognized reasoning channel is hidden; an unknown/leaked answer
+        // channel stays visible so a marker leak never swallows the answer.
+        this.channelKind = THOUGHT_CHANNELS.has(name) ? 'thought' : 'text'
+        this.state = 'channel'
         continue
       }
-      // thought
+      // channel: read to the close marker, emitting with the label's visibility.
       const i = this.buf.indexOf(CLOSE)
       if (i >= 0) {
-        if (i > 0) out.push({ channel: 'thought', text: this.buf.slice(0, i) })
+        if (i > 0) out.push({ channel: this.channelKind, text: this.buf.slice(0, i) })
         this.buf = this.buf.slice(i + CLOSE.length)
         this.state = 'text'
         continue
       }
       const hold = partialSuffixLen(this.buf, CLOSE)
       const emit = this.buf.slice(0, this.buf.length - hold)
-      if (emit) out.push({ channel: 'thought', text: emit })
+      if (emit) out.push({ channel: this.channelKind, text: emit })
       this.buf = this.buf.slice(this.buf.length - hold)
       return out
     }
@@ -154,18 +181,19 @@ class GemmaSplitter implements ContentSplitter {
 
   flush(): ContentSegment[] {
     const out: ContentSegment[] = []
-    // 'label' remainder is markup mid-marker — drop it. In the text state, strip
-    // a trailing partial end token (a cut-short leaked stop marker); elsewhere a
-    // held-back partial turned out to be ordinary text/thought after all.
+    // 'label' remainder is mid-marker markup with no content yet — drop it. In the
+    // text state, strip only a COMPLETE trailing leaked end token; a bare partial
+    // prefix is real content. A still-open channel emits with its label visibility.
     if (this.buf && this.state !== 'label') {
       const text =
         this.state === 'text'
-          ? this.buf.slice(0, this.buf.length - trailingEndHold(this.buf))
+          ? this.buf.slice(0, this.buf.length - completeTrailingEndLen(this.buf))
           : this.buf
-      if (text) out.push({ channel: this.state === 'thought' ? 'thought' : 'text', text })
+      if (text) out.push({ channel: this.state === 'channel' ? this.channelKind : 'text', text })
     }
     this.buf = ''
     this.state = 'text'
+    this.channelKind = 'thought'
     return out
   }
 }

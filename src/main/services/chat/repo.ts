@@ -357,13 +357,16 @@ export class ChatRepo {
   /** Search titles + message bodies; returns at most one hit per conversation. */
   searchConversations(query: string, limit = 20): ChatSearchHit[] {
     if (!this.ftsReady) return []
+    // Split on every non-alphanumeric run, exactly as the unicode61 tokenizer
+    // does when indexing. Stripping intra-word separators instead (don't→dont,
+    // state-of-the-art→stateoftheart) yields a token no indexed row starts with —
+    // the index emitted don/t and state/of/the/art — so those terms silently
+    // matched nothing. Lowercasing also neutralizes FTS5's AND/OR/NOT/NEAR
+    // operators (uppercase-only); the tokenizer case-folds too, so recall is
+    // unaffected. Resulting tokens are pure alphanumeric, so none can be FTS5 syntax.
     const tokens = query
-      .trim()
-      .split(/\s+/)
-      // Strip FTS punctuation/quotes, then lowercase: FTS5 treats AND/OR/NOT/NEAR
-      // as operators only when uppercase, so lowercasing neutralizes them (the
-      // unicode61 tokenizer already case-folds, so matching is unaffected).
-      .map((t) => t.replace(/[^\p{L}\p{N}_]+/gu, '').toLowerCase())
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
       .filter(Boolean)
     if (tokens.length === 0) return []
     // AND the terms; prefix-match the final one for as-you-type search.

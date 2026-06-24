@@ -34,6 +34,24 @@ const clip = (text: string, limit: number): string =>
  */
 const timeoutFor = (maxTokens: number): number => 300_000 + maxTokens * 100
 
+/**
+ * A transient engine blip worth a quick retry: a refused/reset connection or a
+ * 5xx while the engine restarts. A request TIMEOUT is NOT transient — retrying
+ * just re-arms another full multi-minute timeout — and a 4xx is a malformed
+ * request, not a blip; both fail fast instead of multiplying the worst-case hang.
+ */
+function isTransientEngineError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  // engine-client throws `engine POST … → <status>: …` on a non-2xx response.
+  const status = /→\s*(\d{3})\b/.exec(err.message)
+  if (status) return Number(status[1]) >= 500
+  // AbortSignal.timeout aborts with a TimeoutError/AbortError DOMException; a user
+  // abort is checked separately, so any abort reaching here is a fired timeout.
+  if (err.name === 'TimeoutError' || err.name === 'AbortError') return false
+  // Connection refused/reset (engine mid-restart) surfaces as a TypeError — retry.
+  return true
+}
+
 export interface StructuredOptions<T> {
   engine: EngineClient
   /** Canonical HF repo id of the model to ask. */
@@ -50,7 +68,7 @@ export interface StructuredOptions<T> {
 /**
  * One structured generation: response_format json_schema derived from the zod
  * schema, fences/thought-leaks tolerated, ONE repair retry carrying the parse
- * error (or a doubled budget capped at 8192 after a truncation) before the
+ * error (or a doubled budget capped at 16384 after a truncation) before the
  * call fails. Both attempts are traced.
  */
 export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
@@ -150,9 +168,10 @@ export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
     return { parsed, raw, finish, failure }
   }
 
-  // attempt() only THROWS on a transient engine error (parse/truncation
-  // failures return a `failure` instead) — retry those a couple of times with
-  // backoff before giving up, so a flaky engine blip doesn't fail the turn.
+  // attempt() only THROWS on an engine error (parse/truncation failures return a
+  // `failure` instead) — retry the TRANSIENT ones a couple of times with backoff
+  // so a flaky engine blip doesn't fail the turn. A timeout or 4xx fails fast
+  // (see isTransientEngineError) rather than re-arming the full hang.
   const attemptWithRetry = async (
     messages: ChatCompletionMessage[],
     maxTokens: number,
@@ -164,7 +183,7 @@ export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
       try {
         return await attempt(messages, maxTokens, retried)
       } catch (err) {
-        if (opts.signal.aborted || i >= backoff.length) throw err
+        if (opts.signal.aborted || i >= backoff.length || !isTransientEngineError(err)) throw err
         await new Promise((r) => setTimeout(r, backoff[i]))
       }
     }
@@ -174,7 +193,11 @@ export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
   if (first.parsed !== undefined) return first.parsed
   if (opts.signal.aborted) throw new Error('aborted')
   const reason = first.failure ?? 'unusable response'
-  const retryTokens = first.finish === 'length' ? Math.min(opts.maxTokens * 2, 8192) : opts.maxTokens
+  // On a truncation, double the budget for real headroom (capped at 16384). The
+  // old 8192 cap collapsed to the SAME budget for the largest call (research
+  // synthesis at 8192), so its length-retry re-truncated deterministically.
+  const retryTokens =
+    first.finish === 'length' ? Math.min(opts.maxTokens * 2, 16384) : opts.maxTokens
   const second = await attemptWithRetry(
     [
       ...opts.messages,
