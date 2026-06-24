@@ -319,6 +319,8 @@ interface RunContext {
 /** Drives generations: one active per conversation, tool loop, persistence. */
 export class ChatOrchestrator {
   private readonly active = new Map<string, AbortController>()
+  /** Aborts on dispose — covers fire-and-forget work (title gen) not in `active`. */
+  private readonly lifecycle = new AbortController()
   private readonly attachmentsDir = join(dataDir(), 'attachments')
   private readonly log = scopedLogger('chat')
 
@@ -327,6 +329,7 @@ export class ChatOrchestrator {
   }
 
   dispose(): void {
+    this.lifecycle.abort()
     for (const controller of this.active.values()) controller.abort()
     this.active.clear()
   }
@@ -1435,7 +1438,10 @@ export class ChatOrchestrator {
         // Live traces showed every refinement failing: gemma burned the whole
         // 200-token budget in the reasoning channel and content arrived
         // empty. Titles don't need thinking — reclaim the budget.
-        chatTemplateKwargs: { enable_thinking: false }
+        chatTemplateKwargs: { enable_thinking: false },
+        // Fire-and-forget, so dispose() can't reach it via `active`; the
+        // lifecycle signal frees its engine slot on app/orchestrator teardown.
+        signal: this.lifecycle.signal
       })) {
         if (event.type === 'content') raw += event.text
       }
