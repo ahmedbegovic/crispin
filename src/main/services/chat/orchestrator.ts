@@ -55,7 +55,12 @@ import {
   type SearchPipelineOptions
 } from './search-pipeline'
 import { verifyCitations } from './citations'
-import { fenceUntrustedWeb, newWebFenceId, UNTRUSTED_WEB_TOOLS } from './untrusted-web'
+import {
+  fenceUntrustedWeb,
+  isUntrustedToolResult,
+  newWebFenceId,
+  UNTRUSTED_WEB_TOOLS
+} from './untrusted-web'
 
 const MAX_TOOL_ITERATIONS = 8
 const DELTA_COALESCE_MS = 30
@@ -707,7 +712,7 @@ export class ChatOrchestrator {
       const priorAssistant = path.findLast((m) => m.role === 'assistant')
       const priorUsedWeb =
         priorAssistant?.parts.some(
-          (p) => p.type === 'tool_call' && (p.name === 'web_search' || p.name === 'web_visit')
+          (p) => p.type === 'tool_call' && UNTRUSTED_WEB_TOOLS.has(p.name)
         ) ?? false
 
       const decision = heuristicRoute(question, priorUsedWeb)
@@ -1010,7 +1015,7 @@ export class ChatOrchestrator {
         this.toolEvent(ctx, call.id, name, outcome.failed ? 'error' : 'result', clip(outcome.result, 200))
         // The persisted/displayed part keeps the clean result; the MODEL-facing
         // history wraps untrusted web content in injection-guard fences.
-        const historyResult = UNTRUSTED_WEB_TOOLS.has(name)
+        const historyResult = isUntrustedToolResult(name)
           ? fenceUntrustedWeb(outcome.result, webFenceId)
           : outcome.result
         if (encodesToolHistoryAsText(family)) {
@@ -1185,7 +1190,7 @@ export class ChatOrchestrator {
     // Replayed untrusted web results get re-fenced too, so a hostile page that
     // landed in a past tool_result can't inject on this turn's replay.
     const fencedResult = (r: Extract<MessagePart, { type: 'tool_result' }>): string =>
-      UNTRUSTED_WEB_TOOLS.has(r.name) ? fenceUntrustedWeb(r.result, webFenceId) : r.result
+      isUntrustedToolResult(r.name) ? fenceUntrustedWeb(r.result, webFenceId) : r.result
     const messages: ChatCompletionMessage[] = []
     let textBuffer: string[] = []
     let calls: Array<{ part: Extract<MessagePart, { type: 'tool_call' }> }> = []
