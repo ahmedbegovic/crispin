@@ -139,6 +139,26 @@ function usageFromMessages(
   return null
 }
 
+/** Merge a chat.get / switchBranch view into per-conversation state: the object,
+ *  its active path, and the usage donut. A null contextLength from main (model
+ *  momentarily unresolvable) never erases a known denominator. */
+function mergeView(
+  s: ChatStore,
+  conversationId: string,
+  view: { conversation: Conversation; messages: ChatMessage[]; contextLength: number | null }
+): Partial<ChatStore> {
+  const entry = usageFromMessages(
+    view.messages,
+    view.contextLength ?? s.usage[conversationId]?.contextLength ?? null
+  )
+  const { [conversationId]: _omit, ...usage } = s.usage
+  return {
+    conversationById: { ...s.conversationById, [conversationId]: view.conversation },
+    messagesById: { ...s.messagesById, [conversationId]: view.messages },
+    usage: entry ? { ...usage, [conversationId]: entry } : usage
+  }
+}
+
 function assistantStub(
   conversationId: string,
   id: string,
@@ -326,20 +346,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     rememberSiblings(view.messages)
     // Never clobber an in-flight stream with the slower persisted snapshot.
     if (get().streaming[conversationId] !== undefined) return
-    set((s) => {
-      const entry = usageFromMessages(
-        view.messages,
-        // Same policy as chat.done: a null from main (model momentarily
-        // unresolvable) never erases a known denominator.
-        view.contextLength ?? s.usage[conversationId]?.contextLength ?? null
-      )
-      const { [conversationId]: _, ...usage } = s.usage
-      return {
-        conversationById: { ...s.conversationById, [conversationId]: view.conversation },
-        messagesById: { ...s.messagesById, [conversationId]: view.messages },
-        usage: entry ? { ...usage, [conversationId]: entry } : usage
-      }
-    })
+    set((s) => mergeView(s, conversationId, view))
   },
 
   setShowArchived: async (show) => {
@@ -358,20 +365,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     const view = await call('chat.get', { conversationId })
     rememberSiblings(view.messages)
-    set((s) => {
-      const entry = usageFromMessages(
-        view.messages,
-        // Same policy as chat.done: a null from main (model momentarily
-        // unresolvable) never erases a known denominator.
-        view.contextLength ?? s.usage[conversationId]?.contextLength ?? null
-      )
-      const { [conversationId]: _, ...usage } = s.usage
-      return {
-        conversationById: { ...s.conversationById, [conversationId]: view.conversation },
-        messagesById: { ...s.messagesById, [conversationId]: view.messages },
-        usage: entry ? { ...usage, [conversationId]: entry } : usage
-      }
-    })
+    set((s) => mergeView(s, conversationId, view))
   },
 
   create: async () => {
@@ -634,20 +628,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     const view = await call('chat.switchBranch', { conversationId, messageId: targetId })
     rememberSiblings(view.messages)
-    set((s) => {
-      const entry = usageFromMessages(
-        view.messages,
-        // Same policy as chat.done: a null from main (model momentarily
-        // unresolvable) never erases a known denominator.
-        view.contextLength ?? s.usage[conversationId]?.contextLength ?? null
-      )
-      const { [conversationId]: _, ...usage } = s.usage
-      return {
-        conversationById: { ...s.conversationById, [conversationId]: view.conversation },
-        messagesById: { ...s.messagesById, [conversationId]: view.messages },
-        usage: entry ? { ...usage, [conversationId]: entry } : usage
-      }
-    })
+    set((s) => mergeView(s, conversationId, view))
   },
 
   update: async (conversationId, patch) => {
