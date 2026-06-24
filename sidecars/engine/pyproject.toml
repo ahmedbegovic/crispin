@@ -12,4 +12,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-omlx = { git = "https://github.com/jundot/omlx.git", tag = "v0.4.4rc1" }
+omlx = { git = "https://github.com/jundot/omlx.git", tag = "v0.4.4" }
