@@ -989,9 +989,10 @@ export class ChatOrchestrator {
         if (visibleText.trim()) {
           messages.push({ role: 'assistant', content: visibleText.trim() })
         }
-        // Via the append helper: with no visible text, gemma's history ends
-        // on the previous round's tool-results user turn — a pushed second
-        // user message would break alternation.
+        // Use the append helper, not a raw push: it extends a trailing user
+        // message (avoiding a rejected user-after-user) but pushes a fresh user
+        // turn after this round's assistant/tool messages — the tool results are
+        // native `tool` messages now, so a user turn after them is correct.
         appendToTrailingUserMessage(
           messages,
           'Tool budget exhausted — do not call any more tools. ' +
@@ -1269,8 +1270,20 @@ export class ChatOrchestrator {
             function: { name: c.part.name, arguments: c.part.args }
           }))
         })
-        for (const r of results) {
-          messages.push({ role: 'tool', tool_call_id: r.toolCallId, content: fencedResult(r) })
+        // Gemma's native template requires every tool_call to be answered by a
+        // tool message; a persisted call left without a result (e.g. an aborted
+        // round the abort-sweep missed) would otherwise replay as an unpaired
+        // tool_calls turn the template rejects. Emit one tool message per call,
+        // matched by id, with a placeholder for any missing result (and drop a
+        // result with no matching call — a tool message needs a preceding call).
+        const resultById = new Map(results.map((r) => [r.toolCallId, r]))
+        for (const c of calls) {
+          const r = resultById.get(c.part.id)
+          messages.push({
+            role: 'tool',
+            tool_call_id: c.part.id,
+            content: r ? fencedResult(r) : '[no result recorded]'
+          })
         }
       }
       textBuffer = []
