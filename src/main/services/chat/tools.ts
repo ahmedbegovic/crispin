@@ -4,7 +4,7 @@ import type { ChatToolDef } from '../engine-client'
 import type { ToolsClient } from '../tools-client'
 import type { McpManager } from '../mcp-manager'
 import type { SkillsService } from '../skills'
-import { cleanUrl } from './search-router'
+import { cleanUrl } from './search-router-core'
 
 /**
  * Per-generation [n] source numbering: web/rag tool results register sources
@@ -14,10 +14,18 @@ import { cleanUrl } from './search-router'
 export class SourceTracker {
   private readonly byUrl = new Map<string, SourceRef>()
 
-  add(url: string, title: string | null): SourceRef {
+  add(url: string, title: string | null, snippet?: string | null): SourceRef {
+    // Cap generously: a visited page's condensed body (~1500 chars) is the text
+    // the grounding verifier scores citations against, so it must REPLACE the
+    // short 300-char search snippet when it arrives for the same URL. The hover
+    // card clamps the display visually, so the longer text only helps grounding.
+    const text = snippet ? snippet.trim().slice(0, 1500) : null
     const existing = this.byUrl.get(url)
-    if (existing) return existing
-    const source: SourceRef = { id: this.byUrl.size + 1, title, url }
+    if (existing) {
+      if (text && text.length > (existing.snippet?.length ?? 0)) existing.snippet = text
+      return existing
+    }
+    const source: SourceRef = { id: this.byUrl.size + 1, title, url, snippet: text }
     this.byUrl.set(url, source)
     return source
   }
@@ -250,7 +258,7 @@ export async function executeTool(
       if (results.length === 0) return { result: `No results (backend: ${backend}).` }
       const sourceIds: number[] = []
       const lines = results.map((r) => {
-        const source = ctx.sources.add(r.url, r.title || null)
+        const source = ctx.sources.add(r.url, r.title || null, r.snippet)
         sourceIds.push(source.id)
         return `[${source.id}] ${r.title}\n${r.url}\n${r.snippet}`
       })
@@ -259,7 +267,7 @@ export async function executeTool(
     case 'web_visit': {
       const url = args.url as string
       const page = await ctx.tools.visit(url, undefined, ctx.signal)
-      const source = ctx.sources.add(page.url || url, page.title)
+      const source = ctx.sources.add(page.url || url, page.title, page.markdown)
       return {
         result: `[${source.id}] ${page.title ?? page.url}\n\n${page.markdown}`,
         sourceIds: [source.id]
@@ -301,7 +309,7 @@ export async function executeTool(
       const sourceIds: number[] = []
       const lines = hits.map((hit) => {
         // Library docs have no URL — a stable pseudo-URL keeps SourceRef.url honest.
-        const source = ctx.sources.add(`library://${hit.doc_id}`, hit.title)
+        const source = ctx.sources.add(`library://${hit.doc_id}`, hit.title, hit.text)
         sourceIds.push(source.id)
         return `[${source.id}] ${hit.title ?? 'document'} (chunk ${hit.chunk_index})\n${hit.text}`
       })

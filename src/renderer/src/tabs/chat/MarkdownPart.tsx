@@ -1,13 +1,77 @@
 import { memo } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 import rehypeHighlight from 'rehype-highlight'
+import rehypeKatex from 'rehype-katex'
+import type { SourceRef } from '@shared/types'
+import CodeBlock from './CodeBlock'
+import Citation, { SourcesContext } from './Citation'
 
 // react-markdown's default urlTransform strips any scheme outside its http(s)
 // allowlist BEFORE component renderers run — without this passthrough the img
 // renderer below would never see an crispin-attachment: src.
 const urlTransform = (url: string): string =>
   /^crispin-attachment:/i.test(url) ? url : defaultUrlTransform(url)
+
+const EMPTY_SOURCES: Record<number, SourceRef> = {}
+
+interface HNode {
+  type: string
+  tagName?: string
+  value?: string
+  properties?: { className?: unknown }
+  children?: HNode[]
+}
+
+/** Split a text value on [n] markers, wrapping each in a <cite> element. */
+function splitCitations(value: string): HNode[] | null {
+  const re = /\[(\d+)\]/g
+  if (!re.test(value)) return null
+  re.lastIndex = 0
+  const out: HNode[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(value)) !== null) {
+    if (m.index > last) out.push({ type: 'text', value: value.slice(last, m.index) })
+    out.push({
+      type: 'element',
+      tagName: 'cite',
+      properties: {},
+      children: [{ type: 'text', value: m[0] }]
+    })
+    last = m.index + m[0].length
+  }
+  if (last < value.length) out.push({ type: 'text', value: value.slice(last) })
+  return out
+}
+
+function walkCitations(node: HNode): void {
+  const children = node.children
+  if (!children) return
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i]
+    if (child.type === 'element') {
+      const cls = child.properties?.className
+      const inKatex =
+        Array.isArray(cls) && cls.some((c) => typeof c === 'string' && c.startsWith('katex'))
+      // Never rewrite [n] inside code / inline code / rendered math.
+      if (child.tagName === 'code' || child.tagName === 'pre' || inKatex) continue
+      walkCitations(child)
+    } else if (child.type === 'text' && child.value) {
+      const split = splitCitations(child.value)
+      if (split) {
+        children.splice(i, 1, ...split)
+        i += split.length - 1
+      }
+    }
+  }
+}
+
+/** rehype plugin: turn [n] markers in prose into <cite> citation elements. */
+function rehypeCitations() {
+  return (tree: unknown): void => walkCitations(tree as HNode)
+}
 
 // Tailwind preflight strips element margins, so markdown elements are styled
 // here instead of a global stylesheet (no typography plugin installed).
@@ -34,12 +98,7 @@ const components: Components = {
   h4: ({ node: _, ...props }) => (
     <h4 className="mb-1 mt-3 text-[13.5px] font-semibold text-zinc-200 first:mt-0" {...props} />
   ),
-  pre: ({ node: _, ...props }) => (
-    <pre
-      className="my-2 overflow-x-auto rounded-lg border border-zinc-800 text-[12px] leading-relaxed [&>code]:block [&>code]:p-3"
-      {...props}
-    />
-  ),
+  pre: ({ node: _, children }) => <CodeBlock>{children}</CodeBlock>,
   code: ({ node: _, className, ...props }) =>
     className ? (
       <code className={className} {...props} />
@@ -51,6 +110,7 @@ const components: Components = {
         {...props}
       />
     ),
+  cite: ({ node: _, children }) => <Citation>{children}</Citation>,
   blockquote: ({ node: _, ...props }) => (
     <blockquote className="my-2 border-l-2 border-zinc-700 pl-3 text-zinc-400" {...props} />
   ),
@@ -92,24 +152,38 @@ const components: Components = {
 
 interface Props {
   text: string
+  /** Per-message [n] → source map for inline citations (stable ref per message). */
+  sources?: Record<number, SourceRef>
 }
 
 /**
  * Memoized per part so a streaming delta re-renders only the part it touches.
  * Incomplete markdown (open fences, half-written links) parses to a partial
- * tree each render — no special casing needed.
+ * tree each render — no special casing needed. `sources` is reference-stable
+ * (empty until the sources part lands), so the memo behaves as before.
  */
-const MarkdownPart = memo(function MarkdownPart({ text }: Props) {
+const MarkdownPart = memo(function MarkdownPart({ text, sources }: Props) {
   return (
     <div className="select-text break-words text-[13.5px] leading-relaxed text-zinc-200">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        components={components}
-        urlTransform={urlTransform}
-      >
-        {text}
-      </ReactMarkdown>
+      <SourcesContext.Provider value={sources ?? EMPTY_SOURCES}>
+        <ReactMarkdown
+          // singleDollarTextMath:false — a single `$` is currency far more often
+          // than inline math in chat ("$1,099 … $1,199" was rendering as italic
+          // LaTeX). Display math via `$$…$$` is unaffected.
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
+          // throwOnError:false — a half-written $$…$$ mid-stream must render as
+          // readable raw text, never crash the whole message.
+          rehypePlugins={[
+            rehypeHighlight,
+            [rehypeKatex, { throwOnError: false }],
+            rehypeCitations
+          ]}
+          components={components}
+          urlTransform={urlTransform}
+        >
+          {text}
+        </ReactMarkdown>
+      </SourcesContext.Provider>
     </div>
   )
 })

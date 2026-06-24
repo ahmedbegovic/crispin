@@ -5,11 +5,13 @@ import type {
   Conversation,
   ConversationMeta,
   MessagePart,
+  ModelSampling,
   Tier
 } from '@shared/types'
 import type { CrispinEventOf } from '@shared/ipc'
 import { call, onEvent } from '@/lib/ipc'
 import { pushToast } from '@/stores/toasts'
+import { friendlyError } from '@/lib/friendlyError'
 
 export interface ToolPhaseInfo {
   phase: 'start' | 'result' | 'error'
@@ -24,6 +26,17 @@ export interface ConversationPatch {
   collectionId?: string | null
   webEnabled?: boolean
   archived?: boolean
+  /** Favorite flag — pinned conversations sort to the top. */
+  pinned?: boolean
+  /** Per-conversation sampling override; null = follow the model's defaults. */
+  sampling?: ModelSampling | null
+}
+
+/** One-shot regeneration steers: escalate the tier, and/or bias length/tone. */
+export interface RegenerateOptions {
+  tier?: Tier
+  lengthHint?: 'shorter' | 'longer'
+  toneHint?: 'formal' | 'casual'
 }
 
 /** Mirror main's tier-pin semantics for the optimistic conversation merge. */
@@ -52,8 +65,14 @@ interface ChatStore {
   toolPhases: Record<string, ToolPhaseInfo>
   /** conversationId -> error from the last chat.done; cleared on the next send. */
   lastError: Record<string, string>
+  /** conversationId -> the send that failed before any reply, so Retry can resend it. */
+  lastFailedSend: Record<string, { text: string; attachments?: AttachmentInput[]; tier?: Tier }>
   /** conversationId -> tokens used vs the tier's context window (donut data). */
   usage: Record<string, { used: number; contextLength: number | null }>
+  /** messageId -> user's manual activity-bubble expand state (survives Virtuoso unmount). */
+  activityOpen: Record<string, boolean>
+  /** messageIds whose generation the user stopped this session (for the "stopped" marker). */
+  stoppedIds: Record<string, true>
   initialized: boolean
   init: () => Promise<void>
   refreshList: () => Promise<void>
@@ -68,7 +87,11 @@ interface ChatStore {
     tier?: Tier
   ) => Promise<void>
   abort: (conversationId: string) => Promise<void>
-  regenerate: (conversationId: string, messageId: string) => Promise<void>
+  regenerate: (
+    conversationId: string,
+    messageId: string,
+    options?: RegenerateOptions
+  ) => Promise<void>
   editResend: (conversationId: string, messageId: string, text: string) => Promise<void>
   switchSibling: (
     conversationId: string,
@@ -78,6 +101,8 @@ interface ChatStore {
   update: (conversationId: string, patch: ConversationPatch) => Promise<void>
   remove: (conversationId: string) => Promise<void>
   clearError: (conversationId: string) => void
+  retryLast: (conversationId: string) => Promise<void>
+  setActivityOpen: (messageId: string, open: boolean) => void
 }
 
 // chat.get returns only the active path, but every message carries its full
@@ -128,6 +153,8 @@ function assistantStub(
     modelId: null,
     tokensIn: null,
     tokensOut: null,
+    ttftMs: null,
+    genMs: null,
     createdAt: Date.now(),
     siblingIndex: 0,
     siblingCount: 1,
@@ -174,7 +201,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   streaming: {},
   toolPhases: {},
   lastError: {},
+  lastFailedSend: {},
   usage: {},
+  activityOpen: {},
+  stoppedIds: {},
   initialized: false,
 
   init: async () => {
@@ -217,6 +247,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         const { [event.conversationId]: _, ...streaming } = s.streaming
         return {
           streaming,
+          stoppedIds: event.aborted
+            ? { ...s.stoppedIds, [event.messageId]: true as const }
+            : s.stoppedIds,
           lastError:
             event.error !== null
               ? { ...s.lastError, [event.conversationId]: event.error }
@@ -236,7 +269,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               : s.usage
         }
       })
-      if (event.error !== null && !event.aborted) pushToast('error', event.error)
+      if (event.error !== null && !event.aborted) pushToast('error', friendlyError(event.error))
       // Reconcile with what main persisted: sibling counts, attachment parts, usage.
       void get()
         .refreshConversation(event.conversationId)
@@ -349,6 +382,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           id: conversation.id,
           title: conversation.title,
           archived: conversation.archived,
+          pinned: conversation.pinned,
           updatedAt: conversation.updatedAt
         },
         ...s.conversations
@@ -386,6 +420,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         modelId: null,
         tokensIn: null,
         tokensOut: null,
+        ttftMs: null,
+        genMs: null,
         createdAt: Date.now(),
         siblingIndex: 0,
         siblingCount: 1,
@@ -412,8 +448,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         const messages = withRealId.some((m) => m.id === assistantMessageId)
           ? withRealId
           : [...withRealId, assistantStub(conversationId, assistantMessageId, messageId)]
+        const { [conversationId]: _f, ...lastFailedSend } = s.lastFailedSend
         return {
           messagesById: { ...s.messagesById, [conversationId]: messages },
+          lastFailedSend,
           // chat.done may already have cleared the flag on an instant failure.
           streaming:
             conversationId in s.streaming
@@ -428,6 +466,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         return {
           streaming,
           lastError: { ...s.lastError, [conversationId]: message },
+          lastFailedSend: {
+            ...s.lastFailedSend,
+            [conversationId]: { text, attachments, tier }
+          },
           messagesById: {
             ...s.messagesById,
             [conversationId]: (s.messagesById[conversationId] ?? []).filter(
@@ -445,7 +487,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     await call('chat.abort', { conversationId })
   },
 
-  regenerate: async (conversationId, messageId) => {
+  regenerate: async (conversationId, messageId, options) => {
     // The optimistic set below would clobber a live streaming entry, and the
     // catch would then erase it — stranding the generation with no Stop button.
     if (conversationId in get().streaming) {
@@ -457,26 +499,37 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return { lastError, streaming: { ...s.streaming, [conversationId]: '' } }
     })
     try {
-      const { assistantMessageId } = await call('chat.regenerate', { conversationId, messageId })
+      const { assistantMessageId } = await call('chat.regenerate', {
+        conversationId,
+        messageId,
+        ...options
+      })
       const prev = get().messagesById[conversationId] ?? []
       const index = prev.findIndex((m) => m.id === messageId)
       const target = index === -1 ? undefined : prev[index]
+      // A delta may have beaten this response and already created the assistant
+      // stub (with streamed parts) — keep those parts instead of an empty stub.
+      const existing = prev.find((m) => m.id === assistantMessageId)
       const stub: ChatMessage = {
-        ...assistantStub(conversationId, assistantMessageId, target?.parentId ?? null),
+        ...(existing ?? assistantStub(conversationId, assistantMessageId, target?.parentId ?? null)),
+        parentId: target?.parentId ?? existing?.parentId ?? null,
         siblingIndex: target?.siblingCount ?? 0,
         siblingCount: (target?.siblingCount ?? 0) + 1
       }
       rememberSiblings([stub])
-      set((s) => ({
-        messagesById: {
-          ...s.messagesById,
-          [conversationId]: [...(index === -1 ? prev : prev.slice(0, index)), stub]
-        },
-        streaming:
-          conversationId in s.streaming
-            ? { ...s.streaming, [conversationId]: assistantMessageId }
-            : s.streaming
-      }))
+      set((s) => {
+        const tail = index === -1 ? prev : prev.slice(0, index)
+        return {
+          messagesById: {
+            ...s.messagesById,
+            [conversationId]: [...tail.filter((m) => m.id !== assistantMessageId), stub]
+          },
+          streaming:
+            conversationId in s.streaming
+              ? { ...s.streaming, [conversationId]: assistantMessageId }
+              : s.streaming
+        }
+      })
     } catch (err) {
       set((s) => {
         const { [conversationId]: _, ...streaming } = s.streaming
@@ -511,23 +564,36 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         modelId: null,
         tokensIn: null,
         tokensOut: null,
+        ttftMs: null,
+        genMs: null,
         createdAt: Date.now(),
         siblingIndex: target?.siblingCount ?? 0,
         siblingCount: (target?.siblingCount ?? 0) + 1,
         siblingIds: target ? [...target.siblingIds, result.messageId] : []
       }
-      const stub = assistantStub(conversationId, result.assistantMessageId, result.messageId)
+      // Preserve any parts a delta already streamed into the assistant stub.
+      const existing = prev.find((m) => m.id === result.assistantMessageId)
+      const stub: ChatMessage = existing
+        ? { ...existing, parentId: result.messageId }
+        : assistantStub(conversationId, result.assistantMessageId, result.messageId)
       rememberSiblings([userMessage])
-      set((s) => ({
-        messagesById: {
-          ...s.messagesById,
-          [conversationId]: [...(index === -1 ? prev : prev.slice(0, index)), userMessage, stub]
-        },
-        streaming:
-          conversationId in s.streaming
-            ? { ...s.streaming, [conversationId]: result.assistantMessageId }
-            : s.streaming
-      }))
+      set((s) => {
+        const tail = index === -1 ? prev : prev.slice(0, index)
+        return {
+          messagesById: {
+            ...s.messagesById,
+            [conversationId]: [
+              ...tail.filter((m) => m.id !== result.assistantMessageId),
+              userMessage,
+              stub
+            ]
+          },
+          streaming:
+            conversationId in s.streaming
+              ? { ...s.streaming, [conversationId]: result.assistantMessageId }
+              : s.streaming
+        }
+      })
     } catch (err) {
       set((s) => {
         const { [conversationId]: _, ...streaming } = s.streaming
@@ -565,7 +631,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   update: async (conversationId, patch) => {
     // Optimistic: pickers and toggles reflect instantly; revert if main rejects.
     const prevConversation = get().conversationById[conversationId]
-    const prevList = get().conversations
     set((s) => ({
       conversationById: prevConversation
         ? { ...s.conversationById, [conversationId]: applyPatch(prevConversation, patch) }
@@ -575,15 +640,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           ? {
               ...c,
               ...(patch.title !== undefined ? { title: patch.title } : {}),
-              ...(patch.archived !== undefined ? { archived: patch.archived } : {})
+              ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
+              ...(patch.pinned !== undefined ? { pinned: patch.pinned } : {})
             }
           : c
       )
     }))
     try {
       await call('chat.update', { conversationId, ...patch })
-      // Archive toggles change which list the conversation belongs to.
-      if (patch.archived !== undefined) await get().refreshList()
+      // Archive / pin change which list bucket or order the conversation lands in.
+      if (patch.archived !== undefined || patch.pinned !== undefined) await get().refreshList()
       if (patch.defaultTier !== undefined) {
         // The donut denominator tracks the tier's active model — a tier switch
         // changes it without any new generation. Patch ONLY the usage entry so
@@ -602,12 +668,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
       }
     } catch (err) {
+      // Revert just this conversation's object; re-sync the list from the server
+      // rather than restoring a stale full-array snapshot (which would stomp a
+      // titleChanged / other update that landed during the in-flight call).
       set((s) => ({
         conversationById: prevConversation
           ? { ...s.conversationById, [conversationId]: prevConversation }
-          : s.conversationById,
-        conversations: prevList
+          : s.conversationById
       }))
+      void get().refreshList().catch(() => {})
       throw err
     }
   },
@@ -635,5 +704,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const { [conversationId]: _, ...lastError } = s.lastError
       return { lastError }
     })
+  },
+
+  setActivityOpen: (messageId, open) => {
+    set((s) => ({ activityOpen: { ...s.activityOpen, [messageId]: open } }))
+  },
+
+  retryLast: async (conversationId) => {
+    get().clearError(conversationId)
+    // A send that failed before any reply rolled its user turn back out — resend
+    // that exact input rather than regenerating an earlier (unrelated) answer.
+    const failed = get().lastFailedSend[conversationId]
+    if (failed) {
+      await get().send(conversationId, failed.text, failed.attachments, failed.tier)
+      return
+    }
+    const messages = get().messagesById[conversationId] ?? []
+    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
+    if (!lastAssistant) return
+    await get().regenerate(conversationId, lastAssistant.id)
   }
 }))

@@ -14,6 +14,7 @@ model ids are the HF repo id with '/' replaced by '--'; main maps both ways.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -41,35 +42,47 @@ def write_model_settings(models: list[dict[str, Any]]) -> None:
     oMLX's own admin UI (and entries for models Crispin doesn't know) survive.
     """
     path = Path.home() / ".omlx" / "model_settings.json"
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, dict) or not isinstance(data.get("models"), dict):
-            raise ValueError
-    except Exception:
-        data = {"version": SETTINGS_VERSION, "models": {}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Best-effort exclusive lock around the read-modify-write so two Crispin
+    # engine starts can't clobber each other's merge. NOTE: it cannot coordinate
+    # with the standalone oMLX app (a separate process that doesn't take this
+    # lock) — that cross-app race is last-writer-wins on a shared file we don't
+    # own. The window is a single startup-time write, so the residual risk is
+    # accepted rather than papered over.
+    with open(path.with_suffix(".lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        except OSError:
+            pass  # locking unsupported — proceed unlocked rather than fail startup
 
-    for m in models:
-        model_id = engine_model_id(m["name"])
-        entry = data["models"].get(model_id)
-        # A hand-edited non-dict entry is corruption like any other: reset it
-        # rather than crash blaming engine-config.json for the wrong file.
-        if not isinstance(entry, dict):
-            entry = data["models"][model_id] = {}
-        # Per-model output budget: ctx-bounded for small tiers, capped for ultra.
-        entry["max_tokens"] = int(m["max_tokens"])
-        # Thinking is parsed into reasoning_content server-side, so it is safe
-        # for OpenAI clients (opencode) and wanted by the Chat tab.
-        entry["enable_thinking"] = bool(m["enable_thinking"])
-        # Idle auto-unload is the engine's job now (was a main-side timer).
-        entry["ttl_seconds"] = m["ttl_seconds"]
+        try:
+            data = json.loads(path.read_text())
+            if not isinstance(data, dict) or not isinstance(data.get("models"), dict):
+                raise ValueError
+        except Exception:
+            data = {"version": SETTINGS_VERSION, "models": {}}
 
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
-        tmp.replace(path)
-    except OSError as exc:
-        fail(f"cannot write {path}: {exc}")
+        for m in models:
+            model_id = engine_model_id(m["name"])
+            entry = data["models"].get(model_id)
+            # A hand-edited non-dict entry is corruption like any other: reset it
+            # rather than crash blaming engine-config.json for the wrong file.
+            if not isinstance(entry, dict):
+                entry = data["models"][model_id] = {}
+            # Per-model output budget: ctx-bounded for small tiers, capped for ultra.
+            entry["max_tokens"] = int(m["max_tokens"])
+            # Thinking is parsed into reasoning_content server-side, so it is safe
+            # for OpenAI clients (opencode) and wanted by the Chat tab.
+            entry["enable_thinking"] = bool(m["enable_thinking"])
+            # Idle auto-unload is the engine's job now (was a main-side timer).
+            entry["ttl_seconds"] = m["ttl_seconds"]
+
+        try:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2) + "\n")
+            tmp.replace(path)
+        except OSError as exc:
+            fail(f"cannot write {path}: {exc}")
 
 
 def build_argv(config_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
@@ -91,7 +104,7 @@ def build_argv(config_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
     except (KeyError, TypeError, ValueError) as exc:
         fail(f"config field missing or invalid: {exc!r}")
 
-    return [
+    argv = [
         "omlx",
         "serve",
         "--host",
@@ -102,7 +115,19 @@ def build_argv(config_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
         str(budget_gb),
         "--log-level",
         "info",
-    ], models
+    ]
+
+    # Crispin owns the paged SSD KV-cache: a fixed dir under the app's data
+    # directory and a hard size cap, instead of oMLX's default "auto" (≈10% of
+    # free disk) that silently grows ~/.omlx/cache. Keeps the prefix-cache speedup.
+    cache = config.get("cache")
+    if isinstance(cache, dict) and cache.get("dir"):
+        argv += ["--paged-ssd-cache-dir", str(cache["dir"])]
+        max_gb = cache.get("max_size_gb")
+        if max_gb:
+            argv += ["--paged-ssd-cache-max-size", f"{int(float(max_gb))}GB"]
+
+    return argv, models
 
 
 def main() -> None:

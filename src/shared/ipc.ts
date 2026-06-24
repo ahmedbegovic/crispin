@@ -134,10 +134,21 @@ export const modelsOverviewSchema = z.object({
 
 export const messageRoleSchema = z.enum(['system', 'user', 'assistant', 'tool'])
 
+/** A model's sampling knobs; reused for the installed-model recommendation and per-conversation overrides. */
+export const samplingSchema = z.object({
+  temperature: z.number().nullable(),
+  topP: z.number().nullable(),
+  topK: z.number().nullable()
+})
+
 export const sourceRefSchema = z.object({
   id: z.number(),
   title: z.string().nullable(),
-  url: z.string()
+  url: z.string(),
+  /** Short context for the citation hover card (search snippet / page lead). */
+  snippet: z.string().nullable().optional(),
+  /** Set by the citation-grounding verifier when a claim in the answer matched this source. */
+  grounded: z.boolean().optional()
 })
 
 export const messagePartSchema = z.discriminatedUnion('type', [
@@ -166,6 +177,10 @@ export const conversationSchema = z.object({
   collectionId: z.string().nullable(),
   webEnabled: z.boolean(),
   archived: z.boolean(),
+  /** Favorite flag — pinned conversations sort to the top of the sidebar. */
+  pinned: z.boolean(),
+  /** Per-conversation sampling override; null = follow the model's recommended sampling. */
+  sampling: samplingSchema.nullable(),
   createdAt: z.number(),
   updatedAt: z.number()
 })
@@ -174,6 +189,7 @@ export const conversationMetaSchema = z.object({
   id: z.string(),
   title: z.string(),
   archived: z.boolean(),
+  pinned: z.boolean(),
   updatedAt: z.number()
 })
 
@@ -186,6 +202,9 @@ export const chatMessageSchema = z.object({
   modelId: z.string().nullable(),
   tokensIn: z.number().nullable(),
   tokensOut: z.number().nullable(),
+  /** Time-to-first-token (ms) and decode wall-time (ms); null until generation completes. */
+  ttftMs: z.number().nullable(),
+  genMs: z.number().nullable(),
   createdAt: z.number(),
   siblingIndex: z.number(),
   siblingCount: z.number(),
@@ -207,6 +226,17 @@ export const conversationViewSchema = z.object({
    * is installed for the tier.
    */
   contextLength: z.number().nullable()
+})
+
+export const chatSearchHitSchema = z.object({
+  conversationId: z.string(),
+  /** Best-matching message id; null when only the title matched. */
+  messageId: z.string().nullable(),
+  title: z.string(),
+  /** fts5 snippet() excerpt with <b>…</b> match marks. */
+  snippet: z.string(),
+  pinned: z.boolean(),
+  updatedAt: z.number()
 })
 
 // --- library / RAG (M2) -----------------------------------------------------
@@ -555,8 +585,14 @@ export const contract = {
     output: z.object({ ok: z.boolean() })
   },
   'chat.regenerate': {
-    /** messageId = the assistant message to fork a sibling of. */
-    input: z.object({ conversationId: z.string(), messageId: z.string() }),
+    /** messageId = the assistant message to fork a sibling of; tier escalates the regen. */
+    input: z.object({
+      conversationId: z.string(),
+      messageId: z.string(),
+      tier: tierSchema.optional(),
+      lengthHint: z.enum(['shorter', 'longer']).optional(),
+      toneHint: z.enum(['formal', 'casual']).optional()
+    }),
     output: z.object({ assistantMessageId: z.string() })
   },
   'chat.editResend': {
@@ -578,13 +614,42 @@ export const contract = {
       defaultTier: tierSchema.nullable().optional(),
       collectionId: z.string().nullable().optional(),
       webEnabled: z.boolean().optional(),
-      archived: z.boolean().optional()
+      archived: z.boolean().optional(),
+      pinned: z.boolean().optional(),
+      /** null reverts to the model's recommended sampling. */
+      sampling: samplingSchema.nullable().optional()
     }),
     output: z.object({ ok: z.boolean() })
+  },
+  'chat.search': {
+    /** Full-text search over conversation titles + message bodies (FTS5). */
+    input: z.object({ query: z.string().min(1), limit: z.number().int().positive().optional() }),
+    output: z.object({ results: z.array(chatSearchHitSchema) })
+  },
+  'chat.export': {
+    /** Render the conversation's active path to a Markdown file; returns its path. */
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({ path: z.string() })
+  },
+  'chat.savePastedFile': {
+    /** Persist a pasted clipboard blob (e.g. a screenshot) to a temp file for attachment. */
+    input: z.object({ name: z.string(), mime: z.string(), dataBase64: z.string() }),
+    output: z.object({ path: z.string() })
   },
   'chat.delete': {
     input: z.object({ conversationId: z.string() }),
     output: z.object({ ok: z.boolean() })
+  },
+
+  // --- engine cache (oMLX paged SSD KV-cache) --------------------------------
+  'cache.size': {
+    input: z.undefined(),
+    output: z.object({ bytes: z.number(), path: z.string(), maxBytes: z.number().nullable() })
+  },
+  'cache.clear': {
+    /** ok:false + reason when the engine is mid-generation. */
+    input: z.undefined(),
+    output: z.object({ ok: z.boolean(), freedBytes: z.number(), reason: z.string().optional() })
   },
 
   // --- library ----------------------------------------------------------------
@@ -1119,6 +1184,9 @@ export const crispinEventSchema = z.discriminatedUnion('type', [
     error: z.string().nullable(),
     tokensIn: z.number().nullable(),
     tokensOut: z.number().nullable(),
+    /** Time-to-first-token (ms) + decode wall-time (ms); null when no tokens were produced. */
+    ttftMs: z.number().nullable(),
+    genMs: z.number().nullable(),
     /** Context window of the model that generated this message; donut denominator. */
     contextLength: z.number().nullable()
   }),

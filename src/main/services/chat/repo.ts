@@ -1,9 +1,11 @@
 import type {
   ChatMessage,
+  ChatSearchHit,
   Conversation,
   ConversationMeta,
   MessagePart,
   MessageRole,
+  ModelSampling,
   Tier
 } from '@shared/types'
 import type { CrispinDatabase } from '../db'
@@ -18,6 +20,8 @@ interface ConversationRow {
   collection_id: string | null
   web_enabled: number
   archived: number
+  pinned: number
+  sampling: string | null
   created_at: number
   updated_at: number
 }
@@ -31,7 +35,18 @@ interface MessageRow {
   model_id: string | null
   tokens_in: number | null
   tokens_out: number | null
+  ttft_ms: number | null
+  gen_ms: number | null
   created_at: number
+}
+
+const parseSampling = (json: string | null): ModelSampling | null => {
+  if (!json) return null
+  try {
+    return JSON.parse(json) as ModelSampling
+  } catch {
+    return null
+  }
 }
 
 const rowToConversation = (row: ConversationRow): Conversation => ({
@@ -44,6 +59,8 @@ const rowToConversation = (row: ConversationRow): Conversation => ({
   collectionId: row.collection_id,
   webEnabled: row.web_enabled === 1,
   archived: row.archived === 1,
+  pinned: row.pinned === 1,
+  sampling: parseSampling(row.sampling),
   createdAt: row.created_at,
   updatedAt: row.updated_at
 })
@@ -56,6 +73,14 @@ const parseParts = (json: string): MessagePart[] => {
   }
 }
 
+/** Searchable text of a message = its text parts (no thoughts/tools/images). */
+const bodyOfParts = (parts: MessagePart[]): string =>
+  parts
+    .filter((p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n')
+    .trim()
+
 export interface InsertMessageInput {
   conversationId: string
   parentId: string | null
@@ -64,20 +89,36 @@ export interface InsertMessageInput {
   modelId?: string | null
 }
 
-/** All chat SQL lives here: conversations CRUD + the message tree. */
+/** All chat SQL lives here: conversations CRUD + the message tree + FTS search. */
 export class ChatRepo {
-  constructor(private readonly db: CrispinDatabase) {}
+  /** False when the chat_fts virtual table is missing (degrade, don't crash). */
+  private ftsReady = false
+
+  constructor(private readonly db: CrispinDatabase) {
+    this.ftsReady =
+      this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'chat_fts'").get() !== undefined
+    if (this.ftsReady) {
+      try {
+        this.backfillChatFts()
+      } catch {
+        this.ftsReady = false
+      }
+    }
+  }
 
   // --- conversations ----------------------------------------------------------
 
   listConversations(archived: boolean): ConversationMeta[] {
     const rows = this.db
-      .prepare('SELECT * FROM conversations WHERE archived = ? ORDER BY updated_at DESC')
+      .prepare(
+        'SELECT * FROM conversations WHERE archived = ? ORDER BY pinned DESC, updated_at DESC'
+      )
       .all(archived ? 1 : 0) as unknown as ConversationRow[]
     return rows.map((r) => ({
       id: r.id,
       title: r.title,
       archived: r.archived === 1,
+      pinned: r.pinned === 1,
       updatedAt: r.updated_at
     }))
   }
@@ -105,7 +146,9 @@ export class ChatRepo {
         now,
         now
       )
-    return this.getConversation(id)
+    const conversation = this.getConversation(id)
+    this.ftsSetTitle(id, conversation.title)
+    return conversation
   }
 
   getConversation(id: string): Conversation {
@@ -126,6 +169,9 @@ export class ChatRepo {
       collectionId?: string | null
       webEnabled?: boolean
       archived?: boolean
+      pinned?: boolean
+      /** null reverts to the model's recommended sampling. */
+      sampling?: ModelSampling | null
     }
   ): void {
     const sets: string[] = []
@@ -147,17 +193,28 @@ export class ChatRepo {
     if (fields.collectionId !== undefined) set('collection_id', fields.collectionId)
     if (fields.webEnabled !== undefined) set('web_enabled', fields.webEnabled ? 1 : 0)
     if (fields.archived !== undefined) set('archived', fields.archived ? 1 : 0)
+    if (fields.pinned !== undefined) set('pinned', fields.pinned ? 1 : 0)
+    if (fields.sampling !== undefined) {
+      set('sampling', fields.sampling === null ? null : JSON.stringify(fields.sampling))
+    }
     set('updated_at', Date.now())
     values.push(id)
     this.db.prepare(`UPDATE conversations SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+    if (fields.title !== undefined) this.ftsSetTitle(id, fields.title)
   }
 
   deleteConversation(id: string): void {
+    // Guard like every other FTS touch: when FTS5 is unavailable the table is
+    // absent and prepare() would throw, aborting the delete and orphaning the
+    // already-unlinked image files. The conversation/messages delete must run.
+    if (this.ftsReady)
+      this.db.prepare('DELETE FROM chat_fts WHERE conversation_id = ?').run(id) // not FK-cascaded
     this.db.prepare('DELETE FROM conversations WHERE id = ?').run(id) // messages cascade
   }
 
   setTitle(id: string, title: string): void {
     this.db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(title, id)
+    this.ftsSetTitle(id, title)
   }
 
   // --- message tree -----------------------------------------------------------
@@ -178,6 +235,7 @@ export class ChatRepo {
         input.modelId ?? null,
         Date.now()
       )
+    this.ftsIndexBody(id, input.conversationId, bodyOfParts(input.parts))
     return id
   }
 
@@ -193,14 +251,34 @@ export class ChatRepo {
   updateParts(
     messageId: string,
     parts: MessagePart[],
-    tokens?: { tokensIn: number | null; tokensOut: number | null }
+    tokens?: { tokensIn: number | null; tokensOut: number | null },
+    timing?: { ttftMs: number | null; genMs: number | null }
   ): void {
     if (tokens) {
-      this.db
-        .prepare('UPDATE messages SET parts = ?, tokens_in = ?, tokens_out = ? WHERE id = ?')
-        .run(JSON.stringify(parts), tokens.tokensIn, tokens.tokensOut, messageId)
+      if (timing) {
+        this.db
+          .prepare(
+            'UPDATE messages SET parts = ?, tokens_in = ?, tokens_out = ?, ttft_ms = ?, gen_ms = ? WHERE id = ?'
+          )
+          .run(
+            JSON.stringify(parts),
+            tokens.tokensIn,
+            tokens.tokensOut,
+            timing.ttftMs,
+            timing.genMs,
+            messageId
+          )
+      } else {
+        this.db
+          .prepare('UPDATE messages SET parts = ?, tokens_in = ?, tokens_out = ? WHERE id = ?')
+          .run(JSON.stringify(parts), tokens.tokensIn, tokens.tokensOut, messageId)
+      }
+      // Re-index FTS only at finalize (tokens present) — not on every streaming flush.
+      this.ftsReindexMessage(messageId, parts)
     } else {
-      this.db.prepare('UPDATE messages SET parts = ? WHERE id = ?').run(JSON.stringify(parts), messageId)
+      this.db
+        .prepare('UPDATE messages SET parts = ? WHERE id = ?')
+        .run(JSON.stringify(parts), messageId)
     }
   }
 
@@ -208,6 +286,25 @@ export class ChatRepo {
     this.db
       .prepare('UPDATE conversations SET head_message_id = ?, updated_at = ? WHERE id = ?')
       .run(messageId, Date.now(), conversationId)
+  }
+
+  /**
+   * Reset a dangling head (its message row is gone) to the newest message in the
+   * conversation, or null when empty. No-op when the head is valid.
+   */
+  repairHead(conversationId: string): void {
+    const row = this.db
+      .prepare('SELECT head_message_id FROM conversations WHERE id = ?')
+      .get(conversationId) as { head_message_id: string | null } | undefined
+    if (!row || row.head_message_id === null) return
+    const exists = this.db.prepare('SELECT 1 FROM messages WHERE id = ?').get(row.head_message_id)
+    if (exists) return
+    const newest = this.db
+      .prepare(
+        'SELECT id FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+      )
+      .get(conversationId) as { id: string } | undefined
+    this.setHead(conversationId, newest?.id ?? null)
   }
 
   /** Active path root→head. Walks parent links; head is the source of truth. */
@@ -227,6 +324,7 @@ export class ChatRepo {
   }
 
   view(conversationId: string): { conversation: Conversation; messages: ChatMessage[] } {
+    this.repairHead(conversationId)
     return {
       conversation: this.getConversation(conversationId),
       messages: this.activePath(conversationId)
@@ -252,6 +350,122 @@ export class ChatRepo {
       leaf = child.id
     }
     this.setHead(conversationId, leaf)
+  }
+
+  // --- full-text search (FTS5) -------------------------------------------------
+
+  /** Search titles + message bodies; returns at most one hit per conversation. */
+  searchConversations(query: string, limit = 20): ChatSearchHit[] {
+    if (!this.ftsReady) return []
+    const tokens = query
+      .trim()
+      .split(/\s+/)
+      // Strip FTS punctuation/quotes, then lowercase: FTS5 treats AND/OR/NOT/NEAR
+      // as operators only when uppercase, so lowercasing neutralizes them (the
+      // unicode61 tokenizer already case-folds, so matching is unaffected).
+      .map((t) => t.replace(/[^\p{L}\p{N}_]+/gu, '').toLowerCase())
+      .filter(Boolean)
+    if (tokens.length === 0) return []
+    // AND the terms; prefix-match the final one for as-you-type search.
+    const match = tokens.map((t, i) => (i === tokens.length - 1 ? `${t}*` : t)).join(' ')
+
+    const rows = this.db
+      .prepare(
+        `SELECT conversation_id AS cid, message_id AS mid,
+                snippet(chat_fts, -1, '<b>', '</b>', '…', 12) AS snip,
+                bm25(chat_fts) AS rank
+         FROM chat_fts WHERE chat_fts MATCH ? ORDER BY rank LIMIT ?`
+      )
+      .all(match, limit * 4) as unknown as Array<{
+      cid: string
+      mid: string | null
+      snip: string
+      rank: number
+    }>
+
+    const seen = new Set<string>()
+    const hits: ChatSearchHit[] = []
+    const convStmt = this.db.prepare(
+      'SELECT title, pinned, updated_at FROM conversations WHERE id = ?'
+    )
+    for (const r of rows) {
+      if (seen.has(r.cid)) continue
+      seen.add(r.cid)
+      const conv = convStmt.get(r.cid) as
+        | { title: string; pinned: number; updated_at: number }
+        | undefined
+      if (!conv) continue
+      hits.push({
+        conversationId: r.cid,
+        messageId: r.mid,
+        title: conv.title,
+        snippet: r.snip,
+        pinned: conv.pinned === 1,
+        updatedAt: conv.updated_at
+      })
+      if (hits.length >= limit) break
+    }
+    return hits
+  }
+
+  /** One-shot population of chat_fts for conversations/messages created before 0006. */
+  backfillChatFts(): void {
+    const count = this.db.prepare('SELECT count(*) AS c FROM chat_fts').get() as { c: number }
+    if (count.c > 0) return
+    const convs = this.db.prepare('SELECT id, title FROM conversations').all() as unknown as Array<{
+      id: string
+      title: string
+    }>
+    if (convs.length === 0) return
+    // Atomic: titles + bodies commit together, so an interrupted backfill rolls
+    // back (chat_fts stays empty) and retries next start — a row-count guard
+    // alone would treat a titles-only partial as "done" and never index bodies.
+    this.db.exec('BEGIN')
+    try {
+      for (const c of convs) this.ftsSetTitle(c.id, c.title)
+      const msgs = this.db
+        .prepare('SELECT id, conversation_id, parts FROM messages')
+        .all() as unknown as Array<{ id: string; conversation_id: string; parts: string }>
+      for (const m of msgs)
+        this.ftsIndexBody(m.id, m.conversation_id, bodyOfParts(parseParts(m.parts)))
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /** Replace a conversation's title row (message_id IS NULL) in chat_fts. */
+  private ftsSetTitle(conversationId: string, title: string): void {
+    if (!this.ftsReady) return
+    this.db
+      .prepare('DELETE FROM chat_fts WHERE conversation_id = ? AND message_id IS NULL')
+      .run(conversationId)
+    if (title.trim()) {
+      this.db
+        .prepare('INSERT INTO chat_fts (conversation_id, message_id, title, body) VALUES (?, ?, ?, ?)')
+        .run(conversationId, null, title, '')
+    }
+  }
+
+  /** Replace a message's body row in chat_fts (no-op for empty bodies). */
+  private ftsIndexBody(messageId: string, conversationId: string, body: string): void {
+    if (!this.ftsReady) return
+    this.db.prepare('DELETE FROM chat_fts WHERE message_id = ?').run(messageId)
+    if (body) {
+      this.db
+        .prepare('INSERT INTO chat_fts (conversation_id, message_id, title, body) VALUES (?, ?, ?, ?)')
+        .run(conversationId, messageId, '', body)
+    }
+  }
+
+  private ftsReindexMessage(messageId: string, parts: MessagePart[]): void {
+    if (!this.ftsReady) return
+    const row = this.db
+      .prepare('SELECT conversation_id FROM messages WHERE id = ?')
+      .get(messageId) as { conversation_id: string } | undefined
+    if (!row) return
+    this.ftsIndexBody(messageId, row.conversation_id, bodyOfParts(parts))
   }
 
   // --- attachments --------------------------------------------------------------
@@ -325,6 +539,8 @@ export class ChatRepo {
       modelId: row.model_id,
       tokensIn: row.tokens_in,
       tokensOut: row.tokens_out,
+      ttftMs: row.ttft_ms,
+      genMs: row.gen_ms,
       createdAt: row.created_at,
       siblingIndex,
       siblingCount: siblings.length,

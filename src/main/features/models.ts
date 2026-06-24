@@ -89,4 +89,9 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
     modelService.setTierSelection(tier, repoId)
     return { ok: true }
   })
+
+  // Engine paged SSD KV-cache (R1): size readout + clear for the Settings tab.
+  handle('cache.size', () => modelService.cacheSize())
+
+  handle('cache.clear', () => modelService.cacheClear())
 }

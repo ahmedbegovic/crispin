@@ -147,6 +147,10 @@ export interface SourceRef {
   id: number
   title: string | null
   url: string
+  /** Short context for the citation hover card. */
+  snippet?: string | null
+  /** Set by the citation-grounding verifier when a claim in the answer matched this source. */
+  grounded?: boolean
 }
 
 /**
@@ -174,6 +178,10 @@ export interface Conversation {
   collectionId: string | null
   webEnabled: boolean
   archived: boolean
+  /** Favorite flag — pinned conversations sort to the top of the sidebar. */
+  pinned: boolean
+  /** Per-conversation sampling override; null = follow the model's recommended sampling. */
+  sampling: ModelSampling | null
   createdAt: number
   updatedAt: number
 }
@@ -182,6 +190,7 @@ export interface ConversationMeta {
   id: string
   title: string
   archived: boolean
+  pinned: boolean
   updatedAt: number
 }
 
@@ -194,6 +203,9 @@ export interface ChatMessage {
   modelId: string | null
   tokensIn: number | null
   tokensOut: number | null
+  /** Time-to-first-token (ms) and decode wall-time (ms); null until generation completes. */
+  ttftMs: number | null
+  genMs: number | null
   createdAt: number
   /** Position among the parent's children — drives the BranchSwitcher. */
   siblingIndex: number
@@ -205,6 +217,17 @@ export interface ChatMessage {
 export interface AttachmentInput {
   path: string
   kind: 'image' | 'document'
+}
+
+/** One result from chat.search (FTS over titles + message bodies). */
+export interface ChatSearchHit {
+  conversationId: string
+  /** Best-matching message id; null when only the title matched. */
+  messageId: string | null
+  title: string
+  snippet: string
+  pinned: boolean
+  updatedAt: number
 }
 
 // ---------------------------------------------------------------------------

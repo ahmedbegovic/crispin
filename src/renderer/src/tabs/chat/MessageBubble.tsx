@@ -1,12 +1,23 @@
-import { useState } from 'react'
-import { Check, Copy, FileText, Image as ImageIcon, Loader2, Pencil, RefreshCw } from 'lucide-react'
-import { modelDisplayName } from '@shared/model-tiers'
-import type { ChatMessage, MessagePart } from '@shared/types'
-import { useChatStore } from '@/stores/chat'
+import { useMemo, useState } from 'react'
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  FileText,
+  Image as ImageIcon,
+  Loader2,
+  Pencil,
+  RefreshCw
+} from 'lucide-react'
+import { TIER_LABELS, TIER_ORDER, modelDisplayName, tierOfRepo } from '@shared/model-tiers'
+import type { ChatMessage, MessagePart, SourceRef, Tier } from '@shared/types'
+import { useChatStore, type RegenerateOptions } from '@/stores/chat'
+import DropdownMenu, { type MenuItem } from '@/components/DropdownMenu'
+import { formatDuration, formatTokensPerSec } from '@/lib/format'
 import { pushToast, toastError } from '@/stores/toasts'
 import MarkdownPart from './MarkdownPart'
-import ThoughtBlock from './ThoughtBlock'
-import ToolCallCard, { type ToolResultPart } from './ToolCallCard'
+import ActivityDisclosure, { isProcessPart, type ProcessPart } from './ActivityDisclosure'
+import { type ToolResultPart } from './ToolCallCard'
 import SourcesStrip from './SourcesStrip'
 import BranchSwitcher from './BranchSwitcher'
 import { basename, fileUrl } from './attachments'
@@ -134,7 +145,7 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
               ))}
             </div>
           )}
-          <div className="mt-1 flex h-5 items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="mt-1 flex h-5 items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <BranchSwitcher message={message} disabled={streaming} />
             <button
               onClick={() => {
@@ -164,13 +175,61 @@ function AssistantMessage({
   busy: boolean
 }) {
   const regenerate = useChatStore((s) => s.regenerate)
+  const stopped = useChatStore((s) => s.stoppedIds[message.id])
   const [copied, setCopied] = useState(false)
+
+  // Stable [n] → source map for inline citations; empty until the sources part
+  // lands, so MarkdownPart's memo isn't churned during streaming.
+  const sourcesPart = message.parts.find(
+    (p): p is Extract<MessagePart, { type: 'sources' }> => p.type === 'sources'
+  )
+  const sourcesMap = useMemo(() => {
+    const map: Record<number, SourceRef> = {}
+    for (const s of sourcesPart?.sources ?? []) map[s.id] = s
+    return map
+  }, [sourcesPart])
 
   const copy = (): void => {
     void navigator.clipboard.writeText(copyText(message)).catch(toastError)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
+
+  // Per-message generation stats (persisted on the message — survive reload +
+  // branch switch). tok/s = tokensOut / decode wall-time.
+  const tps =
+    message.genMs !== null && message.tokensOut !== null
+      ? formatTokensPerSec(message.tokensOut, message.genMs)
+      : null
+  const stats = [
+    message.tokensOut !== null ? `${message.tokensOut} tok` : null,
+    tps,
+    message.ttftMs !== null ? `TTFT ${formatDuration(message.ttftMs)}` : null
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+  const doRegen = (options?: RegenerateOptions): void => {
+    void regenerate(message.conversationId, message.id, options).catch(toastError)
+  }
+  // Escalate = one step up from the tier that generated THIS message.
+  const curTier = message.modelId ? tierOfRepo(message.modelId) : null
+  const curIdx = curTier ? TIER_ORDER.indexOf(curTier) : -1
+  const nextTier: Tier | undefined =
+    curIdx >= 0 && curIdx < TIER_ORDER.length - 1 ? TIER_ORDER[curIdx + 1] : undefined
+  const regenItems: MenuItem[] = [
+    nextTier
+      ? {
+          label: `Try ${TIER_LABELS[nextTier]}`,
+          hint: 'escalate',
+          onSelect: () => doRegen({ tier: nextTier })
+        }
+      : { label: 'Already at top tier', disabled: true, onSelect: () => {} },
+    { label: 'Shorter', onSelect: () => doRegen({ lengthHint: 'shorter' }) },
+    { label: 'Longer', onSelect: () => doRegen({ lengthHint: 'longer' }) },
+    { label: 'More formal', onSelect: () => doRegen({ toneHint: 'formal' }) },
+    { label: 'More casual', onSelect: () => doRegen({ toneHint: 'casual' }) }
+  ]
 
   const hasCall = (toolCallId: string): boolean =>
     message.parts.some((p) => p.type === 'tool_call' && p.id === toolCallId)
@@ -179,7 +238,22 @@ function AssistantMessage({
       (p): p is ToolResultPart => p.type === 'tool_result' && p.toolCallId === id
     )
 
-  const lastIndex = message.parts.length - 1
+  // Fold the process (reasoning + web searches/reads) into one activity bubble;
+  // the answer (text/sources/images) renders below it.
+  const processParts: { part: ProcessPart; i: number }[] = []
+  const bodyParts: { part: MessagePart; i: number }[] = []
+  message.parts.forEach((part, i) => {
+    if (isProcessPart(part)) processParts.push({ part, i })
+    else bodyParts.push({ part, i })
+  })
+  const hasAnswer = bodyParts.some((x) => x.part.type === 'text' && x.part.text.trim().length > 0)
+  // Show the bubble for any tool use or non-empty reasoning; while streaming,
+  // show it the moment a process part exists (live "Thinking…"). A settled
+  // message whose only process is a whitespace thought gets no bubble.
+  const showActivity =
+    processParts.some((x) => x.part.type !== 'thought' || x.part.text.trim().length > 0) ||
+    (streaming && processParts.length > 0)
+
   return (
     <div className="group py-2">
       {message.parts.length === 0 && streaming && (
@@ -188,23 +262,20 @@ function AssistantMessage({
           Generating…
         </div>
       )}
-      {message.parts.map((part, i) => {
+      {showActivity && (
+        <ActivityDisclosure
+          messageId={message.id}
+          parts={processParts}
+          streaming={streaming}
+          hasAnswer={hasAnswer}
+          resultFor={resultFor}
+          hasCall={hasCall}
+        />
+      )}
+      {bodyParts.map(({ part, i }) => {
         switch (part.type) {
           case 'text':
-            return <MarkdownPart key={i} text={part.text} />
-          case 'thought': {
-            // A whitespace-only thought renders nothing once settled; while
-            // actively streaming it stays as the "Thinking…" indicator.
-            const thinking = streaming && i === lastIndex
-            return part.text.trim() || thinking ? (
-              <ThoughtBlock key={i} text={part.text} active={thinking} />
-            ) : null
-          }
-          case 'tool_call':
-            return <ToolCallCard key={part.id} call={part} result={resultFor(part.id)} />
-          case 'tool_result':
-            // Rendered with its paired call; orphans (call lost mid-persist) standalone.
-            return hasCall(part.toolCallId) ? null : <ToolCallCard key={i} result={part} />
+            return <MarkdownPart key={i} text={part.text} sources={sourcesMap} />
           case 'sources':
             return <SourcesStrip key={i} sources={part.sources} />
           case 'image':
@@ -215,32 +286,63 @@ function AssistantMessage({
       })}
       <div className="mt-1 flex h-5 items-center gap-1.5">
         {streaming ? (
-          <Loader2 size={12} className="animate-spin text-zinc-600" />
+          // Mid-stream: spinner + copy-so-far (the response is already copyable).
+          <div className="flex items-center gap-1.5 text-zinc-600">
+            <Loader2 size={12} className="animate-spin" />
+            <button
+              onClick={copy}
+              title="Copy response so far"
+              aria-label="Copy response so far"
+              className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+            </button>
+          </div>
         ) : (
-          <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <button
               onClick={copy}
               title="Copy response"
+              aria-label="Copy response"
               className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
             >
               {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
             </button>
             <button
-              onClick={() =>
-                void regenerate(message.conversationId, message.id).catch(toastError)
-              }
+              onClick={() => doRegen()}
               disabled={busy}
               title="Regenerate"
+              aria-label="Regenerate response"
               className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30"
             >
               <RefreshCw size={12} />
             </button>
+            <DropdownMenu
+              items={regenItems}
+              trigger={(open, toggle) => (
+                <button
+                  onClick={toggle}
+                  disabled={busy}
+                  title="Regenerate options"
+                  aria-label="Regenerate options"
+                  aria-haspopup="menu"
+                  aria-expanded={open}
+                  className={`-ml-1 rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 ${
+                    open ? 'bg-zinc-800 text-zinc-200' : ''
+                  }`}
+                >
+                  <ChevronDown size={11} />
+                </button>
+              )}
+            />
             <BranchSwitcher message={message} disabled={busy} />
             {message.modelId && (
               <span className="text-[10.5px] text-zinc-600" title={message.modelId}>
                 {modelDisplayName(message.modelId)}
               </span>
             )}
+            {stats && <span className="text-[10.5px] text-zinc-600">{stats}</span>}
+            {stopped && <span className="text-[10.5px] text-amber-500/70">· stopped</span>}
           </div>
         )}
       </div>

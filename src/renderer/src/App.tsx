@@ -1,4 +1,12 @@
-import { lazy, Suspense, useEffect, useState, type ComponentType, type ReactElement } from 'react'
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentType,
+  type ReactElement
+} from 'react'
 import { Settings, type LucideIcon } from 'lucide-react'
 import { isModuleEnabled, MODULES, type ModuleDef } from '@shared/modules'
 import { call } from './lib/ipc'
@@ -10,6 +18,8 @@ import { useUiStore } from './stores/ui'
 import StatusBar from './components/StatusBar'
 import Toasts from './components/Toasts'
 import Placeholder from './components/Placeholder'
+import CommandPalette from './components/CommandPalette'
+import { usePaletteStore } from './stores/palette'
 import ChatTab from './tabs/chat/ChatTab'
 import AgentTab from './tabs/agent/AgentTab'
 import ResearchTab from './tabs/research/ResearchTab'
@@ -85,7 +95,30 @@ export default function App() {
     }
   }, [])
 
-  const visible = MODULES.filter((m) => isModuleEnabled(m, modulesEnabled))
+  // ⌘K / Ctrl-K opens the command palette (except inside Monaco / xterm editors).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        if ((e.target as HTMLElement | null)?.closest('.monaco-editor, .xterm')) return
+        // Don't stack the palette on top of an open modal/dialog (ConfirmDialog,
+        // MCP/Library) — but still let ⌘K toggle the palette itself closed.
+        if (
+          !usePaletteStore.getState().open &&
+          document.querySelector('[role="dialog"][aria-modal="true"]')
+        )
+          return
+        e.preventDefault()
+        usePaletteStore.getState().toggle()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const visible = useMemo(
+    () => MODULES.filter((m) => isModuleEnabled(m, modulesEnabled)),
+    [modulesEnabled]
+  )
 
   // Disabling the active tab's module strands the view — fall back to chat.
   useEffect(() => {
@@ -149,6 +182,7 @@ export default function App() {
       </div>
       <StatusBar />
       <Toasts />
+      <CommandPalette />
     </div>
   )
 }

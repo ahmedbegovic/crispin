@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { MessageSquare, Plus } from 'lucide-react'
 import 'highlight.js/styles/github-dark.css'
+import 'katex/dist/katex.min.css'
 import { useChatStore } from '@/stores/chat'
 import { useLibraryStore } from '@/stores/library'
 import { useMcpStore } from '@/stores/mcp'

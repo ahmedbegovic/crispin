@@ -31,12 +31,14 @@ import {
 import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 import type { AppSettingsService } from './app-settings'
-import { writeEngineConfig, type EngineConfigModel } from './engine-config'
+import { writeEngineConfig, omlxCacheDir, type EngineConfigModel } from './engine-config'
 import type { EngineClient } from './engine-client'
 import type { RamGuard } from './ram-guard'
 import type { ProcessManager } from './process-manager'
 import type { DownloadJobData, ToolsClient } from './tools-client'
 import { scopedLogger } from './logger'
+import { readdirSync, rmSync, statSync, type Dirent } from 'node:fs'
+import { join } from 'node:path'
 
 const DOWNLOAD_POLL_MS = 500
 const ENGINE_POLL_MS = 2500
@@ -51,6 +53,29 @@ const MEMORY_OVERHEAD = 1.1
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const round2 = (n: number): number => Math.round(n * 100) / 100
+
+/** Recursive byte total of a directory; 0 when it doesn't exist yet. */
+function dirSizeBytes(dir: string): number {
+  let entries: Dirent[]
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  let total = 0
+  for (const entry of entries) {
+    const p = join(dir, entry.name)
+    if (entry.isDirectory()) total += dirSizeBytes(p)
+    else {
+      try {
+        total += statSync(p).size
+      } catch {
+        /* file vanished mid-walk — ignore */
+      }
+    }
+  }
+  return total
+}
 
 /**
  * Order-insensitive fingerprint of a registry — drives restart decisions.
@@ -281,7 +306,11 @@ export class ModelService {
         ...entries,
         { name: EMBEDDING_MODEL, maxTokens: 1, ttlSeconds: this.backstopTtlSeconds() }
       ],
-      budgetGB: this.deps.ramGuard.report(0).budgetGB
+      budgetGB: this.deps.ramGuard.report(0).budgetGB,
+      // Crispin owns the paged SSD KV-cache: a fixed dir under app-data and a
+      // hard cap, instead of oMLX's "auto" (≈10% of free disk on ~/.omlx/cache).
+      cacheDir: omlxCacheDir(),
+      cacheMaxSizeGB: settings.get(this.deps.db, 'engine.ssdCacheMaxGB', 8)
     })
     return entries
   }
@@ -635,6 +664,44 @@ export class ModelService {
       m.id === repoId ? { ...m, state: 'unloaded', memoryGB: null } : m
     )
     return { ok: true }
+  }
+
+  // --- engine KV cache (R1) -----------------------------------------------------
+
+  /** Size + cap of Crispin's relocated oMLX paged-SSD KV-cache. */
+  cacheSize(): { bytes: number; path: string; maxBytes: number | null } {
+    const path = omlxCacheDir()
+    return {
+      bytes: dirSizeBytes(path),
+      path,
+      maxBytes: settings.get(this.deps.db, 'engine.ssdCacheMaxGB', 8) * 1e9
+    }
+  }
+
+  /**
+   * Free the paged SSD KV-cache. The engine mmaps the .safetensors blocks, so we
+   * stop it, delete the dir, then restart — refused while a generation is live.
+   */
+  async cacheClear(): Promise<{ ok: boolean; freedBytes: number; reason?: string }> {
+    if (this.engineProcessRunning() && !(await this.engineIdle())) {
+      return {
+        ok: false,
+        freedBytes: 0,
+        reason: 'The engine is busy — wait for the generation to finish.'
+      }
+    }
+    const dir = omlxCacheDir()
+    const freedBytes = dirSizeBytes(dir)
+    const engine = this.deps.processManager.get('engine')
+    const wasRunning = this.engineProcessRunning()
+    if (engine && wasRunning) await engine.stop()
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch (err) {
+      this.log.warn(`cache clear: ${err instanceof Error ? err.message : err}`)
+    }
+    if (engine && wasRunning && this.installed.length > 0) await engine.start()
+    return { ok: true, freedBytes }
   }
 
   private async ensureEngineRunning(): Promise<void> {

@@ -8,6 +8,7 @@ import { MODULE_ICONS } from '@/lib/module-icons'
 import { useSettingsStore } from '@/stores/settings'
 import { useSystemStore } from '@/stores/system'
 import { pushToast, toastError } from '@/stores/toasts'
+import { formatBytes } from '@/lib/format'
 
 const INSTRUCTION_MODULES: Array<{ id: Feature; label: string }> = [
   { id: 'chat', label: 'Chat' },
@@ -208,6 +209,7 @@ function ModulesSection({
               onClick={() =>
                 update({ modulesEnabled: { ...settings.modulesEnabled, [m.id]: !enabled } })
               }
+              aria-pressed={enabled}
               className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors ${
                 enabled
                   ? 'border-emerald-600/60 bg-emerald-600/10'
@@ -476,6 +478,57 @@ function RuntimesSection() {
   )
 }
 
+function CacheSection() {
+  const [info, setInfo] = useState<MethodOutput<'cache.size'> | null>(null)
+  const [clearing, setClearing] = useState(false)
+
+  const refresh = (): void => {
+    void call('cache.size')
+      .then(setInfo)
+      .catch(() => {})
+  }
+  useEffect(refresh, [])
+
+  const clear = (): void => {
+    setClearing(true)
+    void call('cache.clear')
+      .then((r) => {
+        pushToast(
+          r.ok ? 'info' : 'warn',
+          r.ok ? `Cleared ${formatBytes(r.freedBytes)} of KV cache.` : (r.reason ?? 'Engine busy.')
+        )
+        refresh()
+      })
+      .catch(toastError)
+      .finally(() => setClearing(false))
+  }
+
+  return (
+    <Section
+      title="Engine cache"
+      hint="oMLX caches prompt prefixes on disk so later turns skip re-processing. Clearing frees space; the next reply re-processes its context (a slower first response)."
+    >
+      <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-[12.5px] font-medium text-zinc-200">
+            KV cache: {info ? formatBytes(info.bytes) : '…'}
+            {info?.maxBytes ? ` / ${formatBytes(info.maxBytes)} cap` : ''}
+          </p>
+          {info && <p className="truncate text-[10px] text-zinc-700">{info.path}</p>}
+        </div>
+        <button
+          onClick={clear}
+          disabled={clearing}
+          className="flex shrink-0 items-center gap-1 rounded-md border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 enabled:hover:border-zinc-500 disabled:opacity-40"
+        >
+          {clearing && <Loader2 size={11} className="animate-spin" />}
+          Clear cache
+        </button>
+      </div>
+    </Section>
+  )
+}
+
 function AboutSection() {
   const version = useSystemStore((s) => s.status?.version)
   const dataDir = useSystemStore((s) => s.status?.dataDir)
@@ -511,6 +564,7 @@ export default function SettingsTab() {
           <InstructionsSection settings={settings} update={update} />
           <ModulesSection settings={settings} update={update} />
           <ModelsSection settings={settings} update={update} />
+          <CacheSection />
           <NewsSection settings={settings} update={update} />
           <RuntimesSection />
           <AboutSection />

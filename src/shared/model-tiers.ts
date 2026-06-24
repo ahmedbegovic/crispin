@@ -22,6 +22,12 @@ export interface TierSpec {
   maxOutputTokens?: number
   /** If true this model may never share RAM with the utility model. */
   noCoload?: boolean
+  /**
+   * Cap on tools (builtin + MCP) shown to this tier. Tool-selection accuracy
+   * collapses as the catalog grows — small models need a short list (~5 at 2B,
+   * ~10–12 sub-14B). Unset = no cap.
+   */
+  maxVisibleTools?: number
 }
 
 /**
@@ -38,13 +44,16 @@ export const TIERS: Record<Tier, TierSpec> = {
     candidates: ['mlx-community/gemma-4-E2B-it-qat-4bit', 'mlx-community/Qwen3.5-2B-4bit'],
     caps: ['text', 'vision', 'audio'],
     approxGB: 3,
-    defaultCtx: 8192
+    // Display fallback for an empty tier; the Gemma 4 family is 128k across sizes.
+    defaultCtx: 131072,
+    maxVisibleTools: 5
   },
   medium: {
     candidates: ['mlx-community/gemma-4-E4B-it-qat-4bit', 'mlx-community/Qwen3.5-4B-MLX-4bit'],
     caps: ['text', 'vision', 'audio'],
     approxGB: 5,
-    defaultCtx: 16384
+    defaultCtx: 131072,
+    maxVisibleTools: 8
   },
   high: {
     candidates: [
@@ -53,13 +62,15 @@ export const TIERS: Record<Tier, TierSpec> = {
     ],
     caps: ['text', 'vision'],
     approxGB: 7,
-    defaultCtx: 32768
+    defaultCtx: 131072,
+    maxVisibleTools: 12
   },
   extraHigh: {
     candidates: ['mlx-community/gemma-4-26B-A4B-it-qat-4bit'],
     caps: ['text', 'vision'],
     approxGB: 15,
-    defaultCtx: 32768
+    defaultCtx: 131072,
+    maxVisibleTools: 20
   },
   ultra: {
     // KV cache stays at oMLX defaults (TurboQuant KV quant not enabled yet),
@@ -69,7 +80,7 @@ export const TIERS: Record<Tier, TierSpec> = {
     candidates: ['mlx-community/Qwen3.6-27B-4bit', 'mlx-community/gemma-4-31b-it-4bit'],
     caps: ['text', 'vision', 'video'],
     approxGB: 16.5,
-    defaultCtx: 32768,
+    defaultCtx: 131072,
     maxOutputTokens: 32768,
     noCoload: true
   }
@@ -199,6 +210,11 @@ export function tierOfRepo(repoId: string): Tier | null {
 export function tierSpecFor(repoId: string): TierSpec | undefined {
   const tier = tierOfRepo(repoId)
   return tier ? TIERS[tier] : undefined
+}
+
+/** Visible-tool cap for a tier (builtin + MCP combined); undefined = no cap. */
+export function toolBudgetForTier(tier: Tier): number | undefined {
+  return TIERS[tier].maxVisibleTools
 }
 
 /**

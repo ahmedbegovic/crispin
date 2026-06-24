@@ -1,4 +1,5 @@
 import type { SkillMeta } from '@shared/types'
+import { untrustedWebInstruction } from './untrusted-web'
 
 export interface SystemPromptOptions {
   /** conversations.system_prompt — replaces the base persona when set. */
@@ -18,19 +19,24 @@ const basePersona = (assistantName: string): string =>
   'Be direct and concise; use Markdown when it helps. ' +
   'You only know what is in this conversation and your training data — use the available tools for anything current or document-specific.'
 
+/** Keep skill listings terse — full instructions come from use_skill. */
+const SKILL_DESCRIPTION_LIMIT = 120
+const clipDescription = (text: string): string => {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > SKILL_DESCRIPTION_LIMIT
+    ? `${flat.slice(0, SKILL_DESCRIPTION_LIMIT - 1)}…`
+    : flat
+}
+
 export function buildSystemPrompt(opts: SystemPromptOptions): string {
   const assistantName = opts.assistantName.trim() || 'Crispin'
   const sections: string[] = [opts.customPrompt?.trim() || basePersona(assistantName)]
-
-  sections.push(
-    `Today is ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.`
-  )
 
   const userName = opts.userName.trim()
   if (userName) sections.push(`The user's name is ${userName}.`)
 
   if (opts.skills.length > 0) {
-    const list = opts.skills.map((s) => `- ${s.name}: ${s.description}`).join('\n')
+    const list = opts.skills.map((s) => `- ${s.name}: ${clipDescription(s.description)}`).join('\n')
     sections.push(
       `Skills available via the use_skill tool (call it to read the full instructions before relying on one):\n${list}`
     )
@@ -43,6 +49,10 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
         'render inline. Never claim you cannot provide images.'
     )
   }
+  // Always present, even when web is off: replayed history can still contain
+  // fenced web results from an earlier turn, so the guard must not disappear
+  // when web is toggled off (it also keeps the prefix stable across toggles).
+  sections.push(untrustedWebInstruction())
 
   const citationTools = [
     ...(opts.webEnabled ? ['web_search and web_visit'] : []),
@@ -61,6 +71,13 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
     const text = instruction.trim()
     if (text) sections.push(text)
   }
+
+  // Volatile-last: the daily-changing date is appended after the stable
+  // persona/skills/instructions so it never invalidates the engine's prefix
+  // cache for everything above it (cache-stable prompt ordering).
+  sections.push(
+    `Today is ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.`
+  )
 
   return sections.join('\n\n')
 }

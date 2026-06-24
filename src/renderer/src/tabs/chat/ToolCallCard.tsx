@@ -28,8 +28,10 @@ function friendlyName(name: string): string {
 
 /** A tool_call paired with its tool_result; spinner phase comes from chat.toolEvent. */
 export default function ToolCallCard({ call, result }: Props) {
-  const toolCallId = call?.id ?? result?.toolCallId ?? ''
-  const phase = useChatStore((s) => s.toolPhases[toolCallId])
+  const toolCallId = call?.id || result?.toolCallId || ''
+  // Guard the empty-id case so a card with no id doesn't subscribe to a shared
+  // toolPhases[''] bucket (would mirror another card's spinner/state).
+  const phase = useChatStore((s) => (toolCallId ? s.toolPhases[toolCallId] : undefined))
   const name = call?.name ?? result?.name ?? 'tool'
 
   const failed = phase?.phase === 'error'

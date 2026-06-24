@@ -1,8 +1,9 @@
 import { createParser } from 'eventsource-parser'
 import type { EngineModelInfo } from '@shared/types'
 
-/** oMLX flattens HF repo ids into directory-safe ids ('/' → '--'). */
-export const engineModelId = (repoId: string): string => repoId.replace('/', '--')
+/** oMLX flattens HF repo ids into directory-safe ids ('/' → '--', all slashes,
+ *  matching run_engine.py's engine_model_id so the two never diverge). */
+export const engineModelId = (repoId: string): string => repoId.replaceAll('/', '--')
 
 // --- OpenAI chat wire shapes (this client owns them) -------------------------
 
@@ -47,6 +48,12 @@ export interface StreamChatOptions {
   model: string
   messages: ChatCompletionMessage[]
   tools?: ChatToolDef[]
+  /**
+   * OpenAI tool_choice. 'none' keeps the tool defs in the rendered prompt
+   * (stable, cacheable prefix) while forbidding calls — used for the
+   * post-pipeline synthesis round (verified honored by oMLX). Omit for 'auto'.
+   */
+  toolChoice?: 'auto' | 'none'
   maxTokens?: number
   temperature?: number
   topP?: number
@@ -178,7 +185,11 @@ export class EngineClient {
         const text = await res.text().catch(() => '')
         throw new Error(`engine ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`)
       }
-      return (await res.json()) as T
+      // Tolerate a 204 / empty 200 (e.g. /load, /unload): res.json() on an empty
+      // body throws "Unexpected end of JSON input", turning a success into a
+      // generation failure. Callers of no-content endpoints ignore the result.
+      const text = await res.text()
+      return (text ? JSON.parse(text) : undefined) as T
     } finally {
       if (method === 'POST') this.inflightCount -= 1
     }
@@ -239,6 +250,7 @@ export class EngineClient {
           model: engineModelId(opts.model),
           messages: opts.messages,
           tools: opts.tools?.length ? opts.tools : undefined,
+          tool_choice: opts.tools?.length ? opts.toolChoice : undefined,
           max_tokens: opts.maxTokens,
           temperature: opts.temperature,
           top_p: opts.topP,
@@ -356,6 +368,7 @@ export class EngineClient {
           model: engineModelId(opts.model),
           messages: opts.messages,
           tools: opts.tools?.length ? opts.tools : undefined,
+          tool_choice: opts.tools?.length ? opts.toolChoice : undefined,
           max_tokens: opts.maxTokens,
           temperature: opts.temperature,
           top_p: opts.topP,

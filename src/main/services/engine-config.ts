@@ -15,10 +15,19 @@ export interface EngineConfigOptions {
   port: number
   models: EngineConfigModel[]
   budgetGB: number
+  /** Crispin-owned paged SSD KV-cache dir (relocates oMLX's prefix cache). */
+  cacheDir: string
+  /** Hard cap on the paged SSD cache, GB — replaces oMLX's "auto" (≈10% of free disk). */
+  cacheMaxSizeGB: number
 }
 
 export function engineConfigPath(): string {
   return join(dataDir(), 'engine', 'engine-config.json')
+}
+
+/** Crispin-managed oMLX paged-SSD cache directory (capped + clearable). */
+export function omlxCacheDir(): string {
+  return join(dataDir(), 'engine', 'omlx-cache')
 }
 
 /**
@@ -32,6 +41,7 @@ export function writeEngineConfig(opts: EngineConfigOptions): string {
   const config = {
     port: opts.port,
     memory_budget_gb: opts.budgetGB,
+    cache: { dir: opts.cacheDir, max_size_gb: opts.cacheMaxSizeGB },
     models: opts.models.map((m) => ({
       name: m.name,
       max_tokens: m.maxTokens,

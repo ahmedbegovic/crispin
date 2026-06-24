@@ -26,9 +26,33 @@ export function familyOf(modelId: string): ModelFamily {
   return 'other'
 }
 
-/** gemma: see module doc. qwen/others: standard OpenAI tool messages work. */
+interface FamilyDialect {
+  /** How tool round-trips are recorded in the history sent back to the model. */
+  toolHistory: 'native' | 'text'
+  /** Keep the salvage net for families that still imitate the text dialect in content. */
+  salvageTextCalls: boolean
+}
+
+/**
+ * Per-family tool dialect. Gemma was flipped to NATIVE OpenAI tool messages
+ * after a live round-trip through oMLX confirmed gemma-4 emits native tool_calls
+ * AND accepts native tool results cleanly (verified 2026-06-23). The salvage net
+ * stays on for gemma as a defensive backstop against occasional text-dialect
+ * imitation (the engine's own docs note that history-mimicry mode).
+ */
+const FAMILY_DIALECT: Record<ModelFamily, FamilyDialect> = {
+  gemma: { toolHistory: 'native', salvageTextCalls: true },
+  qwen: { toolHistory: 'native', salvageTextCalls: false },
+  other: { toolHistory: 'native', salvageTextCalls: false }
+}
+
 export function encodesToolHistoryAsText(family: ModelFamily): boolean {
-  return family === 'gemma'
+  return FAMILY_DIALECT[family].toolHistory === 'text'
+}
+
+/** Whether to run the textual-tool-call salvage net for this family. */
+export function salvagesTextualToolCalls(family: ModelFamily): boolean {
+  return FAMILY_DIALECT[family].salvageTextCalls
 }
 
 export interface ContentSegment {
@@ -59,6 +83,25 @@ function partialSuffixLen(buf: string, marker: string): number {
   return 0
 }
 
+/** Gemma end-of-turn tokens that occasionally leak into content as literal text. */
+const END_TOKENS = ['<end_of_turn>', '<eos>'] as const
+
+/**
+ * Length of the trailing suffix of buf that could be a leaked end token — a
+ * COMPLETE end token at the very end, or a partial prefix of one at a chunk
+ * boundary. It's held back during streaming and only stripped in flush(), so a
+ * `<eos>` that appears mid-content (with more text after it) stays literal text
+ * rather than truncating the answer at the first occurrence.
+ */
+function trailingEndHold(buf: string): number {
+  let hold = 0
+  for (const tok of END_TOKENS) {
+    if (buf.endsWith(tok)) hold = Math.max(hold, tok.length)
+    else hold = Math.max(hold, partialSuffixLen(buf, tok))
+  }
+  return hold
+}
+
 class GemmaSplitter implements ContentSplitter {
   private buf = ''
   /** 'label' = between `<|channel>` and the `\n` that ends the channel name. */
@@ -69,14 +112,18 @@ class GemmaSplitter implements ContentSplitter {
     const out: ContentSegment[] = []
     for (;;) {
       if (this.state === 'text') {
-        const i = this.buf.indexOf(OPEN)
-        if (i >= 0) {
-          if (i > 0) out.push({ channel: 'text', text: this.buf.slice(0, i) })
-          this.buf = this.buf.slice(i + OPEN.length)
+        const openIdx = this.buf.indexOf(OPEN)
+        if (openIdx >= 0) {
+          if (openIdx > 0) out.push({ channel: 'text', text: this.buf.slice(0, openIdx) })
+          this.buf = this.buf.slice(openIdx + OPEN.length)
           this.state = 'label'
           continue
         }
-        const hold = partialSuffixLen(this.buf, OPEN)
+        // Hold back a trailing channel-open partial OR a (partial/complete)
+        // leaked end token. A complete end token mid-buffer (more text after it)
+        // stays in the emitted text; only a trailing one is held for flush() to
+        // strip — so a literal `<eos>` in the answer is never a truncation point.
+        const hold = Math.max(partialSuffixLen(this.buf, OPEN), trailingEndHold(this.buf))
         const emit = this.buf.slice(0, this.buf.length - hold)
         if (emit) out.push({ channel: 'text', text: emit })
         this.buf = this.buf.slice(this.buf.length - hold)
@@ -107,10 +154,15 @@ class GemmaSplitter implements ContentSplitter {
 
   flush(): ContentSegment[] {
     const out: ContentSegment[] = []
-    // 'label' remainder is markup mid-marker — drop it. Elsewhere a held-back
-    // partial marker turned out to be ordinary text/thought after all.
+    // 'label' remainder is markup mid-marker — drop it. In the text state, strip
+    // a trailing partial end token (a cut-short leaked stop marker); elsewhere a
+    // held-back partial turned out to be ordinary text/thought after all.
     if (this.buf && this.state !== 'label') {
-      out.push({ channel: this.state === 'thought' ? 'thought' : 'text', text: this.buf })
+      const text =
+        this.state === 'text'
+          ? this.buf.slice(0, this.buf.length - trailingEndHold(this.buf))
+          : this.buf
+      if (text) out.push({ channel: this.state === 'thought' ? 'thought' : 'text', text })
     }
     this.buf = ''
     this.state = 'text'

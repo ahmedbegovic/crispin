@@ -13,6 +13,19 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(digits).replace(/\.0$/, '')} ${BYTE_UNITS[unit]}`
 }
 
+/** Compact duration: "120ms", "0.8s", "12s". */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`
+}
+
+/** Decode throughput, e.g. "38.0 tok/s"; null when not computable. */
+export function formatTokensPerSec(tokens: number, ms: number): string | null {
+  if (!Number.isFinite(tokens) || !Number.isFinite(ms) || ms <= 0) return null
+  return `${(tokens / (ms / 1000)).toFixed(1)} tok/s`
+}
+
 /** Compact relative time: "just now", "5m ago", "3h ago", "2d ago". */
 export function relativeTime(unixMs: number, now: number = Date.now()): string {
   const delta = now - unixMs

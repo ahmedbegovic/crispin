@@ -8,7 +8,7 @@ import type {
   ModelSampling,
   Tier
 } from '@shared/types'
-import { TIERS, tierOfRepo } from '@shared/model-tiers'
+import { TIERS, tierOfRepo, toolBudgetForTier } from '@shared/model-tiers'
 import type { CrispinDatabase } from '../db'
 import * as settings from '../settings'
 import { dataDir } from '../paths'
@@ -33,6 +33,7 @@ import {
   createContentSplitter,
   encodesToolHistoryAsText,
   familyOf,
+  salvagesTextualToolCalls,
   salvageTextualToolCalls,
   stripThoughts,
   type ModelFamily
@@ -49,9 +50,12 @@ import { heuristicRoute, routeWithModel, type ChatRoute } from './search-router'
 import {
   runSearchPipeline,
   runVisitPipeline,
+  scaledEvidenceLimit,
   type PipelineEvidence,
   type SearchPipelineOptions
 } from './search-pipeline'
+import { verifyCitations } from './citations'
+import { fenceUntrustedWeb, newWebFenceId, UNTRUSTED_WEB_TOOLS } from './untrusted-web'
 
 const MAX_TOOL_ITERATIONS = 8
 const DELTA_COALESCE_MS = 30
@@ -139,6 +143,35 @@ function recentTextHistory(
     .slice(-4)
 }
 
+/** Ephemeral length/tone steer for a single regeneration run. */
+function regenDirective(opts?: {
+  lengthHint?: 'shorter' | 'longer'
+  toneHint?: 'formal' | 'casual'
+}): string | undefined {
+  if (!opts) return undefined
+  const hints: string[] = []
+  if (opts.lengthHint === 'shorter') hints.push('Answer more concisely than the previous attempt.')
+  if (opts.lengthHint === 'longer') hints.push('Answer in more depth than the previous attempt.')
+  if (opts.toneHint === 'formal') hints.push('Use a more formal tone.')
+  if (opts.toneHint === 'casual') hints.push('Use a more casual, conversational tone.')
+  return hints.length > 0
+    ? `(Regeneration note: ${hints.join(' ')} Do not mention this note.)`
+    : undefined
+}
+
+/** Rough token estimate for budgeting: ~4 chars/token + a flat per-image cost. */
+function estimateMessageTokens(parts: MessagePart[]): number {
+  let chars = 0
+  let images = 0
+  for (const p of parts) {
+    if (p.type === 'text' || p.type === 'thought') chars += p.text.length
+    else if (p.type === 'tool_call') chars += p.name.length + p.args.length + 16
+    else if (p.type === 'tool_result') chars += p.result.length + 16
+    else if (p.type === 'image') images += 1
+  }
+  return Math.ceil(chars / 4) + images * 900
+}
+
 /**
  * Streams one assistant message: owns its parts array, coalesces chat.delta
  * broadcasts (~30ms) and persists incrementally (~500ms) so a crash mid-stream
@@ -188,11 +221,14 @@ class PartStream {
     this.persist(true)
   }
 
-  finalize(tokens: { tokensIn: number | null; tokensOut: number | null }): void {
+  finalize(
+    tokens: { tokensIn: number | null; tokensOut: number | null },
+    timing?: { ttftMs: number | null; genMs: number | null }
+  ): void {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     this.flushPending()
-    this.repo.updateParts(this.messageId, this.parts, tokens)
+    this.repo.updateParts(this.messageId, this.parts, tokens, timing)
   }
 
   snapshot(): MessagePart[] {
@@ -242,6 +278,8 @@ interface RunContext {
   modelId: string
   family: ModelFamily
   controller: AbortController
+  /** One-run length/tone steer (regenerate-with-options); undefined for normal sends. */
+  directive?: string
 }
 
 /** Drives generations: one active per conversation, tool loop, persistence. */
@@ -306,13 +344,19 @@ export class ChatOrchestrator {
     }
   }
 
-  async regenerate(conversationId: string, messageId: string): Promise<{ assistantMessageId: string }> {
+  async regenerate(
+    conversationId: string,
+    messageId: string,
+    opts?: { tier?: Tier; lengthHint?: 'shorter' | 'longer'; toneHint?: 'formal' | 'casual' }
+  ): Promise<{ assistantMessageId: string }> {
     const conversation = this.deps.repo.getConversation(conversationId)
     const message = this.deps.repo.getMessage(messageId)
     if (message.role !== 'assistant') throw new Error('Can only regenerate assistant messages')
     const controller = this.claim(conversationId)
     try {
-      const modelId = this.resolveModel(this.effectiveTier(conversation))
+      // An explicit tier escalates the regeneration (e.g. 2B → Ultra) without
+      // pinning the conversation; otherwise the conversation's effective tier.
+      const modelId = this.resolveModel(opts?.tier ?? this.effectiveTier(conversation))
       const assistantMessageId = this.deps.repo.insertMessage({
         conversationId,
         parentId: message.parentId, // sibling of the regenerated message
@@ -321,7 +365,14 @@ export class ChatOrchestrator {
         modelId
       })
       this.deps.repo.setHead(conversationId, assistantMessageId)
-      this.start({ conversationId, assistantMessageId, modelId, family: familyOf(modelId), controller })
+      this.start({
+        conversationId,
+        assistantMessageId,
+        modelId,
+        family: familyOf(modelId),
+        controller,
+        directive: regenDirective(opts)
+      })
       return { assistantMessageId }
     } catch (err) {
       this.active.delete(conversationId)
@@ -412,6 +463,13 @@ export class ChatOrchestrator {
       tokensIn: null,
       tokensOut: null
     }
+    // Generation timing for the per-message tok/s + TTFT readout. startedAt is
+    // stamped just before the answer loop; firstTokenAt by runModelLoop on the
+    // first visible/reasoning token. Owned here so a throw still finalizes them.
+    const timing: { startedAt: number; firstTokenAt: number | null } = {
+      startedAt: 0,
+      firstTokenAt: null
+    }
 
     try {
       // A cold load can take minutes and is not itself cancellable (the warm
@@ -435,27 +493,47 @@ export class ChatOrchestrator {
       const skills = this.deps.skills.list().filter((s) => s.chatEnabled)
       const webEnabled = conversation.webEnabled
       const hasCollection = conversation.collectionId !== null
-      const path = this.deps.repo
-        .activePath(conversationId)
-        .filter((m) => m.id !== assistantMessageId)
+      const path = this.trimPathToBudget(
+        this.deps.repo.activePath(conversationId).filter((m) => m.id !== assistantMessageId),
+        modelId,
+        webEnabled && !hasCollection
+      )
       const appSettings = this.deps.appSettings.get()
-      const messages = this.buildHistory(path, family, visionCapable(modelId), {
-        customPrompt: conversation.systemPrompt,
-        skills,
-        webEnabled,
-        ragEnabled: hasCollection,
-        userName: appSettings.profile.userName,
-        assistantName: appSettings.profile.assistantName,
-        instructions: [
-          appSettings.instructions.global,
-          appSettings.instructions.perModule.chat ?? ''
-        ]
-      })
+      // Per-turn random fence code for untrusted web/tool content (injection guard).
+      const webFenceId = newWebFenceId()
+      const messages = this.buildHistory(
+        path,
+        family,
+        visionCapable(modelId),
+        {
+          customPrompt: conversation.systemPrompt,
+          skills,
+          webEnabled,
+          ragEnabled: hasCollection,
+          userName: appSettings.profile.userName,
+          assistantName: appSettings.profile.assistantName,
+          instructions: [
+            appSettings.instructions.global,
+            appSettings.instructions.perModule.chat ?? ''
+          ]
+        },
+        webFenceId
+      )
+      // Regenerate-with-options steer (length/tone): a one-run note on the
+      // trailing user turn — gemma's template rejects a fresh trailing role.
+      if (ctx.directive) appendToTrailingUserMessage(messages, ctx.directive)
 
-      const toolDefs = [
+      let toolDefs = [
         ...builtinToolDefs({ webEnabled, hasCollection, skills }),
         ...(await this.deps.mcp.toolDefsFor('chat'))
       ]
+      // Tier-gate the visible tool count: tool-selection accuracy collapses as
+      // the catalog grows (~5 at 2B, ~10–12 sub-14B). Builtins lead, so a cap
+      // keeps the core capabilities and drops only the excess MCP tools.
+      const toolBudget = toolBudgetForTier(tierOfRepo(modelId) ?? 'ultra')
+      if (toolBudget !== undefined && toolDefs.length > toolBudget) {
+        toolDefs = toolDefs.slice(0, toolBudget)
+      }
       if (controller.signal.aborted) throw new Error('aborted')
       const toolCtx: ToolExecutionContext = {
         tools: this.deps.tools,
@@ -470,9 +548,10 @@ export class ChatOrchestrator {
         signal: controller.signal
       }
 
-      // The model's own generation_config.json sampling (gemma: 1.0/0.95) —
+      // Per-conversation sampling override (composer Advanced) wins; otherwise
+      // the model's own generation_config.json sampling (gemma: 1.0/0.95) —
       // without it the engine falls back to its generic 0.7/0.9 defaults.
-      const sampling = this.deps.modelService.samplingFor(modelId)
+      const sampling = conversation.sampling ?? this.deps.modelService.samplingFor(modelId)
 
       // Harness-owned web pipeline: when routing says the turn needs the web,
       // gather the evidence up front and let the model only write the answer —
@@ -480,32 +559,56 @@ export class ChatOrchestrator {
       // or ANY non-abort failure leaves toolDefs untouched: exactly today's
       // loop. Collection chats stay model-owned too: a tools-off synthesis
       // round would take rag_search away from the very turn that needs it.
-      let loopToolDefs = toolDefs
+      const loopToolDefs = toolDefs
       let loopStep: 'loop' | 'synthesis' = 'loop'
+      // Synthesis round denies tool CALLS (via tool_choice:'none') but keeps the
+      // tool DEFS in the request so the [system + tools] prompt prefix stays
+      // invariant across mixed direct/web turns — dropping the defs churned the
+      // prefix and cost a KV-cache prefill (oMLX honors tool_choice:'none',
+      // verified). The salvage net is neutralized too (empty knownToolNames).
+      let denyToolCalls = false
       if (webEnabled && !hasCollection) {
-        const evidence = await this.tryGatherWebEvidence({ ctx, stream, path, sources, toolCtx })
+        const evidence = await this.tryGatherWebEvidence({
+          ctx,
+          stream,
+          path,
+          sources,
+          toolCtx,
+          webFenceId
+        })
         if (evidence) {
           appendToTrailingUserMessage(messages, evidence.text)
-          // Evidence in hand: tools off, so the model synthesizes instead of
-          // re-looping (and cites the [n] numbers the pipeline minted).
-          loopToolDefs = []
+          // Evidence in hand: the model synthesizes instead of re-looping (and
+          // cites the [n] numbers the pipeline minted).
           loopStep = 'synthesis'
+          denyToolCalls = true
         }
       }
 
+      timing.startedAt = Date.now()
       await this.runModelLoop({
         ctx,
         stream,
         messages,
         toolDefs: loopToolDefs,
         step: loopStep,
+        denyToolCalls,
         toolCtx,
         sampling,
-        usage
+        usage,
+        timing,
+        webFenceId
       })
 
       if (sources.all().length > 0) {
-        stream.add({ type: 'sources', sources: sources.all() })
+        // Advisory grounding pass: flag which cited [n] actually match their
+        // source text (never strips citations) — feeds the renderer's cards.
+        const answerText = stream
+          .snapshot()
+          .filter((p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text')
+          .map((p) => p.text)
+          .join('\n')
+        stream.add({ type: 'sources', sources: verifyCitations(answerText, sources.all()) })
       }
     } catch (err) {
       if (controller.signal.aborted) {
@@ -540,7 +643,15 @@ export class ChatOrchestrator {
         void this.deps.modelService.refreshEngineModels().catch(() => {})
       }
     } finally {
-      stream.finalize(usage)
+      const ttftMs = timing.firstTokenAt !== null ? timing.firstTokenAt - timing.startedAt : null
+      const genMs = timing.firstTokenAt !== null ? Date.now() - timing.firstTokenAt : null
+      // finalize does a synchronous DB write; never let it throw past here, or
+      // chat.done would be skipped and the renderer would stream forever.
+      try {
+        stream.finalize(usage, { ttftMs, genMs })
+      } catch (e) {
+        this.log.warn(`finalize failed (parts may be unsaved): ${e instanceof Error ? e.message : e}`)
+      }
       this.active.delete(conversationId)
       this.deps.broadcast({
         type: 'chat.done',
@@ -550,6 +661,8 @@ export class ChatOrchestrator {
         error,
         tokensIn: usage.tokensIn,
         tokensOut: usage.tokensOut,
+        ttftMs,
+        genMs,
         contextLength: this.deps.modelService.contextLengthFor(modelId)
       })
     }
@@ -573,8 +686,9 @@ export class ChatOrchestrator {
     path: Array<{ role: string; parts: MessagePart[] }>
     sources: SourceTracker
     toolCtx: ToolExecutionContext
+    webFenceId: string
   }): Promise<PipelineEvidence | null> {
-    const { ctx, stream, path, sources, toolCtx } = args
+    const { ctx, stream, path, sources, toolCtx, webFenceId } = args
     const { controller } = ctx
     try {
       const lastUser = path.findLast((m) => m.role === 'user')
@@ -622,6 +736,8 @@ export class ChatOrchestrator {
         conversationId: ctx.conversationId,
         sources,
         searxngUrl: toolCtx.searxngUrl,
+        fenceId: webFenceId,
+        contextLength: this.deps.modelService.contextLengthFor(ctx.modelId),
         signal: controller.signal,
         emit: {
           addPart: (part) => stream.add(part),
@@ -645,27 +761,49 @@ export class ChatOrchestrator {
    * The model-owned ReAct loop: stream a round, execute its tool calls,
    * repeat until the model answers in text or the budget forces a final
    * tools-disabled round. Also serves as the synthesis round after the
-   * search pipeline gathered evidence (toolDefs: [] — the model can't
-   * re-loop, it can only write the answer).
+   * search pipeline gathered evidence (denyToolCalls — the defs stay in the
+   * prompt for prefix stability, but tool_choice:'none' forbids calls, so the
+   * model can only write the answer).
    */
   private async runModelLoop(args: {
     ctx: RunContext
     stream: PartStream
     messages: ChatCompletionMessage[]
     toolDefs: ChatToolDef[]
-    /** Trace label: 'synthesis' = post-pipeline tools-off round. */
+    /** Trace label: 'synthesis' = post-pipeline answer round. */
     step: 'loop' | 'synthesis'
+    /**
+     * Forbid tool CALLS this round (tool_choice:'none') while still sending the
+     * defs for a stable prompt prefix — the synthesis round. No execution runs.
+     */
+    denyToolCalls: boolean
     toolCtx: ToolExecutionContext
     sampling: ModelSampling | null
     /** run()-owned accumulator — survives throws (abort, engine failure). */
     usage: { tokensIn: number | null; tokensOut: number | null }
+    /** run()-owned; firstTokenAt is stamped on the first visible/reasoning token. */
+    timing: { startedAt: number; firstTokenAt: number | null }
+    /** Per-turn fence code for wrapping untrusted web tool results in history. */
+    webFenceId: string
   }): Promise<void> {
-    const { ctx, stream, messages, toolDefs, step, toolCtx, sampling, usage } = args
+    const {
+      ctx,
+      stream,
+      messages,
+      toolDefs,
+      step,
+      denyToolCalls,
+      toolCtx,
+      sampling,
+      usage,
+      timing,
+      webFenceId
+    } = args
     const { modelId, family, controller } = ctx
-    // Derived from THIS loop's defs: in the post-pipeline synthesis round
-    // (toolDefs: []) the salvage net must not convert gemma's imitated
-    // '[tool_call]' lines into real executions — empty set, no matches.
-    const knownToolNames = new Set(toolDefs.map((d) => d.function.name))
+    // Derived from THIS loop's defs: in the synthesis round (denyToolCalls) the
+    // salvage net must not convert gemma's imitated '[tool_call]' lines into
+    // real executions — empty set, no matches.
+    const knownToolNames = new Set(denyToolCalls ? [] : toolDefs.map((d) => d.function.name))
 
     let parseErrorLastIteration = false
     let toolBudgetExhausted = false
@@ -689,15 +827,20 @@ export class ChatOrchestrator {
           model: modelId,
           messages,
           tools: !toolBudgetExhausted && toolDefs.length > 0 ? toolDefs : undefined,
+          toolChoice: denyToolCalls ? 'none' : undefined,
           maxTokens: maxTokensFor(modelId),
           temperature: sampling?.temperature ?? undefined,
           topP: sampling?.topP ?? undefined,
           topK: sampling?.topK ?? undefined,
           signal: controller.signal
         })) {
-          if (event.type === 'content') consume(splitter.push(event.text))
-          else if (event.type === 'reasoning') stream.append('thought', event.text)
-          else {
+          if (event.type === 'content') {
+            if (timing.firstTokenAt === null) timing.firstTokenAt = Date.now()
+            consume(splitter.push(event.text))
+          } else if (event.type === 'reasoning') {
+            if (timing.firstTokenAt === null) timing.firstTokenAt = Date.now()
+            stream.append('thought', event.text)
+          } else {
             toolCalls = event.toolCalls
             finishReason = event.finishReason
             // Last round only, NOT summed: the final prompt already re-encodes
@@ -746,7 +889,7 @@ export class ChatOrchestrator {
       // that as content instead of a native call — execute those instead of
       // ending the turn with dead prose. cleanedText keeps the history from
       // recording the call twice (the round's callText re-encodes it).
-      if (toolCalls.length === 0 && !toolBudgetExhausted && encodesToolHistoryAsText(family)) {
+      if (toolCalls.length === 0 && !toolBudgetExhausted && salvagesTextualToolCalls(family)) {
         const salvage = salvageTextualToolCalls(visibleText, knownToolNames)
         if (salvage.calls.length > 0) {
           toolCalls = salvage.calls
@@ -860,10 +1003,15 @@ export class ChatOrchestrator {
           sourceIds: outcome.sourceIds
         })
         this.toolEvent(ctx, call.id, name, outcome.failed ? 'error' : 'result', clip(outcome.result, 200))
+        // The persisted/displayed part keeps the clean result; the MODEL-facing
+        // history wraps untrusted web content in injection-guard fences.
+        const historyResult = UNTRUSTED_WEB_TOOLS.has(name)
+          ? fenceUntrustedWeb(outcome.result, webFenceId)
+          : outcome.result
         if (encodesToolHistoryAsText(family)) {
-          resultTexts.push(`[tool_result ${name}] ${outcome.result}`)
+          resultTexts.push(`[tool_result ${name}] ${historyResult}`)
         } else {
-          messages.push({ role: 'tool', tool_call_id: call.id, content: outcome.result })
+          messages.push({ role: 'tool', tool_call_id: call.id, content: historyResult })
         }
       }
 
@@ -876,9 +1024,18 @@ export class ChatOrchestrator {
             'Cite sources with their [n] markers where applicable. Do not repeat a tool call you already made.'
         })
       }
-      // Give up only after the model saw the corrective result and still failed.
+      // Two malformed rounds in a row: soft recovery instead of aborting the
+      // whole generation — drop tools and force one final plain-text answer
+      // from what the model already gathered (replaces a hard throw).
       if (parseErrorThisIteration && parseErrorLastIteration) {
-        throw new Error('model kept producing malformed tool calls')
+        appendToTrailingUserMessage(
+          messages,
+          'Stop calling tools — the previous tool calls were malformed. ' +
+            'Answer the original question now in plain text using what you already have.'
+        )
+        toolBudgetExhausted = true
+        parseErrorLastIteration = false
+        continue
       }
       parseErrorLastIteration = parseErrorThisIteration
     }
@@ -924,11 +1081,43 @@ export class ChatOrchestrator {
 
   // --- message assembly --------------------------------------------------------------
 
+  /**
+   * Trim the oldest turns so the assembled prompt fits the model's context
+   * window — an overflow safety net for long chats and small windows. Always
+   * keeps the newest message; never starts the kept window on an assistant
+   * turn. No-op when the context length is unknown.
+   */
+  private trimPathToBudget<T extends { role: string; parts: MessagePart[] }>(
+    path: T[],
+    modelId: string,
+    webEvidence = false
+  ): T[] {
+    const contextLength = this.deps.modelService.contextLengthFor(modelId)
+    if (!contextLength) return path
+    const outputReserve = maxTokensFor(modelId) ?? 4096
+    // Reserve output + a flat margin (system prompt etc.) + the web evidence the
+    // pipeline appends to the trailing user turn AFTER this trim (it scales to
+    // ~15k tokens, so a flat margin alone would overflow on big web turns).
+    const evidenceReserve = webEvidence ? Math.ceil(scaledEvidenceLimit(contextLength) / 4) : 0
+    const budget = Math.max(2048, contextLength - outputReserve - 4096 - evidenceReserve)
+    let total = 0
+    const kept: T[] = []
+    for (let i = path.length - 1; i >= 0; i--) {
+      const cost = estimateMessageTokens(path[i].parts)
+      if (kept.length > 0 && total + cost > budget) break
+      total += cost
+      kept.unshift(path[i])
+    }
+    while (kept.length > 1 && kept[0].role === 'assistant') kept.shift()
+    return kept
+  }
+
   private buildHistory(
     path: Array<{ role: string; parts: MessagePart[] }>,
     family: ModelFamily,
     vision: boolean,
-    promptOpts: Parameters<typeof buildSystemPrompt>[0]
+    promptOpts: Parameters<typeof buildSystemPrompt>[0],
+    webFenceId: string
   ): ChatCompletionMessage[] {
     const messages: ChatCompletionMessage[] = [
       { role: 'system', content: buildSystemPrompt(promptOpts) }
@@ -948,7 +1137,7 @@ export class ChatOrchestrator {
       if (message.role === 'user') {
         push(this.userMessage(message.parts, vision))
       } else if (message.role === 'assistant') {
-        for (const m of this.assistantMessages(message.parts, family)) push(m)
+        for (const m of this.assistantMessages(message.parts, family, webFenceId)) push(m)
       }
     }
     return messages
@@ -982,8 +1171,16 @@ export class ChatOrchestrator {
    * model; tool round-trips become OpenAI tool messages — or plain text for
    * families still configured for text encoding (see family.ts).
    */
-  private assistantMessages(parts: MessagePart[], family: ModelFamily): ChatCompletionMessage[] {
+  private assistantMessages(
+    parts: MessagePart[],
+    family: ModelFamily,
+    webFenceId: string
+  ): ChatCompletionMessage[] {
     const asText = encodesToolHistoryAsText(family)
+    // Replayed untrusted web results get re-fenced too, so a hostile page that
+    // landed in a past tool_result can't inject on this turn's replay.
+    const fencedResult = (r: Extract<MessagePart, { type: 'tool_result' }>): string =>
+      UNTRUSTED_WEB_TOOLS.has(r.name) ? fenceUntrustedWeb(r.result, webFenceId) : r.result
     const messages: ChatCompletionMessage[] = []
     let textBuffer: string[] = []
     let calls: Array<{ part: Extract<MessagePart, { type: 'tool_call' }> }> = []
@@ -1002,7 +1199,7 @@ export class ChatOrchestrator {
         if (results.length > 0) {
           messages.push({
             role: 'user',
-            content: results.map((r) => `[tool_result ${r.name}] ${r.result}`).join('\n\n')
+            content: results.map((r) => `[tool_result ${r.name}] ${fencedResult(r)}`).join('\n\n')
           })
         }
       } else {
@@ -1016,7 +1213,7 @@ export class ChatOrchestrator {
           }))
         })
         for (const r of results) {
-          messages.push({ role: 'tool', tool_call_id: r.toolCallId, content: r.result })
+          messages.push({ role: 'tool', tool_call_id: r.toolCallId, content: fencedResult(r) })
         }
       }
       textBuffer = []

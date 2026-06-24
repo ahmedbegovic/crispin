@@ -9,6 +9,8 @@ read for md/txt. `kind` in the response is the routing category
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -82,24 +84,77 @@ def extract_html(html: str, url: Optional[str] = None) -> tuple[str, Optional[st
     return markdown, title, image_url
 
 
-def extract_url(url: str) -> tuple[str, Optional[str], Optional[str]]:
+_MAX_REDIRECTS = 5
+
+
+def _is_blocked_host(host: str) -> bool:
+    """True if the host resolves to a loopback / private / link-local / reserved IP."""
     try:
-        response = httpx.get(
-            url, headers=_FETCH_HEADERS, timeout=_FETCH_TIMEOUT, follow_redirects=True
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False  # let the normal fetch path surface the DNS failure
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            return True
+    return False
+
+
+def _guard_url(url: str) -> None:
+    """SSRF guard: only fetch public http(s) addresses. A poisoned search result
+    must not be able to steer the sidecar to 127.0.0.1 or a cloud-metadata IP."""
+    split = urlsplit(url)
+    if split.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail=f"refusing non-http(s) url: {url}")
+    host = split.hostname
+    if not host or _is_blocked_host(host):
+        raise HTTPException(
+            status_code=400, detail=f"refusing to fetch private/local address: {host or url}"
         )
-        response.raise_for_status()
+
+
+def extract_url(url: str) -> tuple[str, Optional[str], Optional[str]]:
+    # Follow redirects manually so the SSRF guard runs on EVERY hop — a public
+    # url that 302s to http://169.254.169.254 must be stopped at the redirect.
+    current = url
+    response = None
+    try:
+        with httpx.Client(
+            headers=_FETCH_HEADERS, timeout=_FETCH_TIMEOUT, follow_redirects=False
+        ) as client:
+            for _ in range(_MAX_REDIRECTS + 1):
+                _guard_url(current)
+                response = client.get(current)
+                if response.is_redirect and response.headers.get("location"):
+                    current = str(response.url.join(response.headers["location"]))
+                    continue
+                response.raise_for_status()
+                break
+            else:
+                raise HTTPException(status_code=502, detail=f"too many redirects: {url}")
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502, detail=f"fetch failed: {url} returned {exc.response.status_code}"
         ) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"could not fetch {url}: {exc}") from exc
+    assert response is not None
     content_type = response.headers.get("content-type", "")
     if content_type and "html" not in content_type and "xml" not in content_type:
         raise HTTPException(
             status_code=422, detail=f"{url} is not a web page (content-type {content_type})"
         )
-    return extract_html(response.text, url=url)
+    return extract_html(response.text, url=current)
 
 
 def _extract_pdf(path: Path) -> tuple[str, Optional[str]]:

@@ -150,12 +150,32 @@ export async function structured<T>(opts: StructuredOptions<T>): Promise<T> {
     return { parsed, raw, finish, failure }
   }
 
-  const first = await attempt(opts.messages, opts.maxTokens, false)
+  // attempt() only THROWS on a transient engine error (parse/truncation
+  // failures return a `failure` instead) — retry those a couple of times with
+  // backoff before giving up, so a flaky engine blip doesn't fail the turn.
+  const attemptWithRetry = async (
+    messages: ChatCompletionMessage[],
+    maxTokens: number,
+    retried: boolean
+  ): Promise<{ parsed?: T; raw: string; finish: string | null; failure?: string }> => {
+    const backoff = [200, 600]
+    for (let i = 0; ; i++) {
+      if (opts.signal.aborted) throw new Error('aborted')
+      try {
+        return await attempt(messages, maxTokens, retried)
+      } catch (err) {
+        if (opts.signal.aborted || i >= backoff.length) throw err
+        await new Promise((r) => setTimeout(r, backoff[i]))
+      }
+    }
+  }
+
+  const first = await attemptWithRetry(opts.messages, opts.maxTokens, false)
   if (first.parsed !== undefined) return first.parsed
   if (opts.signal.aborted) throw new Error('aborted')
   const reason = first.failure ?? 'unusable response'
   const retryTokens = first.finish === 'length' ? Math.min(opts.maxTokens * 2, 8192) : opts.maxTokens
-  const second = await attempt(
+  const second = await attemptWithRetry(
     [
       ...opts.messages,
       { role: 'assistant', content: clip(first.raw, 4000) },

@@ -1,9 +1,12 @@
+import { useEffect, useRef, useState } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { AlertTriangle, MessageSquare, X } from 'lucide-react'
 import type { ChatMessage } from '@shared/types'
 import { useChatStore } from '@/stores/chat'
 import { useModelsStore } from '@/stores/models'
+import { useUiStore } from '@/stores/ui'
 import { toastError } from '@/stores/toasts'
+import { friendlyError } from '@/lib/friendlyError'
 import MessageBubble from './MessageBubble'
 
 const SUGGESTIONS = [
@@ -42,21 +45,38 @@ function EmptyThread({ conversationId }: { conversationId: string }) {
 
 function ErrorBanner({ conversationId, error }: { conversationId: string; error: string }) {
   const clearError = useChatStore((s) => s.clearError)
+  const retryLast = useChatStore((s) => s.retryLast)
   const engineRunning = useModelsStore((s) => s.overview?.engine.running)
+  const setActiveTab = useUiStore((s) => s.setActiveTab)
   return (
     <div className="mx-auto w-full max-w-3xl px-6 pb-2">
-      <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-300">
+      <div
+        role="alert"
+        className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-300"
+      >
         <AlertTriangle size={14} className="mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
-          <p className="select-text break-words">{error}</p>
-          {engineRunning !== true && (
-            <p className="mt-0.5 text-red-300/70">
-              The engine may not be running — check the Models tab.
-            </p>
-          )}
+          <p className="select-text break-words">{friendlyError(error)}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => void retryLast(conversationId).catch(toastError)}
+              className="rounded bg-red-500/20 px-2 py-0.5 font-medium text-red-200 hover:bg-red-500/30"
+            >
+              Retry
+            </button>
+            {engineRunning !== true && (
+              <button
+                onClick={() => setActiveTab('models')}
+                className="rounded px-2 py-0.5 text-red-300/80 hover:bg-red-500/20"
+              >
+                Open Models
+              </button>
+            )}
+          </div>
         </div>
         <button
           onClick={() => clearError(conversationId)}
+          aria-label="Dismiss error"
           className="rounded p-0.5 hover:bg-red-500/20"
         >
           <X size={13} />
@@ -75,6 +95,17 @@ export default function Thread({ conversationId }: Props) {
   const streamingId = useChatStore((s) => s.streaming[conversationId])
   const lastError = useChatStore((s) => s.lastError[conversationId])
   const busy = streamingId !== undefined
+
+  // Announce on the busy edges: a screen reader never hears a region being
+  // cleared, so "stopped/cleared to ''" left completion silent. Announce the
+  // falling edge ("Response ready") too.
+  const [announce, setAnnounce] = useState('')
+  const prevBusy = useRef(false)
+  useEffect(() => {
+    if (prevBusy.current && !busy) setAnnounce('Response ready')
+    else if (!prevBusy.current && busy) setAnnounce('Generating response…')
+    prevBusy.current = busy
+  }, [busy])
 
   if (!messages)
     return (
@@ -109,6 +140,10 @@ export default function Thread({ conversationId }: Props) {
           )}
         />
       )}
+      {/* Announce generation state on its edges (not per token) for screen readers. */}
+      <div role="status" aria-live="polite" aria-busy={busy} className="sr-only">
+        {announce}
+      </div>
       {lastError && <ErrorBanner conversationId={conversationId} error={lastError} />}
     </div>
   )

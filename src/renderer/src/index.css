@@ -55,3 +55,16 @@ body {
 .xterm {
   padding: 6px 0 6px 8px;
 }
+
+/* Respect the OS "reduce motion" setting: a local generation can spin loaders
+   for tens of seconds, so snap animations/transitions for users who opt out. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

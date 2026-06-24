@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
+import { useRef, type ReactNode } from 'react'
 import { X } from 'lucide-react'
+import { useDismissable } from '@/lib/useDismissable'
 
 interface Props {
   open: boolean
@@ -11,6 +12,9 @@ interface Props {
 
 /** Dialog shell for the MCP and Library panels. z-40 keeps ConfirmDialog (z-50) on top. */
 export default function Modal({ open, title, wide = false, onClose, children }: Props) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  // Escape closes, focus moves into the panel on open, and is restored on close.
+  useDismissable(open, onClose, { focusRef: panelRef })
   if (!open) return null
   return (
     <div
@@ -18,7 +22,12 @@ export default function Modal({ open, title, wide = false, onClose, children }: 
       onClick={onClose}
     >
       <div
-        className={`flex max-h-[80vh] w-full ${wide ? 'max-w-2xl' : 'max-w-lg'} flex-col rounded-lg border border-zinc-800 bg-zinc-900 shadow-2xl`}
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={`flex max-h-[80vh] w-full ${wide ? 'max-w-2xl' : 'max-w-lg'} flex-col rounded-lg border border-zinc-800 bg-zinc-900 shadow-2xl outline-none`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
