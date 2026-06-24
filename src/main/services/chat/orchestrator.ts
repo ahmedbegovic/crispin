@@ -826,8 +826,13 @@ export class ChatOrchestrator {
         for await (const event of this.deps.engine.streamChat({
           model: modelId,
           messages,
-          tools: !toolBudgetExhausted && toolDefs.length > 0 ? toolDefs : undefined,
-          toolChoice: denyToolCalls ? 'none' : undefined,
+          // Keep the tool DEFS in every round so the [system + tools] prompt
+          // prefix stays invariant (cacheable). The budget-exhausted final round
+          // forbids new CALLS via tool_choice 'none' — like the synthesis round —
+          // rather than dropping the defs and churning the prefix into a full
+          // re-prefill of the whole accumulated context on the most expensive round.
+          tools: toolDefs.length > 0 ? toolDefs : undefined,
+          toolChoice: denyToolCalls || toolBudgetExhausted ? 'none' : undefined,
           maxTokens: maxTokensFor(modelId),
           temperature: sampling?.temperature ?? undefined,
           topP: sampling?.topP ?? undefined,
