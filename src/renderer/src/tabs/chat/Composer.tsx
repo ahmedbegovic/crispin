@@ -71,6 +71,8 @@ export default function Composer({ conversation }: Props) {
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [slashHighlight, setSlashHighlight] = useState(0)
   const [samplingOpen, setSamplingOpen] = useState(false)
+  // In-flight pasted/dropped image saves; submit blocks on these (see submit()).
+  const [pendingPastes, setPendingPastes] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const samplingRef = useRef<HTMLDivElement>(null)
@@ -91,10 +93,14 @@ export default function Composer({ conversation }: Props) {
     for (const file of files) {
       const path = pathForFile(file)
       if (!path) {
-        pushToast(
-          'error',
-          `Cannot resolve a filesystem path for "${file.name}" — the preload needs a getPathForFile bridge.`
-        )
+        // No filesystem path (drag-dropped bitmap): persist the bytes via main
+        // like the paste handler, instead of dropping it with an error.
+        if (file.type.startsWith('image/')) void savePastedImage(file)
+        else
+          pushToast(
+            'error',
+            `Cannot resolve a filesystem path for "${file.name}" — the preload needs a getPathForFile bridge.`
+          )
         continue
       }
       setAttachments((prev) =>
@@ -106,6 +112,7 @@ export default function Composer({ conversation }: Props) {
   // Pasted screenshots have no filesystem path — persist the bytes via main,
   // then attach the returned temp path through the normal image pipeline.
   const savePastedImage = async (file: File): Promise<void> => {
+    setPendingPastes((n) => n + 1)
     try {
       const dataBase64 = toBase64(await file.arrayBuffer())
       const { path } = await call('chat.savePastedFile', {
@@ -118,12 +125,17 @@ export default function Composer({ conversation }: Props) {
       )
     } catch (err) {
       toastError(err)
+    } finally {
+      setPendingPastes((n) => n - 1)
     }
   }
 
   const submit = (): void => {
     const trimmed = text.trim()
-    if (streaming || (!trimmed && attachments.length === 0)) return
+    // Block while a pasted/dropped image is still being persisted — submit
+    // captures and clears `attachments` synchronously, so an in-flight image
+    // would miss THIS message and be staged onto the next one.
+    if (streaming || pendingPastes > 0 || (!trimmed && attachments.length === 0)) return
     const toSend = attachments
     setText('')
     setAttachments([])
@@ -490,7 +502,7 @@ export default function Composer({ conversation }: Props) {
               ) : (
                 <button
                   onClick={submit}
-                  disabled={!text.trim() && attachments.length === 0}
+                  disabled={pendingPastes > 0 || (!text.trim() && attachments.length === 0)}
                   title="Send"
                   className="rounded-lg bg-emerald-600 p-2 text-white enabled:hover:bg-emerald-500 disabled:opacity-40"
                 >
