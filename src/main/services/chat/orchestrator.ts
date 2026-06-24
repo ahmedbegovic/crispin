@@ -240,6 +240,35 @@ class PartStream {
     return this.parts
   }
 
+  /**
+   * Replace the visible (text-channel) content with `cleaned`, in place. The
+   * salvage net converts an imitated `[tool_call]` line that was already streamed
+   * into a text part into a real call; without this the raw line stays in the
+   * bubble, replays as assistant content next turn, and lands in the FTS index.
+   * Parts are replaced (not removed) so indices stay stable and in-flight deltas
+   * and the renderer stay aligned; an emptied text part renders as nothing.
+   */
+  rewriteVisibleText(cleaned: string): void {
+    this.flushPending()
+    let first = true
+    this.parts.forEach((p, i) => {
+      if (p.type !== 'text') return
+      const text = first ? cleaned : ''
+      first = false
+      if (p.text === text) return
+      this.parts[i] = { type: 'text', text }
+      this.broadcast({
+        type: 'chat.delta',
+        conversationId: this.conversationId,
+        messageId: this.messageId,
+        partIndex: i,
+        part: { type: 'text', text },
+        append: false
+      })
+    })
+    this.persist(true)
+  }
+
   private flushPending(): void {
     if (!this.pending) return
     const index = this.parts.length - 1
@@ -904,6 +933,10 @@ export class ChatOrchestrator {
         if (salvage.calls.length > 0) {
           toolCalls = salvage.calls
           visibleText = salvage.cleanedText
+          // The raw [tool_call] line was already streamed into a text part —
+          // rewrite it to the cleaned text so it isn't shown, persisted, replayed,
+          // or indexed (cleanedText also keeps the history from recording it twice).
+          stream.rewriteVisibleText(salvage.cleanedText)
         }
       }
 
