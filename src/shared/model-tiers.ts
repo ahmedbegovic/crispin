@@ -33,6 +33,13 @@ export interface TierSpec {
    * ~10–12 sub-14B). Unset = no cap.
    */
   maxVisibleTools?: number
+  /**
+   * TurboQuant KV-cache quantization width in bits (oMLX per-model setting,
+   * `turboquant_kv_enabled`/`turboquant_kv_bits`). Unset = full-precision KV.
+   * Enabled only where KV growth pressures the RAM budget; the small tiers fit
+   * comfortably and skip it to avoid the (small) quality cost.
+   */
+  kvQuantBits?: number
 }
 
 /**
@@ -81,17 +88,20 @@ export const TIERS: Record<Tier, TierSpec> = {
     maxVisibleTools: 20
   },
   ultra: {
-    // KV cache stays at oMLX defaults (TurboQuant KV quant not enabled yet),
-    // so the 32k output cap and noCoload are what keep these inside the
-    // budget. The 31B (~18.4 GB weights) only fits machines above 24 GB —
-    // the fit badge tells that story honestly.
+    // 4-bit TurboQuant KV (rotation + Lloyd-Max; `turboquant_skip_last` guards
+    // quality) quarters KV growth on the tier that most pressures the budget.
+    // The 32k output cap + noCoload deliberately STAY for now — they relax only
+    // after the quant is validated live (see kvQuantBits below). The 31B
+    // (~18.4 GB weights) only fits machines above 24 GB — the fit badge tells
+    // that story honestly.
     candidates: ['mlx-community/Qwen3.6-27B-4bit', 'mlx-community/gemma-4-31b-it-4bit'],
     caps: ['text', 'vision', 'video'],
     approxGB: 16.5,
     // candidates[0] Qwen3.6 27B reports max_position_embeddings 262144 on HF.
     defaultCtx: 262144,
     maxOutputTokens: 32768,
-    noCoload: true
+    noCoload: true,
+    kvQuantBits: 4
   }
 }
 
@@ -227,6 +237,18 @@ export function toolBudgetForTier(tier: Tier): number | undefined {
 }
 
 /**
+ * TurboQuant KV-cache bits for a repo by its EFFECTIVE tier: curated repos
+ * resolve through rename-aware tierOfRepo; anything else (a big experimental
+ * download) falls back to classifyByParams, so it benefits too. Null = full-
+ * precision KV. The `engine.kvQuant` override is applied by the caller
+ * (model-service), not here — this is pure policy.
+ */
+export function kvQuantBitsFor(repoId: string, sizeBytes?: number | null): number | null {
+  const tier = tierOfRepo(repoId) ?? classifyByParams(repoId, sizeBytes)
+  return TIERS[tier].kvQuantBits ?? null
+}
+
+/**
  * First "<n>B" token in the repo basename ("26B-A4B"→26, "E2B"→2); the
  * lookahead rejects "4bit". Null when nothing parses.
  */
@@ -281,5 +303,12 @@ for (const [oldId, newId] of Object.entries(RENAMED_REPOS)) {
   }
   if (CURATED_REPOS.has(oldId)) {
     throw new Error(`model-tiers: renamed repo ${oldId} must not stay in TIERS`)
+  }
+}
+// KV-quant policy invariant: a set width must be a quant size oMLX accepts.
+for (const tier of TIER_ORDER) {
+  const bits = TIERS[tier].kvQuantBits
+  if (bits !== undefined && bits !== 4 && bits !== 8) {
+    throw new Error(`model-tiers: ${tier}.kvQuantBits must be 4 or 8 (got ${bits})`)
   }
 }

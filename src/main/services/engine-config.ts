@@ -9,6 +9,8 @@ export interface EngineConfigModel {
   maxTokens: number
   /** Engine-side idle auto-unload; null disables it. */
   ttlSeconds: number | null
+  /** TurboQuant KV-cache bits (oMLX per-model setting); null = full-precision KV. */
+  kvQuantBits: number | null
 }
 
 export interface EngineConfigOptions {
@@ -48,7 +50,14 @@ export function writeEngineConfig(opts: EngineConfigOptions): string {
       // Parsed into reasoning_content server-side — safe for OpenAI clients
       // (opencode) and wanted by the Chat tab's thought blocks.
       enable_thinking: true,
-      ttl_seconds: m.ttlSeconds
+      ttl_seconds: m.ttlSeconds,
+      // TurboQuant KV-cache quant. ALWAYS written (a Crispin-managed key, like
+      // the others above) so flipping it off clears a prior `true` from the
+      // shared model_settings.json instead of leaving it stale. bits/skip_last
+      // are inert when disabled.
+      turboquant_kv_enabled: m.kvQuantBits != null,
+      turboquant_kv_bits: m.kvQuantBits ?? 4,
+      turboquant_skip_last: true
     }))
   }
   const path = engineConfigPath()

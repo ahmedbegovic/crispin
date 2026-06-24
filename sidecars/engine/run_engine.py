@@ -76,6 +76,14 @@ def write_model_settings(models: list[dict[str, Any]]) -> None:
             entry["enable_thinking"] = bool(m["enable_thinking"])
             # Idle auto-unload is the engine's job now (was a main-side timer).
             entry["ttl_seconds"] = m["ttl_seconds"]
+            # TurboQuant KV-cache quant. Defensive .get defaults keep an older
+            # engine-config.json (written before this app upgrade, before the
+            # first rewrite) safe — absent keys mean full-precision KV. The keys
+            # are always written when disabled too (enabled=False), so flipping
+            # the policy off clears a model's prior `true` rather than stranding it.
+            entry["turboquant_kv_enabled"] = bool(m.get("turboquant_kv_enabled", False))
+            entry["turboquant_kv_bits"] = float(m.get("turboquant_kv_bits", 4))
+            entry["turboquant_skip_last"] = bool(m.get("turboquant_skip_last", True))
 
         try:
             tmp = path.with_suffix(".tmp")

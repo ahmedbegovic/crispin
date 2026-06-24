@@ -24,6 +24,7 @@ import {
   familyOf,
   fitFor,
   isCuratedRepo,
+  kvQuantBitsFor,
   tierOfRepo,
   tierSpecFor,
   validateModelRepo
@@ -89,6 +90,23 @@ const registryKey = (entries: EngineConfigModel[]): string =>
       .map((e): [string, number] => [e.name, e.maxTokens])
       .sort((a, b) => a[0].localeCompare(b[0]))
   )
+
+/**
+ * Resolve TurboQuant KV-cache bits for a registry entry. The `engine.kvQuant`
+ * settings override wins — 'off' disables everywhere, '4'/'8' forces that width
+ * — while 'auto' (the default) defers to the per-tier policy. Null = full-
+ * precision KV. Deliberately NOT part of registryKey: like ttlSeconds, a quant
+ * change must not force a mid-session restart — it rides the next natural spawn.
+ */
+const resolveKvQuantBits = (
+  override: string,
+  repoId: string,
+  sizeBytes: number
+): number | null => {
+  if (override === 'off') return null
+  if (override === '4' || override === '8') return Number(override)
+  return kvQuantBitsFor(repoId, sizeBytes)
+}
 
 interface DownloadRow {
   id: string
@@ -283,13 +301,15 @@ export class ModelService {
 
   private registryEntries(): EngineConfigModel[] {
     const ttlSeconds = this.backstopTtlSeconds()
+    const kvOverride = settings.get(this.deps.db, 'engine.kvQuant', 'auto')
     return this.installed.map((m) => {
       const spec = tierSpecFor(m.repoId)
       return {
         name: m.repoId,
         // Output budget: ultra is capped, small models run ctx-bounded.
         maxTokens: spec?.maxOutputTokens ?? m.contextLength ?? 32768,
-        ttlSeconds
+        ttlSeconds,
+        kvQuantBits: resolveKvQuantBits(kvOverride, m.repoId, m.sizeBytes)
       }
     })
   }
@@ -304,7 +324,8 @@ export class ModelService {
       // stay chat-model-only (maxTokens is inert for an embeddings model).
       models: [
         ...entries,
-        { name: EMBEDDING_MODEL, maxTokens: 1, ttlSeconds: this.backstopTtlSeconds() }
+        // The embedder has no decode KV cache to quantize — always full precision.
+        { name: EMBEDDING_MODEL, maxTokens: 1, ttlSeconds: this.backstopTtlSeconds(), kvQuantBits: null }
       ],
       budgetGB: this.deps.ramGuard.report(0).budgetGB,
       // Crispin owns the paged SSD KV-cache: a fixed dir under app-data and a
