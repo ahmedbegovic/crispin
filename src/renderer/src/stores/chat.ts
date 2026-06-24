@@ -519,11 +519,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       rememberSiblings([stub])
       set((s) => {
         const tail = index === -1 ? prev : prev.slice(0, index)
+        // A successful regen supersedes any earlier failed send, so retryLast must
+        // not later resend that stale input instead of regenerating this turn.
+        const { [conversationId]: _lf, ...lastFailedSend } = s.lastFailedSend
         return {
           messagesById: {
             ...s.messagesById,
             [conversationId]: [...tail.filter((m) => m.id !== assistantMessageId), stub]
           },
+          lastFailedSend,
           streaming:
             conversationId in s.streaming
               ? { ...s.streaming, [conversationId]: assistantMessageId }
@@ -579,6 +583,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       rememberSiblings([userMessage])
       set((s) => {
         const tail = index === -1 ? prev : prev.slice(0, index)
+        // Supersedes any earlier failed send (see regenerate) — clear it so a
+        // later Retry regenerates this turn rather than resending stale input.
+        const { [conversationId]: _lf, ...lastFailedSend } = s.lastFailedSend
         return {
           messagesById: {
             ...s.messagesById,
@@ -588,6 +595,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               stub
             ]
           },
+          lastFailedSend,
           streaming:
             conversationId in s.streaming
               ? { ...s.streaming, [conversationId]: result.assistantMessageId }
@@ -648,6 +656,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }))
     try {
       await call('chat.update', { conversationId, ...patch })
+      // Re-assert the optimistic patch: a refreshConversation racing this update
+      // (e.g. from a chat.done) can write pre-toggle server state over it between
+      // the optimistic set and here, silently reverting a webEnabled/sampling toggle.
+      set((s) => ({
+        conversationById: s.conversationById[conversationId]
+          ? {
+              ...s.conversationById,
+              [conversationId]: applyPatch(s.conversationById[conversationId], patch)
+            }
+          : s.conversationById
+      }))
       // Archive / pin change which list bucket or order the conversation lands in.
       if (patch.archived !== undefined || patch.pinned !== undefined) await get().refreshList()
       if (patch.defaultTier !== undefined) {
@@ -661,7 +680,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             ? {
                 usage: {
                   ...s.usage,
-                  [conversationId]: { ...prev, contextLength: view.contextLength }
+                  // Keep the last known denominator when main can't resolve the
+                  // model this time — same null policy as every other usage write.
+                  [conversationId]: {
+                    ...prev,
+                    contextLength: view.contextLength ?? prev.contextLength ?? null
+                  }
                 }
               }
             : {}
@@ -671,11 +695,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       // Revert just this conversation's object; re-sync the list from the server
       // rather than restoring a stale full-array snapshot (which would stomp a
       // titleChanged / other update that landed during the in-flight call).
-      set((s) => ({
-        conversationById: prevConversation
-          ? { ...s.conversationById, [conversationId]: prevConversation }
-          : s.conversationById
-      }))
+      set((s) => {
+        const current = s.conversationById[conversationId]
+        return {
+          conversationById: prevConversation
+            ? {
+                ...s.conversationById,
+                // Restore the pre-optimistic object but keep a title a concurrent
+                // chat.titleChanged may have landed during the in-flight call.
+                [conversationId]: {
+                  ...prevConversation,
+                  title: current?.title ?? prevConversation.title
+                }
+              }
+            : s.conversationById
+        }
+      })
       void get().refreshList().catch(() => {})
       throw err
     }
@@ -684,14 +719,33 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   remove: async (conversationId) => {
     await call('chat.delete', { conversationId })
     set((s) => {
+      const { [conversationId]: removedMsgs, ...messagesById } = s.messagesById
       const { [conversationId]: _c, ...conversationById } = s.conversationById
-      const { [conversationId]: _m, ...messagesById } = s.messagesById
       const { [conversationId]: _u, ...usage } = s.usage
+      const { [conversationId]: _e, ...lastError } = s.lastError
+      const { [conversationId]: _f, ...lastFailedSend } = s.lastFailedSend
+      // None of these were evicted before, so they leaked for the whole session.
+      // Prune the message-keyed maps for this conversation's messages and the
+      // sibling-registry entries under it.
+      const msgIds = new Set((removedMsgs ?? []).map((m) => m.id))
+      const activityOpen = Object.fromEntries(
+        Object.entries(s.activityOpen).filter(([id]) => !msgIds.has(id))
+      )
+      const stoppedIds = Object.fromEntries(
+        Object.entries(s.stoppedIds).filter(([id]) => !msgIds.has(id))
+      ) as Record<string, true>
+      for (const key of [...siblingRegistry.keys()]) {
+        if (key.startsWith(`${conversationId}:`)) siblingRegistry.delete(key)
+      }
       return {
         conversations: s.conversations.filter((c) => c.id !== conversationId),
         conversationById,
         messagesById,
         usage,
+        lastError,
+        lastFailedSend,
+        activityOpen,
+        stoppedIds,
         activeId: s.activeId === conversationId ? null : s.activeId
       }
     })
