@@ -449,9 +449,16 @@ function buildEvidence(
     }
   }
   if (snippets.length > 0) {
-    const lines = snippets
-      .slice(0, SNIPPET_FALLBACK_LIMIT)
-      .map((c) => `[${c.sourceId}] ${c.entry.title} — ${clip(c.entry.snippet, 240)}`)
+    // Mirror the notes path: clip the (unbounded) page title and cap the running
+    // total against the same budget so a few long titles can't blow the window.
+    const lines: string[] = []
+    let total = 0
+    for (const c of snippets.slice(0, SNIPPET_FALLBACK_LIMIT)) {
+      const line = `[${c.sourceId}] ${(c.entry.title ?? '').slice(0, 200)} — ${clip(c.entry.snippet, 240)}`
+      if (lines.length > 0 && total + line.length > evidenceLimit) break
+      total += line.length
+      lines.push(line)
+    }
     return {
       text: `[Web search snippets gathered for this message — numbered sources (no page could be fetched in full):]\n\n${fenceUntrustedWeb(lines.join('\n'), fenceId)}\n\n${EVIDENCE_INSTRUCTIONS}`,
       sourceCount: lines.length
@@ -533,12 +540,18 @@ export async function runSearchPipeline(
     if (!verdict || verdict.enough) break
 
     // Broaden with the model's gap-filling queries, then deepen on the pool.
+    let fresh: Candidate[] = []
     if (verdict.moreQueries.length > 0) {
-      candidates = dedupeByUrl([...candidates, ...(await searchAll(verdict.moreQueries, opts))])
+      fresh = await searchAll(verdict.moreQueries, opts)
       throwIfAborted(opts.signal)
+      candidates = dedupeByUrl([...candidates, ...fresh])
     }
     const budget = MAX_TOTAL_VISITS - notes.length
-    const next = unvisited(candidates, visited).slice(0, Math.min(ADAPTIVE_BATCH, budget))
+    // Read the gap-filling results FIRST when the model broadened: appending them
+    // to the end of the pool and reading in pool order let leftover ORIGINAL
+    // candidates crowd them out, so the broadening never actually read anything new.
+    const order = fresh.length > 0 ? dedupeByUrl([...fresh, ...candidates]) : candidates
+    const next = unvisited(order, visited).slice(0, Math.min(ADAPTIVE_BATCH, budget))
     if (next.length === 0) break // nothing new to read — stop rather than spin
     await visitBatch(next, notes, visited, opts)
   }
