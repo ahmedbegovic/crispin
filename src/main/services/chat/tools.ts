@@ -23,6 +23,9 @@ export class SourceTracker {
     const existing = this.byUrl.get(url)
     if (existing) {
       if (text && text.length > (existing.snippet?.length ?? 0)) existing.snippet = text
+      // A later hit on the same URL can carry a title the first one lacked
+      // (a bare search result, then a visit that parsed <title>).
+      if (title && !existing.title) existing.title = title
       return existing
     }
     const source: SourceRef = { id: this.byUrl.size + 1, title, url, snippet: text }
@@ -262,7 +265,9 @@ export async function executeTool(
         sourceIds.push(source.id)
         return `[${source.id}] ${r.title}\n${r.url}\n${r.snippet}`
       })
-      return { result: lines.join('\n\n'), sourceIds }
+      // De-dupe: two results sharing a URL collapse to one source id (rag_search
+      // already does this; web_search didn't, leaking a repeated [n]).
+      return { result: lines.join('\n\n'), sourceIds: [...new Set(sourceIds)] }
     }
     case 'web_visit': {
       const url = args.url as string
@@ -309,7 +314,10 @@ export async function executeTool(
       const sourceIds: number[] = []
       const lines = hits.map((hit) => {
         // Library docs have no URL — a stable pseudo-URL keeps SourceRef.url honest.
-        const source = ctx.sources.add(`library://${hit.doc_id}`, hit.title, hit.text)
+        // Key by doc_id + chunk so distinct excerpts stay distinct sources:
+        // collapsing them onto one library://<doc_id> kept only the longest
+        // chunk's text, so grounding falsely flagged citations to other chunks.
+        const source = ctx.sources.add(`library://${hit.doc_id}#${hit.chunk_index}`, hit.title, hit.text)
         sourceIds.push(source.id)
         return `[${source.id}] ${hit.title ?? 'document'} (chunk ${hit.chunk_index})\n${hit.text}`
       })
@@ -328,7 +336,7 @@ export async function executeTool(
     }
     default: {
       if (ctx.mcp.isMcpTool(name)) {
-        return { result: await ctx.mcp.callTool(name, args) }
+        return { result: await ctx.mcp.callTool(name, args, ctx.signal) }
       }
       throw new Error(`unknown tool: ${name}`)
     }

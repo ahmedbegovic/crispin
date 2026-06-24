@@ -189,17 +189,23 @@ export class McpManager {
   }
 
   /** Errors come back as the result string — the tool loop must not throw. */
-  async callTool(namespacedName: string, args: Record<string, unknown>): Promise<string> {
+  async callTool(
+    namespacedName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<string> {
     const route = this.routes.get(namespacedName)
     if (!route) return `Error: unknown MCP tool ${namespacedName}`
     const server = this.list().find((s) => s.id === route.serverId)
     if (!server || !server.enabled) return `Error: MCP server for ${namespacedName} is disabled`
     try {
       const client = await this.clientFor(server)
+      // Thread the generation's abort signal so Stop interrupts an in-flight MCP
+      // call instead of blocking on the await until the 30s internal timeout.
       const result = await client.callTool(
         { name: route.toolName, arguments: args },
         undefined,
-        { timeout: CALL_TIMEOUT_MS }
+        { timeout: CALL_TIMEOUT_MS, signal }
       )
       if (result.isError) return `Error: ${stringifyContent(result.content)}`
       return stringifyContent(result.content)
