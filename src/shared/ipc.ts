@@ -54,9 +54,10 @@ export const installedModelSchema = z.object({
   /** Recommended sampling from generation_config.json; null if absent. */
   sampling: z
     .object({
-      temperature: z.number().nullable(),
-      topP: z.number().nullable(),
-      topK: z.number().nullable()
+      // Generous bounds: reject garbage without rejecting any real model config.
+      temperature: z.number().min(0).max(5).nullable(),
+      topP: z.number().min(0).max(1).nullable(),
+      topK: z.number().min(0).nullable()
     })
     .nullable()
 })
@@ -136,9 +137,11 @@ export const messageRoleSchema = z.enum(['system', 'user', 'assistant', 'tool'])
 
 /** A model's sampling knobs; reused for the installed-model recommendation and per-conversation overrides. */
 export const samplingSchema = z.object({
-  temperature: z.number().nullable(),
-  topP: z.number().nullable(),
-  topK: z.number().nullable()
+  // Bound the per-conversation override to plausible ranges; the renderer editor
+  // only guards against non-finite values, so this schema is the real backstop.
+  temperature: z.number().min(0).max(5).nullable(),
+  topP: z.number().min(0).max(1).nullable(),
+  topK: z.number().min(0).nullable()
 })
 
 export const sourceRefSchema = z.object({

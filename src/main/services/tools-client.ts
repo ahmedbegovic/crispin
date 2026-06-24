@@ -194,7 +194,10 @@ export class ToolsClient {
     )
   }
 
-  visit(url: string, maxChars = 12_000, signal?: AbortSignal): Promise<VisitResult> {
+  // Default matches the sidecar's VisitRequest.max_chars and the pipeline's
+  // VISIT_MAX_CHARS (20k); the old 12k default silently capped model-loop page
+  // reads 8k chars shorter than harness-driven ones.
+  visit(url: string, maxChars = 20_000, signal?: AbortSignal): Promise<VisitResult> {
     return this.request('POST', '/visit', { url, max_chars: maxChars }, bounded(signal))
   }
 
