@@ -146,9 +146,10 @@ export class ChatRepo {
         now,
         now
       )
-    const conversation = this.getConversation(id)
-    this.ftsSetTitle(id, conversation.title)
-    return conversation
+    // Don't index the default 'New chat' placeholder title — it would make a
+    // search for "new"/"chat" match every still-untitled conversation. The real
+    // title is indexed when instantTitle/refinement sets it (updateConversation).
+    return this.getConversation(id)
   }
 
   getConversation(id: string): Conversation {
@@ -372,26 +373,24 @@ export class ChatRepo {
     // AND the terms; prefix-match the final one for as-you-type search.
     const match = tokens.map((t, i) => (i === tokens.length - 1 ? `${t}*` : t)).join(' ')
 
-    const rows = this.db
-      .prepare(
-        `SELECT conversation_id AS cid, message_id AS mid,
-                snippet(chat_fts, -1, '<b>', '</b>', '…', 12) AS snip,
-                bm25(chat_fts) AS rank
-         FROM chat_fts WHERE chat_fts MATCH ? ORDER BY rank LIMIT ?`
-      )
-      .all(match, limit * 4) as unknown as Array<{
-      cid: string
-      mid: string | null
-      snip: string
-      rank: number
-    }>
-
+    // Stream matches best-first and keep ONE hit per conversation, stopping once
+    // we have `limit` distinct conversations. A bounded SQL LIMIT here silently
+    // dropped conversations whose best message ranked past the window when a few
+    // long threads each matched many messages; .iterate() reads only as far as
+    // needed to fill the limit, so no matching conversation is starved.
+    const stmt = this.db.prepare(
+      `SELECT conversation_id AS cid, message_id AS mid,
+              snippet(chat_fts, -1, '<b>', '</b>', '…', 12) AS snip,
+              bm25(chat_fts) AS rank
+       FROM chat_fts WHERE chat_fts MATCH ? ORDER BY rank`
+    )
     const seen = new Set<string>()
     const hits: ChatSearchHit[] = []
     const convStmt = this.db.prepare(
       'SELECT title, pinned, updated_at FROM conversations WHERE id = ?'
     )
-    for (const r of rows) {
+    for (const row of stmt.iterate(match)) {
+      const r = row as { cid: string; mid: string | null; snip: string; rank: number }
       if (seen.has(r.cid)) continue
       seen.add(r.cid)
       const conv = convStmt.get(r.cid) as
