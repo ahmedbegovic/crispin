@@ -1128,6 +1128,15 @@ export class ChatOrchestrator {
     }
   }
 
+  /**
+   * Donut denominator for a conversation: the context window of its EFFECTIVE
+   * tier's active model. Shares effectiveTier() with generation so the displayed
+   * denominator can't drift from the tier the orchestrator actually runs.
+   */
+  contextForConversation(conversation: Conversation): number | null {
+    return this.contextForTier(this.effectiveTier(conversation))
+  }
+
   /** Requested tier first, then nearest installed below, then above. */
   private resolveModel(tier: Tier): string {
     return this.deps.modelService.resolveActiveRepo(tier)

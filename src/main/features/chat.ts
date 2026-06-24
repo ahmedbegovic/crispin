@@ -22,11 +22,9 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
     contextLength: number | null
   } => {
     const view = repo.view(conversationId)
-    // Un-pinned conversations follow the chat feature default live.
-    const tier = view.conversation.tierPinned
-      ? view.conversation.defaultTier
-      : modelService.overview().defaults.chat
-    return { ...view, contextLength: orchestrator.contextForTier(tier) }
+    // contextForConversation owns the effective-tier resolution, so the donut
+    // denominator can't drift from the tier the orchestrator generates with.
+    return { ...view, contextLength: orchestrator.contextForConversation(view.conversation) }
   }
 
   handle('chat.list', (input) => ({
