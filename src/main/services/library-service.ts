@@ -93,6 +93,11 @@ export class LibraryService {
     this.disposed = true
   }
 
+  /** True while any rag-ingest job is embedding — gates the engine's eviction of the embedder. */
+  isIngesting(): boolean {
+    return this.activeIngests.size > 0
+  }
+
   embeddingsUrl(): string {
     return `http://127.0.0.1:${this.deps.getEnginePort()}/v1/embeddings`
   }

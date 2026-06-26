@@ -150,6 +150,8 @@ export interface ModelServiceDeps {
   /** Idle-sweep guards: never unload under active background work. */
   isResearchActive: () => boolean
   isNewsBusy: () => boolean
+  /** True while a RAG ingest is embedding — protects the embedder from eviction. */
+  isLibraryIngesting: () => boolean
   broadcast: (event: CrispinEvent) => void
 }
 
@@ -177,6 +179,8 @@ export class ModelService {
   /** Consecutive /v1/models/status failures — see pollTick's stale-state guard. */
   private modelsPollFailures = 0
   private disposed = false
+  /** Serializes load() across surfaces — see load(). */
+  private loadChain: Promise<unknown> = Promise.resolve()
   private readonly log = scopedLogger('models')
   /** Resolved once init()'s first installed-model scan has finished (see whenReady). */
   private resolveReady!: () => void
@@ -568,7 +572,26 @@ export class ModelService {
 
   // --- load / unload ----------------------------------------------------------
 
+  /**
+   * Serialize loads across every surface (chat/agent/research/news + the
+   * explicit Models-tab load). doLoad()'s judge → evict → re-judge → warm
+   * sequence is a read-modify-write over engineModels + system memory; two
+   * concurrent loads could each decide "fits after eviction" and warm past the
+   * RAM budget. Queue them through one chain instead.
+   */
   async load(repoId: string, force = false): Promise<{ ok: boolean; reason?: string }> {
+    const run = this.loadChain.then(
+      () => this.doLoad(repoId, force),
+      () => this.doLoad(repoId, force)
+    )
+    this.loadChain = run.catch(() => {})
+    return run
+  }
+
+  private async doLoad(
+    repoId: string,
+    force = false
+  ): Promise<{ ok: boolean; reason?: string }> {
     let model = this.installed.find((m) => m.repoId === repoId)
     if (!model) model = (await this.refreshInstalled()).find((m) => m.repoId === repoId)
     if (!model) return { ok: false, reason: `${repoId} is not downloaded` }
@@ -644,7 +667,10 @@ export class ModelService {
     if (estimatedGB > this.deps.ramGuard.report(0).budgetGB) {
       return { ok: false, reason: refusal }
     }
-    const others = evictableLoaded(this.engineModels, repoId)
+    const others = evictableLoaded(this.engineModels, {
+      exceptRepoId: repoId,
+      protectEmbedder: this.deps.isLibraryIngesting()
+    })
     if (others.length === 0) return { ok: false, reason: refusal }
     if (!(await this.engineIdle())) {
       return { ok: false, reason: 'A generation is running — try again when it finishes.' }
@@ -680,7 +706,9 @@ export class ModelService {
    */
   async unloadAll(): Promise<void> {
     if (!this.engineProcessRunning()) return
-    const targets = evictableLoaded(this.engineModels)
+    const targets = evictableLoaded(this.engineModels, {
+      protectEmbedder: this.deps.isLibraryIngesting()
+    })
     for (const m of targets) {
       await this.deps.engine.unloadModel(m.id)
     }
@@ -1077,12 +1105,14 @@ export class ModelService {
     if (knobSeconds <= 0) return // disabled in Settings
     if (Date.now() - this.deps.getLastAppActivityAt() <= knobSeconds * 1000) return
     if (!this.engineProcessRunning()) return
-    // Only chat models gate (and feed) the sweep; the embedder is never force-
-    // unloaded here (evictableLoaded) — its own TTL reclaims it safely.
-    const loaded = evictableLoaded(this.engineModels)
+    // The sweep is gated on chat models being loaded; unloadAll() then reclaims
+    // the embedder too (safe — the isLibraryIngesting guard below means no embed
+    // is in flight). A lone resident embedder is left to its own engine TTL.
+    const loaded = evictableLoaded(this.engineModels, { protectEmbedder: true })
     if (loaded.length === 0) return
     if (this.activeDownloads.size > 0) return
-    if (this.deps.isResearchActive() || this.deps.isNewsBusy()) return
+    if (this.deps.isResearchActive() || this.deps.isNewsBusy() || this.deps.isLibraryIngesting())
+      return
     if (!(await this.engineIdle())) return
     if (this.disposed) return
     this.log.info(

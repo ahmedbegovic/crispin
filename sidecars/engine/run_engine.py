@@ -84,6 +84,15 @@ def write_model_settings(models: list[dict[str, Any]]) -> None:
             entry["turboquant_kv_enabled"] = bool(m.get("turboquant_kv_enabled", False))
             entry["turboquant_kv_bits"] = float(m.get("turboquant_kv_bits", 4))
             entry["turboquant_skip_last"] = bool(m.get("turboquant_skip_last", True))
+            # oMLX's ModelSettings rejects turboquant_kv together with MTP/VLM-MTP
+            # and then SKIPS the whole entry — the model would load with DEFAULTS
+            # (no KV quant, no max_tokens cap, no ttl), silently. The standalone
+            # oMLX app can set those flags in this shared file, so clear the
+            # mutually-exclusive pair whenever we enable turboquant. (dflash /
+            # specprefill are NOT exclusive with turboquant — leave them alone.)
+            if entry["turboquant_kv_enabled"]:
+                entry.pop("mtp_enabled", None)
+                entry.pop("vlm_mtp_enabled", None)
 
         try:
             tmp = path.with_suffix(".tmp")

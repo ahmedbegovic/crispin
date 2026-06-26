@@ -162,6 +162,13 @@ export class RuntimeManager {
         // Next prompt respawns servers with the bundled binary.
         await this.deps.pool.stopAll()
       } else {
+        // Refuse an engine reset while a generation is in flight (matches
+        // updateEngine) — a reset is a deliberate user action, so refuse it
+        // rather than killing a live stream. Checked before the marker unlink so
+        // a busy refusal leaves everything unchanged.
+        if (component === 'engine' && !(await this.engineIdle())) {
+          throw new Error('The engine is busy — wait for the generation to finish.')
+        }
         // Delete the marker → the next spawn re-syncs to the bundled lock.
         try {
           unlinkSync(pinMarkerPath(component))

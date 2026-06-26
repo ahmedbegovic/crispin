@@ -475,7 +475,10 @@ export type AppSettings = z.infer<typeof appSettingsSchema>
 
 // ---------------------------------------------------------------------------
 // Method contract: renderer -> main request/response over `crispin:call`.
-// Every method is zod-validated on both sides of the bridge.
+// Inbound input is zod-validated at the main boundary (router.ts). Outputs are
+// TS-typed; in dev they are validated against the schema too (drift from a
+// sidecar/SQLite source surfaces loudly), while a packaged build trusts its own
+// outbound shapes — outputs are NOT runtime-checked in prod.
 // ---------------------------------------------------------------------------
 
 export const contract = {

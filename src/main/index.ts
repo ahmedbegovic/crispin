@@ -296,6 +296,7 @@ app.whenReady().then(async () => {
     // Constructed later in this function — lazy reads through the module lets.
     isResearchActive: () => researchOrchestrator?.hasActiveRuns() ?? false,
     isNewsBusy: () => newsScheduler?.isBusy() ?? false,
+    isLibraryIngesting: () => libraryService?.isIngesting() ?? false,
     broadcast
   })
   registerModelsFeature({ processManager, modelService, engineClient, ports })
