@@ -167,6 +167,8 @@ export class ModelService {
   private pendingRegistryRestart = false
   /** downloadId → tools job id, for every download we're actively polling. */
   private readonly activeDownloads = new Map<string, string>()
+  /** downloadIds the user paused — kept resumable; the poller maps them to 'paused'. */
+  private readonly pausedDownloads = new Set<string>()
   /**
    * repoId → in-flight startDownload. Set synchronously before any await:
    * the dedup SELECT below can't see a sibling call that hasn't INSERTed its
@@ -440,6 +442,14 @@ export class ModelService {
     if (existing && this.activeDownloads.has(existing.id)) return existing.id
     // After the local dedup: the join path must never pay a network probe.
     await this.assertRepoExists(repoId)
+    // A fresh attempt supersedes any paused/cancelled/failed history for this
+    // repo — purge it so the card and panel don't show a stale resumable partial
+    // next to the new download (a resume reuses the on-disk partial regardless).
+    this.deps.db
+      .prepare(
+        "DELETE FROM model_downloads WHERE repo_id = ? AND status IN ('paused', 'cancelled', 'failed')"
+      )
+      .run(repoId)
     const { job_id } = await this.deps.tools.downloadModel(repoId)
     const download: DownloadInfo = {
       id: crypto.randomUUID(),
@@ -512,6 +522,12 @@ export class ModelService {
         next = { ...download, status: 'failed', error: 'lost contact with the tools sidecar', finishedAt: Date.now() }
       }
 
+      // A user-initiated pause stops the same way a cancel does (the subprocess
+      // is terminated), but keeps the resumable partial — surface it as 'paused'.
+      if (next.status === 'cancelled' && this.pausedDownloads.has(download.id)) {
+        next = { ...next, status: 'paused', finishedAt: null }
+      }
+
       const changed = JSON.stringify(next) !== JSON.stringify(download)
       if (changed) {
         download = next
@@ -543,31 +559,88 @@ export class ModelService {
 
       if (next.status !== 'queued' && next.status !== 'downloading') {
         this.activeDownloads.delete(download.id)
+        this.pausedDownloads.delete(download.id)
         return
       }
     }
   }
 
-  async cancelDownload(downloadId: string): Promise<boolean> {
+  /**
+   * Pause (deletePartial=false): stop the download but keep the resumable
+   * partial; the poll loop marks the row 'paused'. Cancel (deletePartial=true,
+   * the UI's "X"): stop, wait for the subprocess to actually die, then delete
+   * the partial from the cache and purge its history so it shows as a fresh
+   * download, not a resumable one.
+   */
+  async cancelDownload(downloadId: string, deletePartial = false): Promise<boolean> {
     const jobId = this.activeDownloads.get(downloadId)
     if (jobId) {
-      // The poll loop observes the cancellation and finalizes DB + broadcast.
-      const { ok } = await this.deps.tools.cancelJob(jobId)
-      return ok
+      if (!deletePartial) {
+        this.pausedDownloads.add(downloadId)
+        const { ok } = await this.deps.tools.cancelJob(jobId)
+        return ok
+      }
+      // Removing it from activeDownloads stops the poller from finalizing it.
+      this.activeDownloads.delete(downloadId)
+      this.pausedDownloads.delete(downloadId)
+      const repoId = this.downloadRepoId(downloadId)
+      await this.deps.tools.cancelJob(jobId)
+      await this.waitJobTerminal(jobId)
+      await this.deleteDownloadArtifacts(repoId)
+      return true
     }
-    // Stale row from a previous run — just mark it cancelled.
+    // Not actively polled (a paused or stale row).
     const row = this.deps.db
       .prepare('SELECT * FROM model_downloads WHERE id = ?')
       .get(downloadId) as DownloadRow | undefined
     if (!row || row.status === 'done') return false
+    if (deletePartial) {
+      await this.deleteDownloadArtifacts(row.repo_id)
+      return true
+    }
     this.deps.db
-      .prepare("UPDATE model_downloads SET status = 'cancelled', finished_at = ? WHERE id = ?")
-      .run(Date.now(), downloadId)
+      .prepare("UPDATE model_downloads SET status = 'paused', finished_at = NULL WHERE id = ?")
+      .run(downloadId)
     this.deps.broadcast({
       type: 'models.downloadProgress',
-      download: rowToDownload({ ...row, status: 'cancelled', finished_at: Date.now() })
+      download: rowToDownload({ ...row, status: 'paused', finished_at: null })
     })
     return true
+  }
+
+  private downloadRepoId(downloadId: string): string | null {
+    const row = this.deps.db
+      .prepare('SELECT repo_id FROM model_downloads WHERE id = ?')
+      .get(downloadId) as { repo_id: string } | undefined
+    return row?.repo_id ?? null
+  }
+
+  /** Wait (bounded) for a tools job to leave 'running' — i.e. its subprocess to die. */
+  private async waitJobTerminal(jobId: string): Promise<void> {
+    const deadline = Date.now() + 20_000
+    while (Date.now() < deadline) {
+      if (this.disposed) return
+      try {
+        const job = await this.deps.tools.job(jobId)
+        if (job.status !== 'running') return
+      } catch {
+        return // job gone / sidecar blip — treat as terminal
+      }
+      await sleep(300)
+    }
+  }
+
+  /**
+   * Delete a repo's (partial or complete) weights from the cache and purge its
+   * download history, so it surfaces as a fresh "Download" rather than a
+   * resumable partial. Best-effort: a 404 means nothing reached the cache.
+   */
+  private async deleteDownloadArtifacts(repoId: string | null): Promise<void> {
+    if (!repoId) return
+    await this.deps.tools.deleteModel(repoId).catch(() => {})
+    this.deps.db.prepare('DELETE FROM model_downloads WHERE repo_id = ?').run(repoId)
+    await this.refreshInstalled().catch(() => {})
+    if (!this.disposed) this.deps.broadcast({ type: 'models.installedChanged' })
   }
 
   // --- load / unload ----------------------------------------------------------

@@ -62,7 +62,14 @@ export const installedModelSchema = z.object({
     .nullable()
 })
 
-export const downloadStateSchema = z.enum(['queued', 'downloading', 'done', 'failed', 'cancelled'])
+export const downloadStateSchema = z.enum([
+  'queued',
+  'downloading',
+  'done',
+  'failed',
+  'cancelled',
+  'paused'
+])
 
 export const downloadInfoSchema = z.object({
   id: z.string(),
@@ -522,7 +529,12 @@ export const contract = {
     output: z.object({ downloadId: z.string() })
   },
   'models.cancelDownload': {
-    input: z.object({ downloadId: z.string() }),
+    /**
+     * deletePartial=true also deletes the partial from the HF cache and purges
+     * its history (the "X" / cancel) so it can't resume; omit/false to pause
+     * (keep the resumable partial).
+     */
+    input: z.object({ downloadId: z.string(), deletePartial: z.boolean().optional() }),
     output: z.object({ ok: z.boolean() })
   },
   'models.delete': {

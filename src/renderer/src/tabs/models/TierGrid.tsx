@@ -197,7 +197,7 @@ export default function TierGrid({ overview }: { overview: ModelsOverview }) {
     overview.downloads.find(
       (d) =>
         d.repoId === repoId &&
-        (d.status === 'cancelled' || d.status === 'failed') &&
+        (d.status === 'paused' || d.status === 'cancelled' || d.status === 'failed') &&
         d.bytesDone > 0
     )
 

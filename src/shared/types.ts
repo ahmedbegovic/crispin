@@ -69,7 +69,13 @@ export interface InstalledModel {
   sampling: ModelSampling | null
 }
 
-export type DownloadState = 'queued' | 'downloading' | 'done' | 'failed' | 'cancelled'
+export type DownloadState =
+  | 'queued'
+  | 'downloading'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'paused'
 
 export interface DownloadInfo {
   id: string

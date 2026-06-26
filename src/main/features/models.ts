@@ -61,8 +61,8 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
     downloadId: await modelService.startDownload(repoId, force ?? false)
   }))
 
-  handle('models.cancelDownload', async ({ downloadId }) => ({
-    ok: await modelService.cancelDownload(downloadId)
+  handle('models.cancelDownload', async ({ downloadId, deletePartial }) => ({
+    ok: await modelService.cancelDownload(downloadId, deletePartial ?? false)
   }))
 
   handle('models.delete', async ({ repoId }) => {

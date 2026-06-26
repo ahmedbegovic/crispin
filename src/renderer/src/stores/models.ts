@@ -10,7 +10,7 @@ interface ModelsStore {
   init: () => Promise<void>
   refresh: () => Promise<void>
   download: (repoId: string, force?: boolean) => Promise<void>
-  cancelDownload: (id: string) => Promise<void>
+  cancelDownload: (id: string, deletePartial?: boolean) => Promise<void>
   deleteModel: (repoId: string) => Promise<void>
   search: (query: string) => Promise<void>
   load: (
@@ -80,8 +80,8 @@ export const useModelsStore = create<ModelsStore>((set, get) => ({
     await get().refresh()
   },
 
-  cancelDownload: async (id) => {
-    await call('models.cancelDownload', { downloadId: id })
+  cancelDownload: async (id, deletePartial) => {
+    await call('models.cancelDownload', { downloadId: id, deletePartial })
   },
 
   deleteModel: async (repoId) => {
