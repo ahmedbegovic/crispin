@@ -19,6 +19,7 @@ import {
   TIERS,
   TIER_ORDER,
   canonicalRepoId,
+  candidateWarning,
   classifyByParams,
   estimateGB,
   familyOf,
@@ -33,6 +34,8 @@ import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 import type { AppSettingsService } from './app-settings'
 import { writeEngineConfig, omlxCacheDir, type EngineConfigModel } from './engine-config'
+import { evictableLoaded } from './engine-eviction'
+import { embedderDiscoverAction } from './embedder-discovery'
 import type { EngineClient } from './engine-client'
 import type { RamGuard } from './ram-guard'
 import type { ProcessManager } from './process-manager'
@@ -44,6 +47,9 @@ import { join } from 'node:path'
 const DOWNLOAD_POLL_MS = 500
 const ENGINE_POLL_MS = 2500
 const ENGINE_START_TIMEOUT_MS = 180_000
+/** First-ingest embedder rediscovery waits up to this long for the engine to go
+ *  idle before restarting — it must never restart mid-generation (F2). */
+const EMBEDDER_DISCOVER_WAIT_MS = 180_000
 /**
  * Weights on disk ≈ weights in memory at 4-bit; +10% for runtime overhead.
  * Deliberately NOT higher: the ultra tier (~16.5 GB on disk) must still fit
@@ -567,6 +573,10 @@ export class ModelService {
     if (!model) model = (await this.refreshInstalled()).find((m) => m.repoId === repoId)
     if (!model) return { ok: false, reason: `${repoId} is not downloaded` }
 
+    // NB: the QAT/PLE gate is NOT here — it lives at the explicit-load boundary
+    // (the models.load handler, behind `allowBroken`). Auto-load (ensureLoaded
+    // for chat/agent/research/news) must not hard-fail on the name heuristic,
+    // which has false positives (a PLE-safe re-quant named without "qat").
     const estimatedGB = (model.sizeBytes / 1e9) * MEMORY_OVERHEAD
     const verdict = this.deps.ramGuard.canLoad(estimatedGB, {
       loadedModels: this.engineModels,
@@ -634,7 +644,7 @@ export class ModelService {
     if (estimatedGB > this.deps.ramGuard.report(0).budgetGB) {
       return { ok: false, reason: refusal }
     }
-    const others = this.engineModels.filter((m) => m.state === 'loaded' && m.id !== repoId)
+    const others = evictableLoaded(this.engineModels, repoId)
     if (others.length === 0) return { ok: false, reason: refusal }
     if (!(await this.engineIdle())) {
       return { ok: false, reason: 'A generation is running — try again when it finishes.' }
@@ -643,8 +653,9 @@ export class ModelService {
     for (const m of others) {
       await this.deps.engine.unloadModel(m.id)
     }
+    const unloaded = new Set(others.map((m) => m.id))
     this.engineModels = this.engineModels.map((m) =>
-      m.id !== repoId && m.state === 'loaded' ? { ...m, state: 'unloaded', memoryGB: null } : m
+      unloaded.has(m.id) ? { ...m, state: 'unloaded', memoryGB: null } : m
     )
     let verdict = this.deps.ramGuard.canLoad(estimatedGB, {
       loadedModels: this.engineModels,
@@ -661,14 +672,21 @@ export class ModelService {
     return verdict.ok ? { ok: true } : { ok: false, reason: verdict.reason }
   }
 
-  /** Unload every loaded model — real endpoints now, no restart involved. */
+  /**
+   * Unload every loaded chat model — real per-model endpoints, no restart. The
+   * embedder is deliberately left to the engine's lease-aware TTL/LRU (see
+   * evictableLoaded): force-unloading it here can tear down an in-flight RAG
+   * embed that engineIdle() cannot see.
+   */
   async unloadAll(): Promise<void> {
     if (!this.engineProcessRunning()) return
-    for (const m of this.engineModels.filter((m) => m.state === 'loaded')) {
+    const targets = evictableLoaded(this.engineModels)
+    for (const m of targets) {
       await this.deps.engine.unloadModel(m.id)
     }
+    const unloaded = new Set(targets.map((m) => m.id))
     this.engineModels = this.engineModels.map((m) =>
-      m.state === 'loaded' ? { ...m, state: 'unloaded', memoryGB: null } : m
+      unloaded.has(m.id) ? { ...m, state: 'unloaded', memoryGB: null } : m
     )
   }
 
@@ -745,6 +763,56 @@ export class ModelService {
     throw new Error('engine did not become ready in time')
   }
 
+  /**
+   * The embedder was just downloaded into the shared HF cache. oMLX discovers
+   * cache models at spawn only, so a running engine cannot serve it until it
+   * restarts — but never mid-generation (that kills another surface's in-flight
+   * stream, the same hazard load()'s restart is idle-gated against). Wait,
+   * bounded, for the engine to go idle, then restart; the library ingest awaits
+   * this before its first /v1/embeddings call. Owned here because ModelService,
+   * not LibraryService, orchestrates the engine.
+   */
+  async discoverEmbedder(): Promise<{ ok: boolean; reason?: string }> {
+    const deadline = Date.now() + EMBEDDER_DISCOVER_WAIT_MS
+    for (;;) {
+      const engine = this.deps.processManager.get('engine')
+      const running = engine?.snapshot().state === 'running'
+      const alreadyDiscovered = this.engineModels.some((m) => m.id === EMBEDDING_MODEL)
+      // engineIdle() is an HTTP probe — only worth it when a restart is on the table.
+      const mustCheckIdle = !this.disposed && running && !alreadyDiscovered
+      const action = embedderDiscoverAction({
+        disposed: this.disposed,
+        running,
+        alreadyDiscovered,
+        idle: mustCheckIdle ? await this.engineIdle() : false,
+        timedOut: Date.now() >= deadline
+      })
+      if (action === 'done') return { ok: true }
+      if (action === 'restart' && engine) {
+        await engine.restart('embedding model downloaded — rediscover the HF cache')
+        // Confirm the respawn actually surfaced the embedder rather than blindly
+        // reporting success — a discovery miss should fail the ingest with an
+        // actionable reason, not a downstream /v1/embeddings 404.
+        await this.refreshEngineModels()
+        return this.engineModels.some((m) => m.id === EMBEDDING_MODEL)
+          ? { ok: true }
+          : {
+              ok: false,
+              reason: 'the embedding model did not load after the engine restart — check the engine logs'
+            }
+      }
+      if (action === 'giveUp') {
+        return {
+          ok: false,
+          reason: this.disposed
+            ? 'app is shutting down'
+            : 'the engine is busy — try the ingest again in a moment'
+        }
+      }
+      await sleep(ENGINE_POLL_MS) // 'wait'
+    }
+  }
+
   // --- misc orchestration -----------------------------------------------------
 
   async deleteModel(repoId: string): Promise<void> {
@@ -758,16 +826,13 @@ export class ModelService {
 
   async search(query: string): Promise<HFSearchResult[]> {
     const { results } = await this.deps.tools.searchModels(query)
-    return results.map((r) => {
-      const verdict = validateModelRepo(r.repo_id)
-      return {
-        repoId: r.repo_id,
-        downloads: r.downloads,
-        likes: r.likes,
-        updatedAt: r.last_modified_ms,
-        warning: verdict.ok ? null : (verdict.warning ?? null)
-      }
-    })
+    return results.map((r) => ({
+      repoId: r.repo_id,
+      downloads: r.downloads,
+      likes: r.likes,
+      updatedAt: r.last_modified_ms,
+      warning: candidateWarning(r.repo_id)
+    }))
   }
 
   overview(): ModelsOverview {
@@ -861,7 +926,11 @@ export class ModelService {
         engineState: this.engineModels.find((m) => m.id === effectiveId)?.state ?? null,
         family: familyOf(effectiveId),
         estGB: round2(estGB),
-        fit: fitFor(estGB, ram)
+        fit: fitFor(estGB, ram),
+        // Enforce the QAT/PLE rule at the discovery seam too: a non-QAT Gemma 4
+        // E-series can land in the shared HF cache out-of-band and would
+        // otherwise be offered as a normal candidate with no warning.
+        warning: candidateWarning(effectiveId)
       }
     })
     // Explicit pick first (when still installed); else first installed curated.
@@ -1008,7 +1077,9 @@ export class ModelService {
     if (knobSeconds <= 0) return // disabled in Settings
     if (Date.now() - this.deps.getLastAppActivityAt() <= knobSeconds * 1000) return
     if (!this.engineProcessRunning()) return
-    const loaded = this.engineModels.filter((m) => m.state === 'loaded')
+    // Only chat models gate (and feed) the sweep; the embedder is never force-
+    // unloaded here (evictableLoaded) — its own TTL reclaims it safely.
+    const loaded = evictableLoaded(this.engineModels)
     if (loaded.length === 0) return
     if (this.activeDownloads.size > 0) return
     if (this.deps.isResearchActive() || this.deps.isNewsBusy()) return

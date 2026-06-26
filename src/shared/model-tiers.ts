@@ -202,6 +202,17 @@ export function validateModelRepo(repoId: string): RepoValidation {
   return { ok: true }
 }
 
+/**
+ * The validator's verdict as a candidate-facing warning: null when the repo is
+ * fine, else the reason it is known-broken. Surfaced wherever a model is offered
+ * or loaded (search results, tier candidates, the load gate) so the PLE/QAT rule
+ * is enforced at the discovery/load seam, not only at download time.
+ */
+export function candidateWarning(repoId: string): string | null {
+  const verdict = validateModelRepo(repoId)
+  return verdict.ok ? null : (verdict.warning ?? null)
+}
+
 // --- classification / fit (P2-5) --------------------------------------------
 
 export type CatalogFamily = 'gemma' | 'qwen' | 'experimental'

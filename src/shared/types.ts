@@ -103,6 +103,8 @@ export interface TierCandidateInfo {
   /** Estimated load footprint, GB. */
   estGB: number
   fit: ModelFit
+  /** Known-broken-quant warning (e.g. non-QAT Gemma 4 PLE bug); null when fine. */
+  warning: string | null
 }
 
 export interface TierResolution {

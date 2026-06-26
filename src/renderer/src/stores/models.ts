@@ -13,7 +13,10 @@ interface ModelsStore {
   cancelDownload: (id: string) => Promise<void>
   deleteModel: (repoId: string) => Promise<void>
   search: (query: string) => Promise<void>
-  load: (repoId: string, force?: boolean) => Promise<{ ok: boolean; reason?: string }>
+  load: (
+    repoId: string,
+    opts?: { force?: boolean; allowBroken?: boolean }
+  ) => Promise<{ ok: boolean; reason?: string }>
   unload: (repoId: string) => Promise<{ ok: boolean; reason?: string }>
   unloadAll: () => Promise<void>
   setDefault: (feature: Feature, tier: Tier) => Promise<void>
@@ -97,9 +100,10 @@ export const useModelsStore = create<ModelsStore>((set, get) => ({
     }
   },
 
-  load: async (repoId, force) => {
-    // Surfaced to the caller so the UI can offer "Load anyway" on a RAM-guard refusal.
-    return call('models.load', { repoId, force })
+  load: async (repoId, opts) => {
+    // Surfaced to the caller so the UI can offer the matching override on a
+    // refusal: RAM (force) or known-broken-quant (allowBroken).
+    return call('models.load', { repoId, force: opts?.force, allowBroken: opts?.allowBroken })
   },
 
   unload: async (repoId) => {

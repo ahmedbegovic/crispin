@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Check, FlaskConical } from 'lucide-react'
+import { AlertTriangle, Check, FlaskConical } from 'lucide-react'
 import {
   canonicalRepoId,
   modelDisplayName,
@@ -151,6 +151,11 @@ function ModelCard({
         <span className="min-w-0 flex-1 truncate text-[12px] text-zinc-200">
           {modelDisplayName(candidate.repoId)}
         </span>
+        {candidate.warning !== null && (
+          <span title={candidate.warning} className="shrink-0">
+            <AlertTriangle size={11} className="text-amber-400" />
+          </span>
+        )}
         {active && <Check size={12} className="shrink-0 text-emerald-400" />}
       </div>
       <div className="mt-1 flex items-center gap-1.5">
@@ -171,7 +176,12 @@ export default function TierGrid({ overview }: { overview: ModelsOverview }) {
   const unload = useModelsStore((s) => s.unload)
   const download = useModelsStore((s) => s.download)
   const setTierSelection = useModelsStore((s) => s.setTierSelection)
-  const [guard, setGuard] = useState<{ repoId: string; reason: string } | null>(null)
+  const [guard, setGuard] = useState<{
+    repoId: string
+    title: string
+    reason: string
+    retry: { allowBroken?: boolean; force?: boolean }
+  } | null>(null)
 
   const liveState = (repoId: string, fallback: EngineModelState | null): EngineModelState | null =>
     overview.engine.models.find((m) => m.id === repoId)?.state ?? fallback
@@ -191,13 +201,34 @@ export default function TierGrid({ overview }: { overview: ModelsOverview }) {
         d.bytesDone > 0
     )
 
-  const onLoad = async (repoId: string, force = false): Promise<void> => {
+  const onLoad = async (
+    repoId: string,
+    opts: { warning?: string | null; allowBroken?: boolean; force?: boolean } = {}
+  ): Promise<void> => {
+    // QAT consent comes first and is independent of the RAM force: a warned
+    // (known-broken) candidate must be acknowledged before we even try to load.
+    if (!opts.allowBroken && opts.warning) {
+      setGuard({
+        repoId,
+        title: 'Known-broken quant',
+        reason: opts.warning,
+        retry: { allowBroken: true }
+      })
+      return
+    }
     try {
-      const result = await load(repoId, force)
+      const result = await load(repoId, { allowBroken: opts.allowBroken, force: opts.force })
       if (result.ok) return
-      // Only a genuine RAM-guard refusal offers "Load anyway"; other failures must not.
-      if (force) pushToast('error', result.reason ?? 'Load failed.')
-      else setGuard({ repoId, reason: result.reason ?? 'The RAM guard blocked this load.' })
+      // A RAM-guard refusal offers its own "Load anyway" (force), carrying any
+      // prior known-broken consent forward so the quant is never re-prompted.
+      if (opts.force) pushToast('error', result.reason ?? 'Load failed.')
+      else
+        setGuard({
+          repoId,
+          title: 'Not enough free RAM',
+          reason: result.reason ?? 'The RAM guard blocked this load.',
+          retry: { allowBroken: opts.allowBroken, force: true }
+        })
     } catch (err) {
       toastError(err)
     }
@@ -298,7 +329,7 @@ export default function TierGrid({ overview }: { overview: ModelsOverview }) {
                               download={activeDownload(candidate.repoId)}
                               partial={partialDownload(candidate.repoId)}
                               onSelect={() => onSelect(tier, candidate.repoId)}
-                              onLoad={() => void onLoad(candidate.repoId)}
+                              onLoad={() => void onLoad(candidate.repoId, { warning: candidate.warning })}
                               onUnload={() => void onUnload(candidate.repoId)}
                               onDownload={() =>
                                 void download(candidate.repoId).catch(toastError)
@@ -317,12 +348,12 @@ export default function TierGrid({ overview }: { overview: ModelsOverview }) {
       </div>
       <ConfirmDialog
         open={guard !== null}
-        title="Not enough free RAM"
+        title={guard?.title ?? ''}
         body={guard?.reason ?? ''}
         confirmLabel="Load anyway"
         danger
         onConfirm={() => {
-          if (guard) void onLoad(guard.repoId, true)
+          if (guard) void onLoad(guard.repoId, guard.retry)
           setGuard(null)
         }}
         onCancel={() => setGuard(null)}

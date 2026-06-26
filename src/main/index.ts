@@ -311,6 +311,7 @@ app.whenReady().then(async () => {
     processManager,
     getEnginePort: () => ports.engine,
     hasRegistryModels: () => models.hasRegistryModels(),
+    discoverEmbedder: () => models.discoverEmbedder(),
     broadcast
   })
   libraryService.init()

@@ -3,6 +3,7 @@ import { allocatePort } from '../services/ports'
 import { sidecarDir, uvBinary, uvEnvFor } from '../services/paths'
 import { engineConfigPath } from '../services/engine-config'
 import { isPinned } from '../services/runtime-manager'
+import { validateModelRepo } from '@shared/model-tiers'
 import { handle } from '../ipc/router'
 import type { ProcessManager } from '../services/process-manager'
 import type { ModelService } from '../services/model-service'
@@ -71,7 +72,18 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
 
   handle('models.search', async ({ query }) => ({ results: await modelService.search(query) }))
 
-  handle('models.load', ({ repoId, force }) => modelService.load(repoId, force ?? false))
+  // The QAT/PLE gate is enforced at this explicit-load boundary (not in the
+  // shared modelService.load(), which auto-load also uses): a non-QAT Gemma 4
+  // surfaced in the Models tab is refused unless `allowBroken` — the user-
+  // confirmed override from the "Known-broken quant" dialog, independent of the
+  // RAM-guard `force`.
+  handle('models.load', async ({ repoId, force, allowBroken }) => {
+    if (!allowBroken) {
+      const verdict = validateModelRepo(repoId)
+      if (!verdict.ok) return { ok: false, reason: verdict.warning }
+    }
+    return modelService.load(repoId, force ?? false)
+  })
 
   handle('models.unload', ({ repoId }) => modelService.unload(repoId))
 

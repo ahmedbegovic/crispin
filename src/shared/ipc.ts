@@ -94,7 +94,9 @@ export const tierCandidateSchema = z.object({
   family: catalogFamilySchema,
   /** Estimated load footprint, GB. */
   estGB: z.number(),
-  fit: modelFitSchema
+  fit: modelFitSchema,
+  /** Known-broken-quant warning (e.g. non-QAT Gemma 4 PLE bug); null when fine. */
+  warning: z.string().nullable()
 })
 
 export const tierResolutionSchema = z.object({
@@ -529,8 +531,16 @@ export const contract = {
     output: z.object({ results: z.array(hfSearchResultSchema) })
   },
   'models.load': {
-    /** force bypasses the RAM guard's free-memory check — UI must confirm first. */
-    input: z.object({ repoId: z.string(), force: z.boolean().optional() }),
+    /**
+     * Two independent, separately-confirmed overrides: `force` bypasses the RAM
+     * guard's free-memory check; `allowBroken` bypasses the QAT/PLE validator
+     * (non-QAT Gemma 4). The UI confirms each on its own dialog.
+     */
+    input: z.object({
+      repoId: z.string(),
+      force: z.boolean().optional(),
+      allowBroken: z.boolean().optional()
+    }),
     output: z.object({ ok: z.boolean(), reason: z.string().optional() })
   },
   'models.unload': {

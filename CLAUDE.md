@@ -29,8 +29,10 @@ Apple Silicon only; dev machine has 24GB unified memory — RAM headroom is the 
 - Model policy lives in `src/shared/model-tiers.ts`. Gemma 4 quants MUST be `qat` variants —
   non-QAT MLX quants produce garbage output (PLE quantization bug). Don't bypass `validateModelRepo`
   in code; the only sanctioned escape hatches are `NON_QAT_GEMMA_WHITELIST` (auto-accepted — the 31B
-  regular 4-bit quant; the PLE bug concerns the E-series, so the 31B is fine) and the user-confirmed
-  `force` flag on `models.download` (the UI confirms first).
+  regular 4-bit quant; the PLE bug concerns the E-series, so the 31B is fine) and two user-confirmed,
+  UI-gated overrides: `force` on `models.download` and `allowBroken` on `models.load` (separate from
+  the RAM-guard `force`). The validator is NOT applied on the internal auto-load path (`ensureLoaded`):
+  the name heuristic has false positives, so auto-load honors the user's explicit pick.
 
 ## Conventions
 

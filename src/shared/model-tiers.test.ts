@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   validateModelRepo,
+  candidateWarning,
   canonicalRepoId,
   isCuratedRepo,
   familyOf,
@@ -55,6 +56,19 @@ describe('validateModelRepo — the QAT/PLE garbage-model gate', () => {
     expect(validateModelRepo('mlx-community/Qwen3.5-9B-MLX-4bit')).toEqual({ ok: true })
     expect(validateModelRepo('meta-llama/Llama-3-8B')).toEqual({ ok: true })
     expect(validateModelRepo('google/gemma-2-9b-it')).toEqual({ ok: true }) // only gemma-4 is gated
+  })
+})
+
+describe('candidateWarning — the gate as a string|null, for the load/select seam (F4)', () => {
+  it('returns the PLE warning for a non-QAT Gemma 4 E-series quant', () => {
+    const w = candidateWarning('mlx-community/gemma-4-E4B-it-4bit')
+    expect(w).not.toBeNull()
+    expect(w).toMatch(/PLE|qat|garbage/i)
+  })
+  it('returns null for a QAT variant, the whitelisted 31B, and non-Gemma repos', () => {
+    expect(candidateWarning('mlx-community/gemma-4-E4B-it-qat-4bit')).toBeNull()
+    expect(candidateWarning('mlx-community/gemma-4-31b-it-4bit')).toBeNull()
+    expect(candidateWarning('mlx-community/Qwen3.5-9B-MLX-4bit')).toBeNull()
   })
 })
 

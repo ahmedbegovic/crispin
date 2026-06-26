@@ -62,6 +62,8 @@ export interface LibraryServiceDeps {
   getEnginePort: () => number
   /** Whether the engine chat registry would be non-empty (the embedder never counts). */
   hasRegistryModels: () => boolean
+  /** Make a freshly downloaded embedder discoverable via an idle-gated engine restart. */
+  discoverEmbedder: () => Promise<{ ok: boolean; reason?: string }>
   broadcast: (event: CrispinEvent) => void
 }
 
@@ -299,11 +301,15 @@ export class LibraryService {
       }
       break
     }
-    const engine = this.deps.processManager.get('engine')
-    if (engine?.snapshot().state === 'running') {
-      await engine.restart('embedding model downloaded — rediscover the HF cache')
+    // oMLX discovers cache models at spawn only, so the running engine must
+    // restart to serve the freshly downloaded embedder. ModelService owns that
+    // restart and idle-gates it, so it never kills an in-flight generation on
+    // another surface (chat/research/news/agent) — unlike the old unconditional
+    // restart that ran here.
+    const discovered = await this.deps.discoverEmbedder()
+    if (!discovered.ok) {
+      throw new Error(discovered.reason ?? 'could not make the embedding model available')
     }
-    return
   }
 
   /**
