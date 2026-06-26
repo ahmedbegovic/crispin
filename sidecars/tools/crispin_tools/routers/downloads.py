@@ -8,6 +8,11 @@ All weights live in the shared HF cache (~/.cache/huggingface/hub).
 from __future__ import annotations
 
 import json
+import os
+import queue
+import signal
+import subprocess
+import sys
 import threading
 from typing import Any, Optional
 
@@ -17,23 +22,22 @@ from huggingface_hub import (
     CacheNotFound,
     HfApi,
     scan_cache_dir,
-    snapshot_download,
     try_to_load_from_cache,
 )
 from pydantic import BaseModel
-from tqdm.auto import tqdm as base_tqdm
 
 from ..jobs import Job, registry
 
 router = APIRouter(prefix="/models", tags=["models"])
 
+# The download runs as a standalone subprocess (see _run_download). Resolve the
+# worker's path here so it works regardless of the sidecar's cwd — the worker
+# imports no crispin_tools modules, so it needs no package on sys.path.
+_WORKER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "download_worker.py")
+
 
 class DownloadRequest(BaseModel):
     repo_id: str
-
-
-class DownloadCancelled(Exception):
-    """Raised from tqdm.update() to abort an in-flight snapshot download."""
 
 
 def _human_gb(done: int, total: Optional[int]) -> str:
@@ -43,38 +47,26 @@ def _human_gb(done: int, total: Optional[int]) -> str:
     return f"{done / gb:.1f} GB"
 
 
-def _job_tqdm(job: Job) -> type[base_tqdm]:
-    """tqdm subclass that funnels snapshot_download progress into `job`.
-
-    snapshot_download aggregates all per-file bars into one byte-unit bar built
-    from this class (and one file-count bar, which we ignore). Raising from
-    update() aborts the download; partial files resume natively on retry.
-    """
-
-    # update() is called concurrently from snapshot_download's worker threads
-    # (one shared byte bar, max_workers=8) and `+=` on a dict item is not
-    # atomic — serialize the counter or increments get lost.
-    lock = threading.Lock()
-
-    class JobTqdm(base_tqdm):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self._bytes_bar = kwargs.get("unit") == "B"
-            kwargs["disable"] = True  # progress goes to the job, not stderr
-            super().__init__(*args, **kwargs)
-
-        def update(self, n: float | None = 1) -> Any:
-            if job.cancel_event.is_set():
-                raise DownloadCancelled(job.data.get("repo_id", ""))
-            if self._bytes_bar and n:
-                with lock:
-                    data = job.data
-                    data["bytes_done"] += int(n)
-                    total = data["bytes_total"]
-                    job.progress = min(data["bytes_done"] / total, 1.0) if total else -1.0
-                    job.detail = _human_gb(data["bytes_done"], total)
-            return super().update(n)
-
-    return JobTqdm
+def _terminate(proc: subprocess.Popen) -> None:
+    """SIGTERM the download process group, escalating to SIGKILL. start_new_session
+    makes the child a group leader, so this reaps any helpers hf/xet spawn too."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _run_download(job: Job, repo_id: str) -> Optional[dict[str, Any]]:
@@ -101,11 +93,65 @@ def _run_download(job: Job, repo_id: str) -> Optional[dict[str, Any]]:
             job.data["bytes_done"] = done
             job.progress = min(done / total, 1.0)
             job.detail = _human_gb(done, total)
-    try:
-        path = snapshot_download(repo_id, tqdm_class=_job_tqdm(job))
-    except DownloadCancelled:
-        return None  # runner marks the job cancelled; partials stay resumable
-    return {"path": path}
+
+    # Run snapshot_download in a CHILD PROCESS, not this thread: the Xet
+    # (hf_xet / Rust) downloader used for large repos ignores in-band tqdm
+    # cancellation, so terminating the process is the only reliable abort.
+    # Progress arrives as JSON lines on stdout; a reader thread feeds a queue so
+    # the cancel check stays responsive even while a chunk is mid-flight.
+    proc = subprocess.Popen(
+        [sys.executable, _WORKER, repo_id],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    )
+    lines: queue.Queue[Optional[str]] = queue.Queue()
+
+    def _reader() -> None:
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                lines.put(line)
+        finally:
+            lines.put(None)  # EOF sentinel — the worker exited
+
+    threading.Thread(target=_reader, name=f"dl-reader-{job.id[:8]}", daemon=True).start()
+
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    while True:
+        if job.cancel_event.is_set():
+            _terminate(proc)
+            return None  # runner marks cancelled; partial files stay resumable
+        try:
+            line = lines.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        if line is None:
+            break  # worker exited (EOF)
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "bytes" in msg:
+            job.data["bytes_done"] += int(msg["bytes"])
+            t = job.data["bytes_total"]
+            job.progress = min(job.data["bytes_done"] / t, 1.0) if t else -1.0
+            job.detail = _human_gb(job.data["bytes_done"], t)
+        elif "done" in msg:
+            result = {"path": msg["done"]}
+        elif "error" in msg:
+            error = msg["error"]
+
+    proc.wait()
+    if error is not None:
+        raise RuntimeError(error)
+    if result is None:
+        # Worker exited without a terminal message (crash/kill) and we were not
+        # cancelled — surface a failure rather than a phantom "done".
+        raise RuntimeError(f"download worker exited unexpectedly (code {proc.returncode})")
+    return result
 
 
 @router.post("/download")
