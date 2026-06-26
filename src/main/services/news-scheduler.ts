@@ -1,8 +1,9 @@
-import type { CrispinEvent } from '@shared/ipc'
+import { newsItemSchema, type CrispinEvent } from '@shared/ipc'
 import type { NewsItem, NewsItemStatus, NewsSource, Tier } from '@shared/types'
 import { TIER_ORDER, TIERS, canonicalRepoId } from '@shared/model-tiers'
 import type { CrispinDatabase } from './db'
 import { scopedLogger } from './logger'
+import { parseArrayDropInvalid } from './hydrate'
 import type { EngineClient } from './engine-client'
 import type { ToolsClient } from './tools-client'
 import type { ModelService } from './model-service'
@@ -235,7 +236,7 @@ export class NewsScheduler {
          LIMIT ?`
       )
       .all(...params, opts.limit ?? DEFAULT_ITEMS_LIMIT) as unknown as ItemListRow[]
-    return rows.map(rowToItem)
+    return parseArrayDropInvalid(newsItemSchema, rows.map(rowToItem), 'news.items')
   }
 
   archive(id: string): void {

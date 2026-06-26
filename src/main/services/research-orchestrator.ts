@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { z } from 'zod'
-import type { CrispinEvent } from '@shared/ipc'
+import { researchRunMetaSchema, researchStepSchema, type CrispinEvent } from '@shared/ipc'
 import type {
   ResearchMode,
   ResearchRunMeta,
@@ -16,6 +16,7 @@ import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 import { dataDir } from './paths'
 import { scopedLogger } from './logger'
+import { parseArrayDropInvalid } from './hydrate'
 import { engineModelId, type ChatCompletionMessage, type EngineClient } from './engine-client'
 import type { ToolsClient, WebSearchEntry } from './tools-client'
 import type { ModelService } from './model-service'
@@ -318,7 +319,7 @@ export class ResearchOrchestrator {
     const rows = this.deps.db
       .prepare('SELECT * FROM research_runs ORDER BY created_at DESC')
       .all() as unknown as RunRow[]
-    return rows.map(rowToMeta)
+    return parseArrayDropInvalid(researchRunMetaSchema, rows.map(rowToMeta), 'research.runs')
   }
 
   get(runId: string): { run: ResearchRunMeta; steps: ResearchStep[]; sources: ResearchSource[] } {
@@ -330,7 +331,11 @@ export class ResearchOrchestrator {
     const sources = this.deps.db
       .prepare('SELECT * FROM research_sources WHERE run_id = ? ORDER BY rowid')
       .all(runId) as unknown as SourceRow[]
-    return { run: rowToMeta(run), steps: steps.map(rowToStep), sources: sources.map(rowToSource) }
+    return {
+      run: rowToMeta(run),
+      steps: parseArrayDropInvalid(researchStepSchema, steps.map(rowToStep), 'research.steps'),
+      sources: sources.map(rowToSource)
+    }
   }
 
   /** Absolute path of the rendered report.html; null before RENDER completed. */

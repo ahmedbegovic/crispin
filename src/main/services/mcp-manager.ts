@@ -5,9 +5,11 @@ import {
 } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { McpScope, McpServer } from '@shared/types'
+import { mcpServerSchema } from '@shared/ipc'
 import type { ChatToolDef } from './engine-client'
 import type { CrispinDatabase } from './db'
 import { scopedLogger } from './logger'
+import { parseArrayDropInvalid, parseOr } from './hydrate'
 
 const CALL_TIMEOUT_MS = 30_000
 
@@ -28,19 +30,23 @@ const rowToServer = (row: McpServerRow): McpServer => ({
   name: row.name,
   transport: row.transport,
   command: row.command,
-  args: safeJson<string[]>(row.args, []),
+  // Validate the JSON columns against the contract slice — a non-string-array
+  // args / non-record env coerces to the fallback instead of shipping a shape
+  // that fails mcpServerSchema.
+  args: parseOr(mcpServerSchema.shape.args, jsonOrNull(row.args), [], 'mcp.args'),
   url: row.url,
-  env: safeJson<Record<string, string>>(row.env, {}),
+  env: parseOr(mcpServerSchema.shape.env, jsonOrNull(row.env), {}, 'mcp.env'),
   enabled: row.enabled === 1,
   scope: row.scope
 })
 
-function safeJson<T>(json: string | null, fallback: T): T {
-  if (!json) return fallback
+/** JSON.parse that returns null on absent/broken input; shape is validated downstream. */
+function jsonOrNull(json: string | null): unknown {
+  if (!json) return null
   try {
-    return JSON.parse(json) as T
+    return JSON.parse(json)
   } catch {
-    return fallback
+    return null
   }
 }
 
@@ -71,7 +77,9 @@ export class McpManager {
     const rows = this.db
       .prepare('SELECT * FROM mcp_servers ORDER BY name')
       .all() as unknown as McpServerRow[]
-    return rows.map(rowToServer)
+    // Whole-row backstop: a server whose enum columns (transport/scope) drifted
+    // outside the contract is dropped rather than failing the whole mcp.list.
+    return parseArrayDropInvalid(mcpServerSchema, rows.map(rowToServer), 'mcp.servers')
   }
 
   upsert(server: McpServer): McpServer {

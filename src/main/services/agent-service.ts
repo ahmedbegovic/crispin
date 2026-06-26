@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { CrispinEvent } from '@shared/ipc'
+import { agentSessionMetaSchema, type CrispinEvent } from '@shared/ipc'
 import type { AgentSessionMeta, AgentTab, PermissionMode, Tier } from '@shared/types'
 import type { CrispinDatabase } from './db'
 import { engineModelId } from './engine-client'
@@ -8,6 +8,7 @@ import type { ModelService } from './model-service'
 import type { OpencodePool } from './opencode-pool'
 import { dataDir } from './paths'
 import { scopedLogger } from './logger'
+import { parseArrayDropInvalid } from './hydrate'
 
 export interface AgentServiceDeps {
   db: CrispinDatabase
@@ -123,7 +124,7 @@ export class AgentService {
          ORDER BY COALESCE(last_used_at, created_at) DESC`
       )
       .all(...params) as unknown as AgentSessionRow[]
-    return rows.map(rowToMeta)
+    return parseArrayDropInvalid(agentSessionMetaSchema, rows.map(rowToMeta), 'agent.sessions')
   }
 
   async create(directory: string, tier?: Tier, tab: AgentTab = 'agent'): Promise<AgentSessionMeta> {

@@ -8,7 +8,9 @@ import type {
   ModelSampling,
   Tier
 } from '@shared/types'
+import { messagePartSchema, samplingSchema } from '@shared/ipc'
 import type { CrispinDatabase } from '../db'
+import { parseArrayDropInvalid, parseOr } from '../hydrate'
 
 interface ConversationRow {
   id: string
@@ -42,11 +44,15 @@ interface MessageRow {
 
 const parseSampling = (json: string | null): ModelSampling | null => {
   if (!json) return null
+  let raw: unknown
   try {
-    return JSON.parse(json) as ModelSampling
+    raw = JSON.parse(json)
   } catch {
     return null
   }
+  // Out-of-bounds/garbage stored sampling → null (= follow the model's
+  // recommended sampling), so it can't fail conversationSchema downstream.
+  return parseOr(samplingSchema.nullable(), raw, null, 'chat.sampling')
 }
 
 const rowToConversation = (row: ConversationRow): Conversation => ({
@@ -66,11 +72,16 @@ const rowToConversation = (row: ConversationRow): Conversation => ({
 })
 
 const parseParts = (json: string): MessagePart[] => {
+  let raw: unknown
   try {
-    return JSON.parse(json) as MessagePart[]
+    raw = JSON.parse(json)
   } catch {
     return []
   }
+  // Drop shape-invalid parts (keep the valid ones) so one corrupt part can't
+  // make the whole conversation refuse to open (dev output.parse) or ship a
+  // malformed part to the renderer's part.type switch (prod).
+  return parseArrayDropInvalid(messagePartSchema, raw, 'chat.parts')
 }
 
 /** Searchable text of a message = its text parts (no thoughts/tools/images). */

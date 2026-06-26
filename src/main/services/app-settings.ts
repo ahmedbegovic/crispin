@@ -1,12 +1,23 @@
-import type { AppSettings, CrispinEvent } from '@shared/ipc'
+import { z } from 'zod'
+import {
+  appSettingsSchema,
+  featureSchema,
+  tierSchema,
+  type AppSettings,
+  type CrispinEvent
+} from '@shared/ipc'
 import { defaultModulesEnabled } from '@shared/modules'
 import { canonicalRepoId } from '@shared/model-tiers'
 import type { Feature, Tier } from '@shared/types'
 import type { CrispinDatabase } from './db'
 import * as settings from './settings'
+import { parseArrayDropInvalid, parseOr, parseRecordDropInvalid } from './hydrate'
 
 /** One knob for both the main-side idle sweep and the oMLX TTL backstop. */
 export const DEFAULT_IDLE_UNLOAD_SECONDS = 300
+
+const DEFAULT_PROFILE = { userName: '', assistantName: 'Crispin' }
+const DEFAULT_INSTRUCTIONS: AppSettings['instructions'] = { global: '', perModule: {} }
 
 /** Persisted picks survive curated-id renames: map old ids forward on read. */
 const normalizeTierSelections = (
@@ -34,16 +45,66 @@ export class AppSettingsService {
 
   get(): AppSettings {
     const db = this.deps.db
+    // Validate each stored value against its contract slice, degrading at the
+    // FINEST granularity the value allows: scalars/atomic objects → fall back to
+    // their default; arrays → drop only the bad elements; records → drop only the
+    // bad entries. So a stale module/tier key or one corrupt element can never
+    // collapse a whole map (and a get→update round-trip can't persist that loss).
+    const shape = appSettingsSchema.shape
+    const rawInstructions = settings.get<{ global?: unknown; perModule?: unknown }>(
+      db,
+      'instructions',
+      DEFAULT_INSTRUCTIONS
+    )
     return {
-      profile: settings.get(db, 'profile', { userName: '', assistantName: 'Crispin' }),
-      instructions: settings.get(db, 'instructions', { global: '', perModule: {} }),
+      profile: parseOr(
+        shape.profile,
+        settings.get(db, 'profile', DEFAULT_PROFILE),
+        DEFAULT_PROFILE,
+        'settings.profile'
+      ),
+      // global and perModule degrade independently — a stale perModule key must
+      // not take down the user's global instruction.
+      instructions: {
+        global: parseOr(z.string(), rawInstructions?.global, '', 'settings.instructions.global'),
+        perModule: parseRecordDropInvalid(
+          featureSchema,
+          z.string(),
+          rawInstructions?.perModule,
+          'settings.instructions.perModule'
+        )
+      },
+      // Cast: the defaults spread guarantees every value is a boolean; the
+      // drop-invalid overlay only ever adds booleans, but Partial<> widens the
+      // spread's index type to boolean|undefined.
       modulesEnabled: {
         ...defaultModulesEnabled(),
-        ...settings.get<Record<string, boolean>>(db, 'modules.enabled', {})
-      },
-      idleUnloadSeconds: settings.get(db, 'models.idleUnloadSeconds', DEFAULT_IDLE_UNLOAD_SECONDS),
-      newsTopics: settings.get<string[]>(db, 'news.topics', []),
-      tierSelections: normalizeTierSelections(settings.get(db, 'models.tierSelections', {}))
+        ...parseRecordDropInvalid(
+          z.string(),
+          z.boolean(),
+          settings.get(db, 'modules.enabled', {}),
+          'settings.modulesEnabled'
+        )
+      } as Record<string, boolean>,
+      idleUnloadSeconds: parseOr(
+        shape.idleUnloadSeconds,
+        settings.get(db, 'models.idleUnloadSeconds', DEFAULT_IDLE_UNLOAD_SECONDS),
+        DEFAULT_IDLE_UNLOAD_SECONDS,
+        'settings.idleUnloadSeconds'
+      ),
+      newsTopics: parseArrayDropInvalid(
+        z.string(),
+        settings.get(db, 'news.topics', []),
+        'settings.newsTopics'
+      ),
+      tierSelections: normalizeTierSelections(
+        parseRecordDropInvalid(
+          tierSchema,
+          z.string(),
+          settings.get(db, 'models.tierSelections', {}),
+          'settings.tierSelections'
+        )
+      )
     }
   }
 

@@ -1,4 +1,4 @@
-import type { CrispinEvent } from '@shared/ipc'
+import { downloadInfoSchema, installedModelSchema, type CrispinEvent } from '@shared/ipc'
 import type {
   DownloadInfo,
   DownloadState,
@@ -41,6 +41,7 @@ import type { RamGuard } from './ram-guard'
 import type { ProcessManager } from './process-manager'
 import type { DownloadJobData, ToolsClient } from './tools-client'
 import { scopedLogger } from './logger'
+import { parseArrayDropInvalid, parseOr } from './hydrate'
 import { readdirSync, rmSync, statSync, type Dirent } from 'node:fs'
 import { join } from 'node:path'
 
@@ -256,9 +257,17 @@ export class ModelService {
         sizeBytes: m.size_bytes,
         lastModifiedAt: m.last_modified_ms,
         contextLength: m.context_length,
-        sampling: m.sampling
-          ? { temperature: m.sampling.temperature, topP: m.sampling.top_p, topK: m.sampling.top_k }
-          : null
+        // generation_config.json is unvalidated HF on-disk JSON; null out
+        // out-of-bounds sampling (keep the model) so it can't fail the bounded
+        // installedModelSchema in models.overview.
+        sampling: parseOr(
+          installedModelSchema.shape.sampling,
+          m.sampling
+            ? { temperature: m.sampling.temperature, topP: m.sampling.top_p, topK: m.sampling.top_k }
+            : null,
+          null,
+          'models.installed.sampling'
+        )
       }))
     // The renderer's one-shot overview fetch can race the first scan — push a
     // change signal so it refetches instead of caching a stale installed set.
@@ -1181,7 +1190,7 @@ export class ModelService {
     const rows = this.deps.db
       .prepare('SELECT * FROM model_downloads ORDER BY started_at DESC LIMIT ?')
       .all(limit) as unknown as DownloadRow[]
-    return rows.map(rowToDownload)
+    return parseArrayDropInvalid(downloadInfoSchema, rows.map(rowToDownload), 'model.downloads')
   }
 
   // --- engine status polling ----------------------------------------------------

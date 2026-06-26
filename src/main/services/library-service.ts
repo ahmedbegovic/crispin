@@ -1,5 +1,5 @@
 import { extname, join } from 'node:path'
-import type { CrispinEvent } from '@shared/ipc'
+import { collectionSchema, libraryDocSchema, type CrispinEvent } from '@shared/ipc'
 import type { Collection, LibraryDoc, LibraryDocStatus } from '@shared/types'
 import { EMBEDDING_MODEL } from '@shared/model-tiers'
 import type { CrispinDatabase } from './db'
@@ -8,6 +8,7 @@ import type { ToolsClient } from './tools-client'
 import type { ProcessManager } from './process-manager'
 import { dataDir } from './paths'
 import { scopedLogger } from './logger'
+import { parseArrayDropInvalid } from './hydrate'
 
 // Re-exported for consumers that reach the embedder through the library.
 export { EMBEDDING_MODEL }
@@ -116,13 +117,17 @@ export class LibraryService {
          GROUP BY c.id ORDER BY c.created_at DESC`
       )
       .all() as unknown as CollectionRow[]
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      kind: r.kind,
-      docCount: r.doc_count,
-      createdAt: r.created_at
-    }))
+    return parseArrayDropInvalid(
+      collectionSchema,
+      rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        kind: r.kind,
+        docCount: r.doc_count,
+        createdAt: r.created_at
+      })),
+      'library.collections'
+    )
   }
 
   createCollection(name: string): Collection {
@@ -159,7 +164,7 @@ export class LibraryService {
     const rows = this.deps.db
       .prepare('SELECT * FROM library_docs WHERE collection_id = ? ORDER BY created_at DESC')
       .all(collectionId) as unknown as DocRow[]
-    return rows.map(rowToDoc)
+    return parseArrayDropInvalid(libraryDocSchema, rows.map(rowToDoc), 'library.docs')
   }
 
   getDoc(docId: string): LibraryDoc | null {
