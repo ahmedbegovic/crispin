@@ -20,7 +20,7 @@ import m4 from './migrations/0004_research_source_image.sql?raw'
 import m5 from './migrations/0005_agent_session_tier.sql?raw'
 
 // The current schema version (= MIGRATIONS.length). Bump when adding a migration.
-const SCHEMA_VERSION = 6
+const SCHEMA_VERSION = 8
 
 let dir: string
 let dbPath: string
@@ -87,6 +87,8 @@ describe('openDatabase — migration runner', () => {
     expect(conv.has('tier_pinned')).toBe(true) // 0002
     expect(conv.has('pinned')).toBe(true) // 0006
     expect(conv.has('sampling')).toBe(true) // 0006
+    expect(conv.has('family')).toBe(true) // 0007
+    expect(columns(db, 'agent_sessions').has('family')).toBe(true) // 0008
     const msg = columns(db, 'messages')
     expect(msg.has('ttft_ms')).toBe(true) // 0006
     expect(msg.has('gen_ms')).toBe(true) // 0006
@@ -114,6 +116,7 @@ describe('openDatabase — migration runner', () => {
     expect(userVersion(db)).toBe(SCHEMA_VERSION)
     expect(db.prepare("SELECT id FROM conversations WHERE id = 'old'").get()).toEqual({ id: 'old' })
     expect(columns(db, 'conversations').has('pinned')).toBe(true) // 0006 ran during resume
+    expect(columns(db, 'conversations').has('family')).toBe(true) // 0007 ran during resume
   })
 
   it('ensureChatSchema backfills chat columns/FTS when a divergent DB reached v6 without them', () => {
@@ -127,10 +130,14 @@ describe('openDatabase — migration runner', () => {
     seed.close()
 
     const db = track(openDatabase(dbPath))
-    expect(userVersion(db)).toBe(SCHEMA_VERSION) // migration loop was skipped (already 6)
+    // The loop runs 0007/0008 (6 → 8) but the chat 0006 it jumped over stays
+    // unapplied — pinned/sampling/FTS come from the ensureChatSchema backstop.
+    expect(userVersion(db)).toBe(SCHEMA_VERSION)
     const conv = columns(db, 'conversations')
     expect(conv.has('pinned')).toBe(true) // backfilled by ensureChatSchema
     expect(conv.has('sampling')).toBe(true)
+    expect(conv.has('family')).toBe(true) // 0007 ran in the loop
+    expect(columns(db, 'agent_sessions').has('family')).toBe(true) // 0008 ran in the loop
     const msg = columns(db, 'messages')
     expect(msg.has('ttft_ms')).toBe(true)
     expect(msg.has('gen_ms')).toBe(true)

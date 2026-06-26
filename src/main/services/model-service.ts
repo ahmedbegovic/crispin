@@ -4,6 +4,7 @@ import type {
   DownloadState,
   EngineModelInfo,
   EngineStatus,
+  Family,
   Feature,
   FeatureDefaults,
   HFSearchResult,
@@ -26,6 +27,9 @@ import {
   fitFor,
   isCuratedRepo,
   kvQuantBitsFor,
+  maxOutputTokensFor,
+  repoForFamilyTier,
+  resolveLadderRepo,
   tierOfRepo,
   tierSpecFor,
   validateModelRepo
@@ -314,16 +318,14 @@ export class ModelService {
   private registryEntries(): EngineConfigModel[] {
     const ttlSeconds = this.backstopTtlSeconds()
     const kvOverride = settings.get(this.deps.db, 'engine.kvQuant', 'auto')
-    return this.installed.map((m) => {
-      const spec = tierSpecFor(m.repoId)
-      return {
-        name: m.repoId,
-        // Output budget: ultra is capped, small models run ctx-bounded.
-        maxTokens: spec?.maxOutputTokens ?? m.contextLength ?? 32768,
-        ttlSeconds,
-        kvQuantBits: resolveKvQuantBits(kvOverride, m.repoId, m.sizeBytes)
-      }
-    })
+    return this.installed.map((m) => ({
+      name: m.repoId,
+      // Output budget: ultra (and the 35B-A3B override) is capped, small models
+      // run ctx-bounded. maxOutputTokensFor consults the per-model override first.
+      maxTokens: maxOutputTokensFor(m.repoId) ?? m.contextLength ?? 32768,
+      ttlSeconds,
+      kvQuantBits: resolveKvQuantBits(kvOverride, m.repoId, m.sizeBytes)
+    }))
   }
 
   private writeConfig(port: number): EngineConfigModel[] {
@@ -1118,6 +1120,7 @@ export class ModelService {
       tiers: TIER_ORDER.map((tier) => this.resolveTier(tier)),
       defaults: this.featureDefaults(),
       tierSelections: this.deps.appSettings.tierSelections(),
+      defaultFamily: this.deps.appSettings.defaultFamily(),
       ram: this.deps.ramGuard.report(this.loadedGB())
     }
   }
@@ -1153,16 +1156,69 @@ export class ModelService {
     settings.set(this.deps.db, 'featureDefaults', { ...overrides, [feature]: tier })
   }
 
+  /**
+   * Persist the global active family. Resolution-only: no registry churn, no
+   * engine restart — resolveTier/resolveRepoFor simply prefer this family's cell
+   * for any tier without an explicit per-tier pick.
+   */
+  setActiveFamily(family: Family): void {
+    const current = this.deps.appSettings.get()
+    this.deps.appSettings.update({ ...current, defaultFamily: family })
+  }
+
   private featureDefaults(): FeatureDefaults {
     const overrides = settings.get<Partial<FeatureDefaults>>(this.deps.db, 'featureDefaults', {})
     return { ...FEATURE_DEFAULTS, ...overrides }
   }
 
   /**
-   * Requested tier's active model first, then nearest installed below, then
-   * above. The single shared walk behind chat/agent/research model picks.
+   * Resolve a tier — optionally pinned to a family — to an installed repo id.
+   * A family pin stays within that family (cascading by rung) via the pure
+   * resolveLadderRepo; with nothing of that family installed, or no pin, it falls
+   * to the cross-tier walk (each tier resolves its own active, which honors
+   * tierSelection → default family → first installed). The single shared entry
+   * behind chat/agent/research model picks.
    */
+  resolveRepoFor(tier: Tier, family?: Family): string {
+    if (family) {
+      const cell = resolveLadderRepo({
+        tier,
+        family,
+        defaultFamily: family,
+        tierSelection: null,
+        installed: (repoId) => this.isInstalled(repoId)
+      })
+      // resolveLadderRepo returns the canonical ladder cell; surface the INSTALLED
+      // id (a renamed-old snapshot satisfies the cell) so engine requests match.
+      if (cell) return this.installedIdFor(cell)
+    }
+    return this.cascadeAcrossTiers(tier)
+  }
+
+  /** Back-compat entry — tier only, no family pin. */
   resolveActiveRepo(tier: Tier): string {
+    return this.resolveRepoFor(tier)
+  }
+
+  /** Whether a repo (alias-aware) is present in the HF cache. */
+  private isInstalled(repoId: string): boolean {
+    return this.installed.some((m) => canonicalRepoId(m.repoId) === canonicalRepoId(repoId))
+  }
+
+  /** The installed id satisfying a (possibly canonical) repo id; the input when absent. */
+  private installedIdFor(repoId: string): string {
+    const model =
+      this.installed.find((m) => m.repoId === repoId) ??
+      this.installed.find((m) => canonicalRepoId(m.repoId) === canonicalRepoId(repoId))
+    return model?.repoId ?? repoId
+  }
+
+  /**
+   * Requested tier's active model first, then nearest installed below, then
+   * above. Each tier resolves its own active (tierSelection → default family →
+   * first installed curated).
+   */
+  private cascadeAcrossTiers(tier: Tier): string {
     const active = new Map(TIER_ORDER.map((t) => [t, this.resolveTier(t).active]))
     const start = TIER_ORDER.indexOf(tier)
     const order = [tier, ...TIER_ORDER.slice(0, start).reverse(), ...TIER_ORDER.slice(start + 1)]
@@ -1201,25 +1257,30 @@ export class ModelService {
         engineState: this.engineModels.find((m) => m.id === effectiveId)?.state ?? null,
         family: familyOf(effectiveId),
         estGB: round2(estGB),
-        fit: fitFor(estGB, ram),
+        fit: fitFor(estGB, ram.budgetGB),
         // Enforce the QAT/PLE rule at the discovery seam too: a non-QAT Gemma 4
         // E-series can land in the shared HF cache out-of-band and would
         // otherwise be offered as a normal candidate with no warning.
         warning: candidateWarning(effectiveId)
       }
     })
-    // Explicit pick first (when still installed); else first installed curated.
-    // Both comparisons go through canonicalRepoId so a persisted pick of a
-    // renamed id keeps resolving to the same logical model.
+    // Explicit pick first (when still installed); then the global default
+    // family's curated cell; then the first installed curated of any family.
+    // Comparisons go through canonicalRepoId so a persisted pick of a renamed id
+    // keeps resolving to the same logical model.
     const selection = this.deps.appSettings.tierSelections()[tier]
     const picked = selection
       ? (candidates.find(
           (c) => canonicalRepoId(c.repoId) === canonicalRepoId(selection) && c.installed
         )?.repoId ?? null)
       : null
+    const defaultFamily = this.deps.appSettings.defaultFamily()
+    const isCurated = (c: (typeof candidates)[number]): boolean =>
+      c.installed && curated.includes(canonicalRepoId(c.repoId))
     const active =
       picked ??
-      candidates.find((c) => c.installed && curated.includes(canonicalRepoId(c.repoId)))?.repoId ??
+      candidates.find((c) => c.family === defaultFamily && isCurated(c))?.repoId ??
+      candidates.find(isCurated)?.repoId ??
       null
     return { tier, candidates, active }
   }

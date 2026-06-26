@@ -3,6 +3,7 @@ import type {
   ChatSearchHit,
   Conversation,
   ConversationMeta,
+  Family,
   MessagePart,
   MessageRole,
   ModelSampling,
@@ -19,6 +20,7 @@ interface ConversationRow {
   head_message_id: string | null
   default_tier: Tier
   tier_pinned: number
+  family: Family | null
   collection_id: string | null
   web_enabled: number
   archived: number
@@ -62,6 +64,7 @@ const rowToConversation = (row: ConversationRow): Conversation => ({
   headMessageId: row.head_message_id,
   defaultTier: row.default_tier,
   tierPinned: row.tier_pinned === 1,
+  family: row.family,
   collectionId: row.collection_id,
   webEnabled: row.web_enabled === 1,
   archived: row.archived === 1,
@@ -138,6 +141,8 @@ export class ChatRepo {
     tier: Tier
     /** False = follow featureDefaults.chat live; picking a tier later pins it. */
     tierPinned: boolean
+    /** Pinned family; null/undefined = follow the global default family live. */
+    family?: Family | null
     collectionId?: string | null
     webEnabled?: boolean
   }): Conversation {
@@ -145,13 +150,14 @@ export class ChatRepo {
     const id = crypto.randomUUID()
     this.db
       .prepare(
-        `INSERT INTO conversations (id, default_tier, tier_pinned, collection_id, web_enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO conversations (id, default_tier, tier_pinned, family, collection_id, web_enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
         input.tier,
         input.tierPinned ? 1 : 0,
+        input.family ?? null,
         input.collectionId ?? null,
         input.webEnabled ? 1 : 0,
         now,
@@ -178,6 +184,8 @@ export class ChatRepo {
       systemPrompt?: string | null
       /** A tier pins the conversation; null un-pins (follow featureDefaults.chat). */
       defaultTier?: Tier | null
+      /** A family pins the conversation; null un-pins (follow the global default). */
+      family?: Family | null
       collectionId?: string | null
       webEnabled?: boolean
       archived?: boolean
@@ -202,6 +210,7 @@ export class ChatRepo {
         set('tier_pinned', 1)
       }
     }
+    if (fields.family !== undefined) set('family', fields.family)
     if (fields.collectionId !== undefined) set('collection_id', fields.collectionId)
     if (fields.webEnabled !== undefined) set('web_enabled', fields.webEnabled ? 1 : 0)
     if (fields.archived !== undefined) set('archived', fields.archived ? 1 : 0)

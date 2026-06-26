@@ -81,7 +81,7 @@ export default function HFSearch() {
           {results.map((result) => {
             // Params-only estimate (nothing on disk yet); omit when unparseable.
             const estGB = estimateGB(result.repoId)
-            const fit = estGB !== null && ram ? FIT_STYLES[fitFor(estGB, ram)] : null
+            const fit = estGB !== null && ram ? FIT_STYLES[fitFor(estGB, ram.budgetGB)] : null
             return (
             <div key={result.repoId} className="px-3 py-2">
               <div className="flex items-center gap-3">

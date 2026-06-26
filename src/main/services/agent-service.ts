@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { agentSessionMetaSchema, type CrispinEvent } from '@shared/ipc'
-import type { AgentSessionMeta, AgentTab, PermissionMode, Tier } from '@shared/types'
+import type { AgentSessionMeta, AgentTab, Family, PermissionMode, Tier } from '@shared/types'
 import type { CrispinDatabase } from './db'
 import { engineModelId } from './engine-client'
 import type { ModelService } from './model-service'
@@ -25,6 +25,8 @@ interface AgentSessionRow {
   title: string | null
   /** Last explicitly chosen model tier; null = follow the feature default. */
   tier: Tier | null
+  /** Last explicitly chosen model family; null = follow the global default. */
+  family: Family | null
   created_at: number
   last_used_at: number | null
 }
@@ -35,6 +37,7 @@ const rowToMeta = (row: AgentSessionRow): AgentSessionMeta => ({
   directory: row.directory,
   title: row.title,
   tier: row.tier,
+  family: row.family,
   createdAt: row.created_at,
   lastUsedAt: row.last_used_at
 })
@@ -127,8 +130,13 @@ export class AgentService {
     return parseArrayDropInvalid(agentSessionMetaSchema, rows.map(rowToMeta), 'agent.sessions')
   }
 
-  async create(directory: string, tier?: Tier, tab: AgentTab = 'agent'): Promise<AgentSessionMeta> {
-    const modelId = engineModelId(this.resolveRepo(tier, tab))
+  async create(
+    directory: string,
+    tier?: Tier,
+    family?: Family,
+    tab: AgentTab = 'agent'
+  ): Promise<AgentSessionMeta> {
+    const modelId = engineModelId(this.resolveRepo(tier, family, tab))
     const { baseUrl } = await this.deps.pool.ensureServer(directory)
     this.deps.pool.touch(directory)
     const opencodeId = await this.createOpencodeSession(baseUrl, modelId)
@@ -139,13 +147,14 @@ export class AgentService {
       directory,
       title: null,
       tier: tier ?? null,
+      family: family ?? null,
       created_at: Date.now(),
       last_used_at: null
     }
     this.deps.db
       .prepare(
-        `INSERT INTO agent_sessions (id, opencode_session_id, tab, directory, title, tier, created_at, last_used_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO agent_sessions (id, opencode_session_id, tab, directory, title, tier, family, created_at, last_used_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         row.id,
@@ -154,6 +163,7 @@ export class AgentService {
         row.directory,
         row.title,
         row.tier,
+        row.family,
         row.created_at,
         row.last_used_at
       )
@@ -179,19 +189,31 @@ export class AgentService {
    * crispin.promptFailed agent.event (the renderer's handler owns the toast)
    * instead of failing the IPC call.
    */
-  async prompt(sessionId: string, text: string, tier?: Tier, mode?: PermissionMode): Promise<void> {
+  async prompt(
+    sessionId: string,
+    text: string,
+    tier?: Tier,
+    family?: Family,
+    mode?: PermissionMode
+  ): Promise<void> {
     const row = this.row(sessionId)
-    // Explicit pick > the session's persisted tier > the feature default — a
-    // chat started on High must not jump back to the code default just
+    // Explicit pick > the session's persisted tier/family > the feature default —
+    // a chat started on High/Qwen must not jump back to the code default just
     // because the composer remounted on a session switch.
-    const repoId = this.resolveRepo(tier ?? row.tier ?? undefined, row.tab)
+    const repoId = this.resolveRepo(
+      tier ?? row.tier ?? undefined,
+      family ?? row.family ?? undefined,
+      row.tab
+    )
     const modelId = engineModelId(repoId)
     await this.deps.pool.ensureServer(row.directory)
     this.deps.pool.touch(row.directory)
     this.modeBySession.set(row.id, mode ?? 'normal')
     this.deps.db
-      .prepare('UPDATE agent_sessions SET last_used_at = ?, tier = COALESCE(?, tier) WHERE id = ?')
-      .run(Date.now(), tier ?? null, row.id)
+      .prepare(
+        'UPDATE agent_sessions SET last_used_at = ?, tier = COALESCE(?, tier), family = COALESCE(?, family) WHERE id = ?'
+      )
+      .run(Date.now(), tier ?? null, family ?? null, row.id)
     const pending = { cancelled: false }
     this.pendingBySession.set(row.id, pending)
     void (async () => {
@@ -342,14 +364,14 @@ export class AgentService {
 
   /**
    * The session's effective HF repo id (engineModelId() flattens it at the
-   * opencode/engine boundary). The tier walk itself is ModelService's shared
-   * resolveActiveRepo — one algorithm for chat/agent/research.
+   * opencode/engine boundary). The (tier, family) walk itself is ModelService's
+   * shared resolveRepoFor — one algorithm for chat/agent/research.
    */
-  private resolveRepo(tier: Tier | undefined, tab: AgentTab): string {
+  private resolveRepo(tier: Tier | undefined, family: Family | undefined, tab: AgentTab): string {
     // Each surface honors its own persisted feature default.
     const requested =
       tier ?? this.deps.modelService.overview().defaults[tab === 'code' ? 'code' : 'agent']
-    return this.deps.modelService.resolveActiveRepo(requested)
+    return this.deps.modelService.resolveRepoFor(requested, family)
   }
 
   private async createOpencodeSession(baseUrl: string, modelId: string): Promise<string> {

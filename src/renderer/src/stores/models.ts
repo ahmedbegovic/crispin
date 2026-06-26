@@ -1,5 +1,12 @@
 import { create } from 'zustand'
-import type { DownloadInfo, Feature, HFSearchResult, ModelsOverview, Tier } from '@shared/types'
+import type {
+  DownloadInfo,
+  Family,
+  Feature,
+  HFSearchResult,
+  ModelsOverview,
+  Tier
+} from '@shared/types'
 import { call, onEvent } from '@/lib/ipc'
 
 interface ModelsStore {
@@ -21,6 +28,7 @@ interface ModelsStore {
   unloadAll: () => Promise<{ ok: boolean; reason?: string }>
   setDefault: (feature: Feature, tier: Tier) => Promise<void>
   setTierSelection: (tier: Tier, repoId: string | null) => Promise<void>
+  setActiveFamily: (family: Family) => Promise<void>
 }
 
 function upsertDownload(downloads: DownloadInfo[], download: DownloadInfo): DownloadInfo[] {
@@ -121,6 +129,20 @@ export const useModelsStore = create<ModelsStore>((set, get) => ({
     await call('models.setTierSelection', { tier, repoId })
     // Selection changes the tier's active model — refetch the resolved view.
     await get().refresh()
+  },
+
+  setActiveFamily: async (family) => {
+    // Optimistic: the family selector flips instantly; revert if main never
+    // persisted it. Then refetch — the active model of every tier may change.
+    const prev = get().overview?.defaultFamily
+    set((s) => (s.overview ? { overview: { ...s.overview, defaultFamily: family } } : {}))
+    try {
+      await call('models.setActiveFamily', { family })
+      await get().refresh()
+    } catch (err) {
+      if (prev) set((s) => (s.overview ? { overview: { ...s.overview, defaultFamily: prev } } : {}))
+      throw err
+    }
   },
 
   setDefault: async (feature, tier) => {

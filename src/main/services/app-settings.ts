@@ -8,7 +8,7 @@ import {
 } from '@shared/ipc'
 import { defaultModulesEnabled } from '@shared/modules'
 import { canonicalRepoId } from '@shared/model-tiers'
-import type { Feature, Tier } from '@shared/types'
+import type { Family, Feature, Tier } from '@shared/types'
 import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 import { parseArrayDropInvalid, parseOr, parseRecordDropInvalid } from './hydrate'
@@ -104,6 +104,12 @@ export class AppSettingsService {
           settings.get(db, 'models.tierSelections', {}),
           'settings.tierSelections'
         )
+      ),
+      defaultFamily: parseOr(
+        shape.defaultFamily,
+        settings.get(db, 'models.defaultFamily', 'gemma'),
+        'gemma',
+        'settings.defaultFamily'
       )
     }
   }
@@ -116,6 +122,7 @@ export class AppSettingsService {
     settings.set(db, 'models.idleUnloadSeconds', next.idleUnloadSeconds)
     settings.set(db, 'news.topics', next.newsTopics)
     settings.set(db, 'models.tierSelections', next.tierSelections)
+    settings.set(db, 'models.defaultFamily', next.defaultFamily)
     this.deps.broadcast({ type: 'settings.changed', settings: this.get() })
   }
 
@@ -147,5 +154,9 @@ export class AppSettingsService {
 
   tierSelections(): AppSettings['tierSelections'] {
     return this.get().tierSelections
+  }
+
+  defaultFamily(): Family {
+    return this.get().defaultFamily
   }
 }

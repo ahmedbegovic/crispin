@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   Conversation,
   ConversationMeta,
+  Family,
   MessagePart,
   ModelSampling,
   Tier
@@ -23,6 +24,8 @@ export interface ConversationPatch {
   systemPrompt?: string | null
   /** A tier pins the conversation; null un-pins (follow featureDefaults.chat). */
   defaultTier?: Tier | null
+  /** A family pins the conversation; null un-pins (follow the global default). */
+  family?: Family | null
   collectionId?: string | null
   webEnabled?: boolean
   archived?: boolean
@@ -32,9 +35,10 @@ export interface ConversationPatch {
   sampling?: ModelSampling | null
 }
 
-/** One-shot regeneration steers: escalate the tier, and/or bias length/tone. */
+/** One-shot regeneration steers: escalate the tier/family, and/or bias length/tone. */
 export interface RegenerateOptions {
   tier?: Tier
+  family?: Family
   lengthHint?: 'shorter' | 'longer'
   toneHint?: 'formal' | 'casual'
 }
@@ -664,10 +668,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }))
       // Archive / pin change which list bucket or order the conversation lands in.
       if (patch.archived !== undefined || patch.pinned !== undefined) await get().refreshList()
-      if (patch.defaultTier !== undefined) {
-        // The donut denominator tracks the tier's active model — a tier switch
-        // changes it without any new generation. Patch ONLY the usage entry so
-        // the in-flight-stream guard protecting messages stays untouched.
+      if (patch.defaultTier !== undefined || patch.family !== undefined) {
+        // The donut denominator tracks the resolved active model — a tier OR
+        // family switch changes it without any new generation. Patch ONLY the
+        // usage entry so the in-flight-stream guard protecting messages stays untouched.
         const view = await call('chat.get', { conversationId })
         set((s) => {
           const prev = s.usage[conversationId]

@@ -8,6 +8,8 @@ import migration0003 from './migrations/0003_news_upgrade.sql?raw'
 import migration0004 from './migrations/0004_research_source_image.sql?raw'
 import migration0005 from './migrations/0005_agent_session_tier.sql?raw'
 import migration0006 from './migrations/0006_chat_search_pin_sampling.sql?raw'
+import migration0007 from './migrations/0007_conversation_family.sql?raw'
+import migration0008 from './migrations/0008_agent_session_family.sql?raw'
 
 const MIGRATIONS: string[] = [
   migration0001,
@@ -15,7 +17,9 @@ const MIGRATIONS: string[] = [
   migration0003,
   migration0004,
   migration0005,
-  migration0006
+  migration0006,
+  migration0007,
+  migration0008
 ]
 
 export type CrispinDatabase = DatabaseSync
@@ -77,6 +81,11 @@ function ensureChatSchema(db: DatabaseSync, log: { warn(message: string): void }
     if (!conv.has('pinned'))
       db.exec('ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
     if (!conv.has('sampling')) db.exec('ALTER TABLE conversations ADD COLUMN sampling TEXT')
+    if (!conv.has('family')) db.exec('ALTER TABLE conversations ADD COLUMN family TEXT')
+    if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_sessions'").get()) {
+      const sess = cols('agent_sessions')
+      if (!sess.has('family')) db.exec('ALTER TABLE agent_sessions ADD COLUMN family TEXT')
+    }
     const msg = cols('messages')
     if (!msg.has('ttft_ms')) db.exec('ALTER TABLE messages ADD COLUMN ttft_ms INTEGER')
     if (!msg.has('gen_ms')) db.exec('ALTER TABLE messages ADD COLUMN gen_ms INTEGER')

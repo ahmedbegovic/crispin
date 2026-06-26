@@ -1,6 +1,6 @@
 import { newsItemSchema, type CrispinEvent } from '@shared/ipc'
 import type { NewsItem, NewsItemStatus, NewsSource, Tier } from '@shared/types'
-import { TIER_ORDER, TIERS, canonicalRepoId } from '@shared/model-tiers'
+import { TIER_ORDER, isNoColoadRepo } from '@shared/model-tiers'
 import type { CrispinDatabase } from './db'
 import { scopedLogger } from './logger'
 import { parseArrayDropInvalid } from './hydrate'
@@ -274,19 +274,16 @@ export class NewsScheduler {
   }
 
   /**
-   * True while an ultra-tier (noCoload) model occupies the engine — summaries
-   * wait. The drain's own summarizer is exempt: only-ultra installs fall back
-   * to the ultra model, which must not pause the very loop that loaded it.
+   * True while a no-coload model (ultra tier, or the 35B-A3B override) occupies
+   * the engine — summaries wait. isNoColoadRepo is rename-aware. The drain's own
+   * summarizer is exempt: only-big installs fall back to that model, which must
+   * not pause the very loop that loaded it.
    */
   paused(): boolean {
-    const ultra = new Set(TIERS.ultra.candidates)
-    // canonicalRepoId: an ultra snapshot under a renamed old id must still
-    // pause the drain — every curated-table comparison is rename-aware.
     return this.deps.modelService
       .overview()
       .engine.models.some(
-        (m) =>
-          ultra.has(canonicalRepoId(m.id)) && m.id !== this.activeSummarizer && m.state !== 'unloaded'
+        (m) => isNoColoadRepo(m.id) && m.id !== this.activeSummarizer && m.state !== 'unloaded'
       )
   }
 

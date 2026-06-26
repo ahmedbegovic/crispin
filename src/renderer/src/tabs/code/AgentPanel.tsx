@@ -2,8 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAutosizeTextarea } from '@/lib/useAutosizeTextarea'
 import { Bot, ChevronsLeft, ChevronsRight, Plus, SendHorizontal, Square, Workflow } from 'lucide-react'
 import 'highlight.js/styles/github-dark.css'
-import { FEATURE_DEFAULTS, TIER_LABELS, TIER_ORDER } from '@shared/model-tiers'
-import type { PermissionMode, Tier } from '@shared/types'
+import {
+  FAMILIES,
+  FAMILY_LABELS,
+  FEATURE_DEFAULTS,
+  TIER_LABELS,
+  TIER_ORDER
+} from '@shared/model-tiers'
+import type { Family, PermissionMode, Tier } from '@shared/types'
 import { useAgentStore } from '@/stores/agent'
 import { useModelsStore } from '@/stores/models'
 import { toastError } from '@/stores/toasts'
@@ -39,6 +45,10 @@ function PanelComposer({ sessionId }: { sessionId: string }) {
   const sessionTier = useAgentStore((s) => s.sessions.find((x) => x.id === sessionId)?.tier) ?? null
   const [tier, setTier] = useState<Tier | null>(sessionTier)
   const defaultTier = useModelsStore((s) => s.overview?.defaults.code) ?? FEATURE_DEFAULTS.code
+  const sessionFamily =
+    useAgentStore((s) => s.sessions.find((x) => x.id === sessionId)?.family) ?? null
+  const [family, setFamily] = useState<Family | null>(sessionFamily)
+  const defaultFamily = useModelsStore((s) => s.overview?.defaultFamily) ?? 'gemma'
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const slash = useSlashSkills(text, setText)
   useAutosizeTextarea(textareaRef, text, MAX_TEXTAREA_PX)
@@ -59,11 +69,17 @@ function PanelComposer({ sessionId }: { sessionId: string }) {
       void startPipeline(sessionId, trimmed, {
         commit: true,
         docs: false,
-        tier: tier ?? undefined
+        tier: tier ?? undefined,
+        family: family ?? undefined
       }).catch(restore)
       return
     }
-    void prompt(sessionId, slash.transformForSubmit(trimmed), tier ?? undefined).catch(restore)
+    void prompt(
+      sessionId,
+      slash.transformForSubmit(trimmed),
+      tier ?? undefined,
+      family ?? undefined
+    ).catch(restore)
   }
 
   return (
@@ -95,6 +111,19 @@ function PanelComposer({ sessionId }: { sessionId: string }) {
         />
 
         <div className="flex items-center gap-1.5 px-2 pb-2">
+          <select
+            value={family ?? defaultFamily}
+            onChange={(e) => setFamily(e.target.value as Family)}
+            title="Model family"
+            className="rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:text-zinc-200 focus:border-zinc-600"
+          >
+            {FAMILIES.map((f) => (
+              <option key={f} value={f}>
+                {FAMILY_LABELS[f]}
+              </option>
+            ))}
+          </select>
+
           <select
             value={tier ?? defaultTier}
             onChange={(e) => setTier(e.target.value as Tier)}

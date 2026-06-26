@@ -91,3 +91,21 @@ describe('AppSettingsService.get — record settings drop only the bad entry', (
     expect(result.newsTopics).toEqual(['ai', 'ml'])
   })
 })
+
+describe('AppSettingsService — defaultFamily', () => {
+  it('defaults to gemma when unset and degrades to gemma on a corrupt value', () => {
+    const fresh = new AppSettingsService({ db, broadcast: vi.fn() })
+    expect(fresh.defaultFamily()).toBe('gemma')
+
+    settings.set(db, 'models.defaultFamily', 'llama') // not a valid family
+    const result = new AppSettingsService({ db, broadcast: vi.fn() }).get()
+    expect(appSettingsSchema.safeParse(result).success).toBe(true)
+    expect(result.defaultFamily).toBe('gemma')
+  })
+
+  it('round-trips a chosen family through update → get', () => {
+    const svc = new AppSettingsService({ db, broadcast: vi.fn() })
+    svc.update({ ...svc.get(), defaultFamily: 'qwen' })
+    expect(new AppSettingsService({ db, broadcast: vi.fn() }).defaultFamily()).toBe('qwen')
+  })
+})

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import type { CrispinEvent } from '@shared/ipc'
-import type { PermissionMode, PipelineSnapshot, PipelineStageId, Tier } from '@shared/types'
+import type { Family, PermissionMode, PipelineSnapshot, PipelineStageId, Tier } from '@shared/types'
 import type { AgentService } from './agent-service'
 import { scopedLogger } from './logger'
 
@@ -16,6 +16,8 @@ export interface PipelineOptions {
   permissionMode?: PermissionMode
   /** Model tier for every stage; undefined follows the session/feature default. */
   tier?: Tier
+  /** Model family for every stage; undefined follows the session/global default. */
+  family?: Family
 }
 
 interface PipelineRun {
@@ -165,6 +167,7 @@ export class PipelineService {
       run.snapshot.sessionId,
       this.stagePrompt(run, stage),
       run.options.tier,
+      run.options.family,
       mode
     )
   }

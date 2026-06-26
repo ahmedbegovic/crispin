@@ -11,8 +11,14 @@ import {
   Square,
   X
 } from 'lucide-react'
-import { FEATURE_DEFAULTS, TIER_LABELS, TIER_ORDER } from '@shared/model-tiers'
-import type { AttachmentInput, Conversation, SkillMeta, Tier } from '@shared/types'
+import {
+  FAMILIES,
+  FAMILY_LABELS,
+  FEATURE_DEFAULTS,
+  TIER_LABELS,
+  TIER_ORDER
+} from '@shared/model-tiers'
+import type { AttachmentInput, Conversation, Family, SkillMeta, Tier } from '@shared/types'
 import { call } from '@/lib/ipc'
 import { useAutosizeTextarea } from '@/lib/useAutosizeTextarea'
 import { useDismissable } from '@/lib/useDismissable'
@@ -435,6 +441,25 @@ export default function Composer({ conversation }: Props) {
                 </div>
               )}
             </div>
+
+            <select
+              value={conversation.family ?? ''}
+              onChange={(e) =>
+                void update(conversation.id, {
+                  // '' = follow the global active family live.
+                  family: e.target.value === '' ? null : (e.target.value as Family)
+                }).catch(toastError)
+              }
+              title="Model family"
+              className={selectClass}
+            >
+              <option value="">Default</option>
+              {FAMILIES.map((family) => (
+                <option key={family} value={family}>
+                  {FAMILY_LABELS[family]}
+                </option>
+              ))}
+            </select>
 
             <select
               value={conversation.tierPinned ? conversation.defaultTier : ''}

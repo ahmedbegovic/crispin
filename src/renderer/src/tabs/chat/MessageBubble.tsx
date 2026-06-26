@@ -9,7 +9,13 @@ import {
   Pencil,
   RefreshCw
 } from 'lucide-react'
-import { TIER_LABELS, TIER_ORDER, modelDisplayName, tierOfRepo } from '@shared/model-tiers'
+import {
+  TIER_LABELS,
+  TIER_ORDER,
+  modelDisplayName,
+  selectionFamilyOf,
+  tierOfRepo
+} from '@shared/model-tiers'
 import type { ChatMessage, MessagePart, SourceRef, Tier } from '@shared/types'
 import { useChatStore, type RegenerateOptions } from '@/stores/chat'
 import DropdownMenu, { type MenuItem } from '@/components/DropdownMenu'
@@ -212,8 +218,10 @@ function AssistantMessage({
   const doRegen = (options?: RegenerateOptions): void => {
     void regenerate(message.conversationId, message.id, options).catch(toastError)
   }
-  // Escalate = one step up from the tier that generated THIS message.
+  // Escalate = one step up from the tier that generated THIS message, staying in
+  // the same family so "Try Ultra" on a Qwen reply gives the Qwen Ultra.
   const curTier = message.modelId ? tierOfRepo(message.modelId) : null
+  const curFamily = message.modelId ? (selectionFamilyOf(message.modelId) ?? undefined) : undefined
   const curIdx = curTier ? TIER_ORDER.indexOf(curTier) : -1
   const nextTier: Tier | undefined =
     curIdx >= 0 && curIdx < TIER_ORDER.length - 1 ? TIER_ORDER[curIdx + 1] : undefined
@@ -222,7 +230,7 @@ function AssistantMessage({
       ? {
           label: `Try ${TIER_LABELS[nextTier]}`,
           hint: 'escalate',
-          onSelect: () => doRegen({ tier: nextTier })
+          onSelect: () => doRegen({ tier: nextTier, family: curFamily })
         }
       : { label: 'Already at top tier', disabled: true, onSelect: () => {} },
     { label: 'Shorter', onSelect: () => doRegen({ lengthHint: 'shorter' }) },

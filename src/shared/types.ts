@@ -1,5 +1,12 @@
 export type Tier = 'low' | 'medium' | 'high' | 'extraHigh' | 'ultra'
 
+/**
+ * Model family — the user-facing selection axis (Models tab, composers). Distinct
+ * from CatalogFamily (which adds 'experimental' for HF-downloaded repos) and from
+ * the chat tool-dialect ModelFamily; see model-tiers.ts.
+ */
+export type Family = 'gemma' | 'qwen'
+
 export type Feature = 'chat' | 'agent' | 'code' | 'research' | 'news'
 
 export type ProcessName = 'tools' | 'engine' | (string & {})
@@ -141,6 +148,8 @@ export interface ModelsOverview {
   defaults: FeatureDefaults
   /** Per-tier explicit model picks (Settings-backed); resolution honors them. */
   tierSelections: Partial<Record<Tier, string>>
+  /** Global active family — the Models tab selector + the no-pin resolution default. */
+  defaultFamily: Family
   ram: RamReport
 }
 
@@ -183,6 +192,8 @@ export interface Conversation {
   defaultTier: Tier
   /** False = the effective tier follows featureDefaults.chat live. */
   tierPinned: boolean
+  /** Pinned model family; null = follow the global default family live. */
+  family: Family | null
   collectionId: string | null
   webEnabled: boolean
   archived: boolean
@@ -303,6 +314,8 @@ export interface AgentSessionMeta {
   title: string | null
   /** Last explicitly chosen model tier — the composer restores it on switch. */
   tier: Tier | null
+  /** Last explicitly chosen model family; null = follow the global default. */
+  family: Family | null
   createdAt: number
   lastUsedAt: number | null
 }

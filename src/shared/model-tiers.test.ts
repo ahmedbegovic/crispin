@@ -5,6 +5,11 @@ import {
   canonicalRepoId,
   isCuratedRepo,
   familyOf,
+  selectionFamilyOf,
+  repoForFamilyTier,
+  resolveLadderRepo,
+  maxOutputTokensFor,
+  isNoColoadRepo,
   tierOfRepo,
   tierSpecFor,
   classifyByParams,
@@ -13,12 +18,17 @@ import {
   kvQuantBitsFor,
   modelDisplayName,
   toolBudgetForTier,
+  FAMILIES,
+  FAMILY_LADDERS,
+  FAMILY_LABELS,
+  TIER_LABELS,
   TIERS,
   TIER_ORDER,
   UTILITY_MODEL,
   EMBEDDING_MODEL,
   NON_QAT_GEMMA_WHITELIST
 } from './model-tiers'
+import type { Family } from './types'
 
 // model-tiers is pure policy with zero runtime dependencies (only type-only
 // imports). Importing the module also runs its load-time invariant asserts
@@ -154,25 +164,25 @@ describe('estimateGB — load footprint', () => {
   })
 })
 
-describe('fitFor — traffic-light fit against budget + available memory', () => {
-  const budget = 18.5
-  it('returns "unable" when the estimate exceeds the budget', () => {
-    expect(fitFor(20, { budgetGB: budget, availableGB: 30 })).toBe('unable')
+describe('fitFor — stable traffic-light fit against the static budget', () => {
+  const budget = 18.5 // > 0.9 = 16.65, > 0.7 = 12.95
+  it('classifies by size against the budget (unable > risky > good > perfect)', () => {
+    expect(fitFor(20, budget)).toBe('unable') // exceeds budget
+    expect(fitFor(17, budget)).toBe('risky') // > 90% of budget
+    expect(fitFor(14, budget)).toBe('good') // > 70% of budget
+    expect(fitFor(5, budget)).toBe('perfect')
   })
-  it('returns "risky" when it would eat into the last 2 GB of available memory', () => {
-    expect(fitFor(10, { budgetGB: budget, availableGB: 11 })).toBe('risky') // 10 > 11-2
+  it('is MONOTONIC — a smaller model never ranks worse than a larger one', () => {
+    const order = ['perfect', 'good', 'risky', 'unable']
+    const sizes = [1.5, 3, 7, 12, 15, 17.5, 20]
+    const ranks = sizes.map((g) => order.indexOf(fitFor(g, budget)))
+    for (let i = 1; i < ranks.length; i++) expect(ranks[i]).toBeGreaterThanOrEqual(ranks[i - 1])
   })
-  it('returns "good" above 70% of budget, "perfect" below', () => {
-    expect(fitFor(14, { budgetGB: budget, availableGB: 30 })).toBe('good') // 14 > 12.95
-    expect(fitFor(5, { budgetGB: budget, availableGB: 30 })).toBe('perfect')
-  })
-  it('the risky check takes precedence over good', () => {
-    // 14 is both >70% of budget AND within 2 GB of available — risky wins (checked first).
-    expect(fitFor(14, { budgetGB: budget, availableGB: 15 })).toBe('risky')
-  })
-  it('skips the risky branch entirely when availableGB is null', () => {
-    expect(fitFor(10, { budgetGB: budget, availableGB: null })).toBe('perfect')
-    expect(fitFor(14, { budgetGB: budget, availableGB: null })).toBe('good')
+  it('does NOT depend on live free memory (no flicker): same estGB → same verdict', () => {
+    // E4B (~3 GB) is always perfect; the 12B (~7.7) is always perfect too — a
+    // smaller model can no longer show "won't fit" beside a larger "perfect".
+    expect(fitFor(3, budget)).toBe('perfect')
+    expect(fitFor(7.7, budget)).toBe('perfect')
   })
 })
 
@@ -218,5 +228,126 @@ describe('tier policy invariants', () => {
   it('toolBudgetForTier returns the per-tier visible-tool cap', () => {
     expect(toolBudgetForTier('low')).toBe(5)
     expect(toolBudgetForTier('ultra')).toBeUndefined()
+  })
+})
+
+describe('family ladders — the (family × rung) source of truth', () => {
+  it('derives each tier’s candidates from the ladders, gemma first', () => {
+    for (const tier of TIER_ORDER) {
+      expect(TIERS[tier].candidates).toEqual([FAMILY_LADDERS.gemma[tier], FAMILY_LADDERS.qwen[tier]])
+    }
+    // candidates[0] gemma-first keeps UTILITY_MODEL the gemma E2B.
+    expect(UTILITY_MODEL).toBe(FAMILY_LADDERS.gemma.low)
+    expect(UTILITY_MODEL).toBe('mlx-community/gemma-4-E2B-it-qat-4bit')
+  })
+
+  it('repoForFamilyTier resolves all ten cells, including the new Qwen 35B', () => {
+    expect(repoForFamilyTier('gemma', 'low')).toBe('mlx-community/gemma-4-E2B-it-qat-4bit')
+    expect(repoForFamilyTier('gemma', 'ultra')).toBe('mlx-community/gemma-4-31b-it-4bit')
+    expect(repoForFamilyTier('qwen', 'extraHigh')).toBe('mlx-community/Qwen3.6-35B-A3B-4bit')
+    expect(repoForFamilyTier('qwen', 'ultra')).toBe('mlx-community/Qwen3.6-27B-4bit')
+  })
+
+  it('the new Qwen 35B is curated at extraHigh, qwen family, with a display name', () => {
+    const id = 'mlx-community/Qwen3.6-35B-A3B-4bit'
+    expect(isCuratedRepo(id)).toBe(true)
+    expect(tierOfRepo(id)).toBe('extraHigh')
+    expect(familyOf(id)).toBe('qwen')
+    expect(selectionFamilyOf(id)).toBe('qwen')
+    expect(modelDisplayName(id)).toBe('Qwen 3.6 35B')
+  })
+
+  it('selectionFamilyOf is rename-aware and null for non-curated', () => {
+    expect(selectionFamilyOf('mlx-community/gemma-4-12B-it-qat-4bit')).toBe('gemma')
+    expect(selectionFamilyOf('mlx-community/Qwen3.5-4B-4bit')).toBe('qwen') // old id → canonical
+    expect(selectionFamilyOf('some/random-model')).toBeNull()
+  })
+
+  it('relabels extraHigh to "Extra" and labels both families', () => {
+    expect(TIER_LABELS.extraHigh).toBe('Extra')
+    expect(FAMILIES).toEqual(['gemma', 'qwen'])
+    expect(FAMILY_LABELS).toEqual({ gemma: 'Gemma', qwen: 'Qwen' })
+  })
+})
+
+describe('per-model policy overrides — the 35B-A3B MoE guards', () => {
+  const big = 'mlx-community/Qwen3.6-35B-A3B-4bit'
+  it('gives the 35B ultra-grade KV/output/no-coload guards despite sitting at extraHigh', () => {
+    expect(kvQuantBitsFor(big)).toBe(4) // override; extraHigh tier alone has none
+    expect(maxOutputTokensFor(big)).toBe(32768)
+    expect(isNoColoadRepo(big)).toBe(true)
+  })
+  it('leaves the gemma 26B at the plain extraHigh policy', () => {
+    const g26 = 'mlx-community/gemma-4-26B-A4B-it-qat-4bit'
+    expect(kvQuantBitsFor(g26)).toBeNull()
+    expect(maxOutputTokensFor(g26)).toBeUndefined()
+    expect(isNoColoadRepo(g26)).toBe(false)
+  })
+  it('keeps ultra-tier policy intact (tier-level, no override needed)', () => {
+    expect(isNoColoadRepo('mlx-community/Qwen3.6-27B-4bit')).toBe(true)
+    expect(maxOutputTokensFor('mlx-community/gemma-4-31b-it-4bit')).toBe(32768)
+  })
+})
+
+describe('resolveLadderRepo — pure (family, tier) precedence', () => {
+  const all = (): boolean => true
+  const none = (): boolean => false
+  const onlyInstalled =
+    (...ids: string[]) =>
+    (repoId: string): boolean =>
+      ids.includes(repoId)
+  const base = { defaultFamily: 'gemma' as Family, tierSelection: null as string | null }
+
+  it('an explicit family pin returns that family’s exact cell when installed', () => {
+    expect(
+      resolveLadderRepo({ ...base, tier: 'high', family: 'qwen', installed: all })
+    ).toBe(repoForFamilyTier('qwen', 'high'))
+  })
+
+  it('a pin cascades WITHIN the family (nearest rung down, then up) when the cell is absent', () => {
+    // Pinned Qwen High, only Qwen Low installed → nearest installed rung of qwen.
+    expect(
+      resolveLadderRepo({
+        ...base,
+        tier: 'high',
+        family: 'qwen',
+        installed: onlyInstalled(repoForFamilyTier('qwen', 'low'))
+      })
+    ).toBe(repoForFamilyTier('qwen', 'low'))
+  })
+
+  it('a pinned family with nothing installed returns null (caller falls back)', () => {
+    expect(resolveLadderRepo({ ...base, tier: 'high', family: 'qwen', installed: none })).toBeNull()
+  })
+
+  it('no pin: an explicit tierSelection wins (Experimental / cross-family pick)', () => {
+    expect(
+      resolveLadderRepo({
+        tier: 'high',
+        family: null,
+        defaultFamily: 'gemma',
+        tierSelection: 'some/experimental-9B',
+        installed: all
+      })
+    ).toBe('some/experimental-9B')
+  })
+
+  it('no pin: prefers the default family’s cell, else the other family’s', () => {
+    expect(
+      resolveLadderRepo({ ...base, tier: 'high', family: null, installed: all })
+    ).toBe(repoForFamilyTier('gemma', 'high'))
+    // default gemma not installed, qwen is → other family.
+    expect(
+      resolveLadderRepo({
+        ...base,
+        tier: 'high',
+        family: null,
+        installed: onlyInstalled(repoForFamilyTier('qwen', 'high'))
+      })
+    ).toBe(repoForFamilyTier('qwen', 'high'))
+  })
+
+  it('no pin with nothing installed returns null', () => {
+    expect(resolveLadderRepo({ ...base, tier: 'high', family: null, installed: none })).toBeNull()
   })
 })

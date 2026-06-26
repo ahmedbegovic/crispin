@@ -2,7 +2,13 @@ import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AppSettings } from '@shared/ipc'
 import type { InstalledModel } from '@shared/types'
-import { TIERS, modelDisplayName, tierOfRepo, type TierSpec } from '@shared/model-tiers'
+import {
+  TIERS,
+  maxOutputTokensFor,
+  modelDisplayName,
+  tierOfRepo,
+  type TierSpec
+} from '@shared/model-tiers'
 import { engineModelId } from './engine-client'
 import { dataDir, nodeRunner, resourcesDir } from './paths'
 
@@ -90,9 +96,10 @@ export function writeOpencodeConfig(opts: OpencodeConfigOptions): string {
       name: modelDisplayName(m.repoId),
       limit: {
         context: m.contextLength ?? spec?.defaultCtx ?? 32768,
-        // Only ultra carries a cap (maxOutputTokens) — its fp16 KV growth on a
-        // runaway generation is what would blow the RAM budget.
-        output: spec?.maxOutputTokens ?? m.contextLength ?? 32768
+        // Only the big models carry an output cap (ultra tier + the 35B-A3B
+        // override) — their fp16 KV growth on a runaway generation is what would
+        // blow the RAM budget. maxOutputTokensFor consults the per-model override.
+        output: maxOutputTokensFor(m.repoId) ?? m.contextLength ?? 32768
       }
     }
   }

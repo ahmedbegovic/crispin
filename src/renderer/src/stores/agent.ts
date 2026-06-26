@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   AgentSessionMeta,
   AgentTab,
+  Family,
   PermissionMode,
   PipelineSnapshot,
   SkillMeta,
@@ -190,11 +191,16 @@ interface AgentStore {
   /** Folder picker -> agent.create -> select. No-op when the picker is cancelled. */
   create: () => Promise<void>
   /** agent.create for a known directory (Code panel); never moves activeId. */
-  createIn: (directory: string, tab: AgentTab, tier?: Tier) => Promise<AgentSessionMeta>
+  createIn: (
+    directory: string,
+    tab: AgentTab,
+    tier?: Tier,
+    family?: Family
+  ) => Promise<AgentSessionMeta>
   select: (sessionId: string) => Promise<void>
   /** Snapshot-fetch a session's timeline without touching activeId. */
   load: (sessionId: string) => Promise<void>
-  prompt: (sessionId: string, text: string, tier?: Tier) => Promise<void>
+  prompt: (sessionId: string, text: string, tier?: Tier, family?: Family) => Promise<void>
   /** Per-session permission posture; sent with every prompt. */
   modeBySession: Record<string, PermissionMode>
   setMode: (sessionId: string, mode: PermissionMode) => void
@@ -203,7 +209,13 @@ interface AgentStore {
   startPipeline: (
     sessionId: string,
     task: string,
-    options: { commit: boolean; docs: boolean; permissionMode?: PermissionMode; tier?: Tier }
+    options: {
+      commit: boolean
+      docs: boolean
+      permissionMode?: PermissionMode
+      tier?: Tier
+      family?: Family
+    }
   ) => Promise<void>
   abortPipeline: (pipelineId: string) => Promise<void>
   approvePipeline: (pipelineId: string, approve: boolean) => Promise<void>
@@ -437,8 +449,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     set({ activeId: session.id })
   },
 
-  createIn: async (directory, tab, tier) => {
-    const { session } = await call('agent.create', { directory, tier, tab })
+  createIn: async (directory, tab, tier, family) => {
+    const { session } = await call('agent.create', { directory, tier, family, tab })
     set((s) => ({
       sessions: [session, ...s.sessions.filter((x) => x.id !== session.id)],
       messagesBySession: { ...s.messagesBySession, [session.id]: [] }
@@ -512,7 +524,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       return { pipelineBySession, dismissedPipelineIds }
     }),
 
-  prompt: async (sessionId, text, tier) => {
+  prompt: async (sessionId, text, tier, family) => {
     // Reject rather than toast: the composer restores its draft from the rejection.
     if (get().busyBySession[sessionId])
       throw new Error('The agent is already working in this session')
@@ -523,18 +535,22 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       parts: [{ id: 'text', type: 'text', text }]
     }
     // For the revert below: a rejected IPC means main threw BEFORE persisting
-    // the tier, so the optimistic merge must roll back to this value.
-    const prevTier = get().sessions.find((x) => x.id === sessionId)?.tier ?? null
+    // the tier/family, so the optimistic merge must roll back to these values.
+    const prev = get().sessions.find((x) => x.id === sessionId)
+    const prevTier = prev?.tier ?? null
+    const prevFamily = prev?.family ?? null
     set((s) => ({
       busyBySession: { ...s.busyBySession, [sessionId]: true },
       messagesBySession: {
         ...s.messagesBySession,
         [sessionId]: [...(s.messagesBySession[sessionId] ?? []), optimistic]
       },
-      // Mirror main's persistence (incl. the explicit tier) so a composer
+      // Mirror main's persistence (incl. the explicit tier/family) so a composer
       // remount on session switch restores the right pick without a refetch.
       sessions: s.sessions.map((x) =>
-        x.id === sessionId ? { ...x, lastUsedAt: Date.now(), ...(tier ? { tier } : {}) } : x
+        x.id === sessionId
+          ? { ...x, lastUsedAt: Date.now(), ...(tier ? { tier } : {}), ...(family ? { family } : {}) }
+          : x
       )
     }))
     try {
@@ -542,6 +558,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         sessionId,
         text,
         tier,
+        family,
         mode: get().modeBySession[sessionId] ?? 'normal'
       })
     } catch (err) {
@@ -553,10 +570,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             (m) => m.id !== optimistic.id
           )
         },
-        ...(tier
+        ...(tier || family
           ? {
               sessions: s.sessions.map((x) =>
-                x.id === sessionId ? { ...x, tier: prevTier } : x
+                x.id === sessionId ? { ...x, tier: prevTier, family: prevFamily } : x
               )
             }
           : {})

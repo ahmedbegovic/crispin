@@ -176,6 +176,11 @@ export default function TierGrid({ overview }: { overview: ModelsOverview }) {
   const unload = useModelsStore((s) => s.unload)
   const download = useModelsStore((s) => s.download)
   const setTierSelection = useModelsStore((s) => s.setTierSelection)
+  const setActiveFamily = useModelsStore((s) => s.setActiveFamily)
+  // Which family's ladder is on screen. Defaults to the global active family;
+  // Experimental is a view-only tab. The user's tab choice persists across
+  // refreshes (state isn't re-derived from overview).
+  const [view, setView] = useState<CatalogFamily>(overview.defaultFamily)
   const [guard, setGuard] = useState<{
     repoId: string
     title: string
@@ -249,102 +254,124 @@ export default function TierGrid({ overview }: { overview: ModelsOverview }) {
     void setTierSelection(tier, picked ? null : repoId).catch(toastError)
   }
 
+  // Choosing a curated family makes it the global active family (every tier
+  // resolves to it); Experimental is view-only.
+  const chooseFamily = (family: CatalogFamily): void => {
+    setView(family)
+    if (family === 'gemma' || family === 'qwen') void setActiveFamily(family).catch(toastError)
+  }
+
+  const experimentalEmpty =
+    view === 'experimental' &&
+    !overview.tiers.some((t) => t.candidates.some((c) => c.family === 'experimental'))
+
   return (
     <section>
       <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-        Tiers
+        Models
       </h2>
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900/30">
-        {/* Column headers, aligned with the rows' grid below. */}
-        <div className="flex gap-4 px-4 pt-3">
-          <div className="w-40 shrink-0" />
-          <div className="grid min-w-0 flex-1 grid-cols-3 gap-4">
-            {FAMILY_GROUPS.map((g) => (
-              <div
-                key={g.key}
-                className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400"
-              >
-                {g.logo}
-                {g.label}
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Family selector: pick a family, then see its Low→Ultra ladder below. */}
+      <div className="mb-3 flex gap-2">
+        {FAMILY_GROUPS.map((g) => {
+          const selected = view === g.key
+          const isActive = overview.defaultFamily === g.key
+          return (
+            <button
+              key={g.key}
+              onClick={() => chooseFamily(g.key)}
+              title={
+                g.key === 'experimental'
+                  ? 'HF-downloaded models (view only)'
+                  : isActive
+                    ? `${g.label} is the active family`
+                    : `Make ${g.label} the active family`
+              }
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] ${
+                selected
+                  ? 'border-emerald-600/60 bg-zinc-900 text-zinc-100'
+                  : 'border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200'
+              }`}
+            >
+              {g.logo}
+              {g.label}
+              {/* Always reserve the check's width (transparent when inactive) so
+                  switching the active family never reflows the selector row. */}
+              {g.key !== 'experimental' && (
+                <Check size={12} className={isActive ? 'text-emerald-400' : 'text-transparent'} />
+              )}
+            </button>
+          )
+        })}
+      </div>
 
-        <div className="divide-y divide-zinc-800/70">
-          {TIER_ORDER.map((tier) => {
-            const spec = TIERS[tier]
-            const resolution = overview.tiers.find((t) => t.tier === tier)
-            const candidates = resolution?.candidates ?? []
-            // Real context_length from the active model's config.json beats the spec guess.
-            const activeCtx = resolution?.active
-              ? (overview.installed.find((m) => m.repoId === resolution.active)?.contextLength ??
-                null)
-              : null
-            return (
-              <div key={tier} className="flex gap-4 px-4 py-3">
-                <div className="w-40 shrink-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[13px] font-medium text-zinc-200">
-                      {TIER_LABELS[tier]}
-                    </span>
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/30">
+        {experimentalEmpty ? (
+          <div className="px-4 py-6 text-center text-[12px] text-zinc-600">
+            No experimental models installed — download one from search.
+          </div>
+        ) : (
+          <div className="divide-y divide-zinc-800/70">
+            {TIER_ORDER.map((tier) => {
+              const spec = TIERS[tier]
+              const resolution = overview.tiers.find((t) => t.tier === tier)
+              const cards = (resolution?.candidates ?? []).filter((c) => c.family === view)
+              // Experimental rungs with no installs are hidden; a curated family
+              // always has exactly one cell per rung (download it if absent).
+              if (view === 'experimental' && cards.length === 0) return null
+              // Real context_length from the active model's config.json beats the spec guess.
+              const activeCtx = resolution?.active
+                ? (overview.installed.find((m) => m.repoId === resolution.active)?.contextLength ??
+                  null)
+                : null
+              return (
+                <div key={tier} className="flex gap-4 px-4 py-3">
+                  <div className="w-36 shrink-0">
+                    <div className="text-[13px] font-medium text-zinc-200">{TIER_LABELS[tier]}</div>
+                    <div className="mt-0.5 text-[11px] text-zinc-500">
+                      ~{spec.approxGB} GB ·{' '}
+                      {activeCtx !== null
+                        ? `${Math.round(activeCtx / 1024)}k ctx`
+                        : `~${Math.round(spec.defaultCtx / 1024)}k ctx`}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {spec.caps
+                        .filter((cap) => cap !== 'text')
+                        .map((cap) => (
+                          <span
+                            key={cap}
+                            className="rounded border border-zinc-700/80 px-1 text-[9px] uppercase tracking-wide text-zinc-500"
+                          >
+                            {cap}
+                          </span>
+                        ))}
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-[11px] text-zinc-500">
-                    ~{spec.approxGB} GB ·{' '}
-                    {activeCtx !== null
-                      ? `${Math.round(activeCtx / 1024)}k ctx`
-                      : `~${Math.round(spec.defaultCtx / 1024)}k ctx`}
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {spec.caps
-                      .filter((cap) => cap !== 'text')
-                      .map((cap) => (
-                        <span
-                          key={cap}
-                          className="rounded border border-zinc-700/80 px-1 text-[9px] uppercase tracking-wide text-zinc-500"
-                        >
-                          {cap}
-                        </span>
-                      ))}
+                  <div className="scrollbar-none flex min-w-0 flex-1 gap-2 overflow-x-auto">
+                    {cards.length === 0 ? (
+                      <span className="self-center text-[11px] text-zinc-700">—</span>
+                    ) : (
+                      cards.map((candidate) => (
+                        <ModelCard
+                          key={candidate.repoId}
+                          candidate={candidate}
+                          active={resolution?.active === candidate.repoId}
+                          picked={isPicked(overview.tierSelections[tier], candidate.repoId)}
+                          engineState={liveState(candidate.repoId, candidate.engineState)}
+                          download={activeDownload(candidate.repoId)}
+                          partial={partialDownload(candidate.repoId)}
+                          onSelect={() => onSelect(tier, candidate.repoId)}
+                          onLoad={() => void onLoad(candidate.repoId, { warning: candidate.warning })}
+                          onUnload={() => void onUnload(candidate.repoId)}
+                          onDownload={() => void download(candidate.repoId).catch(toastError)}
+                        />
+                      ))
+                    )}
                   </div>
                 </div>
-                <div className="grid min-w-0 flex-1 grid-cols-3 gap-4">
-                  {FAMILY_GROUPS.map((g) => {
-                    const cards = candidates.filter((c) => c.family === g.key)
-                    return (
-                      <div
-                        key={g.key}
-                        className="scrollbar-none flex min-w-0 gap-2 overflow-x-auto"
-                      >
-                        {cards.length === 0 ? (
-                          <span className="self-center text-[11px] text-zinc-700">—</span>
-                        ) : (
-                          cards.map((candidate) => (
-                            <ModelCard
-                              key={candidate.repoId}
-                              candidate={candidate}
-                              active={resolution?.active === candidate.repoId}
-                              picked={isPicked(overview.tierSelections[tier], candidate.repoId)}
-                              engineState={liveState(candidate.repoId, candidate.engineState)}
-                              download={activeDownload(candidate.repoId)}
-                              partial={partialDownload(candidate.repoId)}
-                              onSelect={() => onSelect(tier, candidate.repoId)}
-                              onLoad={() => void onLoad(candidate.repoId, { warning: candidate.warning })}
-                              onUnload={() => void onUnload(candidate.repoId)}
-                              onDownload={() =>
-                                void download(candidate.repoId).catch(toastError)
-                              }
-                            />
-                          ))
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+        )}
       </div>
       <ConfirmDialog
         open={guard !== null}

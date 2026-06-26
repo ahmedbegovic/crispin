@@ -1,4 +1,4 @@
-import type { Feature, Tier } from './types'
+import type { Family, Feature, Tier } from './types'
 
 export type ModelCapability = 'text' | 'vision' | 'audio' | 'video'
 
@@ -43,47 +43,69 @@ export interface TierSpec {
 }
 
 /**
- * The five quality tiers. Single source of truth for model policy;
- * user overrides are stored in settings and merged over this table.
+ * Models are organized as a (family × rung) ladder. FAMILY_LADDERS is the single
+ * source of truth for WHICH repo sits at each (family, rung) cell; the per-rung
+ * POLICY (caps, footprint, output/KV/tool budgets) lives in TIER_POLICY, and
+ * TIERS[tier].candidates is DERIVED from the ladders — gemma first, so
+ * UTILITY_MODEL stays the gemma E2B. User overrides are stored in settings and
+ * merged over this table.
  *
  * All Gemma 4 entries MUST be QAT quants — non-QAT MLX quants of Gemma 4
  * produce garbage output because the PLE (per-layer embedding) layers get
  * quantized (see mlx-community/gemma-4-e2b-4bit discussion #1).
  */
-export const TIERS: Record<Tier, TierSpec> = {
+export const FAMILIES: Family[] = ['gemma', 'qwen']
+
+export const TIER_ORDER: Tier[] = ['low', 'medium', 'high', 'extraHigh', 'ultra']
+
+/** The one curated repo at each (family, rung) cell — the source of truth. */
+export const FAMILY_LADDERS: Record<Family, Record<Tier, string>> = {
+  gemma: {
+    low: 'mlx-community/gemma-4-E2B-it-qat-4bit',
+    medium: 'mlx-community/gemma-4-E4B-it-qat-4bit',
+    high: 'mlx-community/gemma-4-12B-it-qat-4bit',
+    extraHigh: 'mlx-community/gemma-4-26B-A4B-it-qat-4bit',
+    ultra: 'mlx-community/gemma-4-31b-it-4bit'
+  },
+  qwen: {
+    low: 'mlx-community/Qwen3.5-2B-4bit',
+    medium: 'mlx-community/Qwen3.5-4B-MLX-4bit',
+    high: 'mlx-community/Qwen3.5-9B-MLX-4bit',
+    extraHigh: 'mlx-community/Qwen3.6-35B-A3B-4bit',
+    ultra: 'mlx-community/Qwen3.6-27B-4bit'
+  }
+}
+
+/** The curated repo for a (family, rung) cell. */
+export function repoForFamilyTier(family: Family, tier: Tier): string {
+  return FAMILY_LADDERS[family][tier]
+}
+
+/** Per-rung policy (family-agnostic); candidates are derived from the ladders. */
+const TIER_POLICY: Record<Tier, Omit<TierSpec, 'candidates'>> = {
   low: {
-    // gemma stays first: UTILITY_MODEL is candidates[0].
-    candidates: ['mlx-community/gemma-4-E2B-it-qat-4bit', 'mlx-community/Qwen3.5-2B-4bit'],
     caps: ['text', 'vision', 'audio'],
     approxGB: 3,
-    // candidates[0] gemma-4 E2B reports max_position_embeddings 131072 on HF.
+    // gemma-4 E2B / Qwen3.5 2B both report max_position_embeddings 131072 on HF.
+    // defaultCtx is a not-yet-installed fallback only; the installed value wins.
     defaultCtx: 131072,
     maxVisibleTools: 5
   },
   medium: {
-    candidates: ['mlx-community/gemma-4-E4B-it-qat-4bit', 'mlx-community/Qwen3.5-4B-MLX-4bit'],
     caps: ['text', 'vision', 'audio'],
     approxGB: 5,
-    // candidates[0] gemma-4 E4B reports max_position_embeddings 131072 on HF.
     defaultCtx: 131072,
     maxVisibleTools: 8
   },
   high: {
-    candidates: [
-      'mlx-community/Qwen3.5-9B-MLX-4bit',
-      'mlx-community/gemma-4-12B-it-qat-4bit'
-    ],
     caps: ['text', 'vision'],
     approxGB: 7,
-    // candidates[0] Qwen3.5 9B reports max_position_embeddings 262144 on HF.
     defaultCtx: 262144,
     maxVisibleTools: 12
   },
   extraHigh: {
-    candidates: ['mlx-community/gemma-4-26B-A4B-it-qat-4bit'],
     caps: ['text', 'vision'],
     approxGB: 15,
-    // candidates[0] gemma-4 26B reports max_position_embeddings 262144 on HF.
     defaultCtx: 262144,
     maxVisibleTools: 20
   },
@@ -94,10 +116,8 @@ export const TIERS: Record<Tier, TierSpec> = {
     // after the quant is validated live (see kvQuantBits below). The 31B
     // (~18.4 GB weights) only fits machines above 24 GB — the fit badge tells
     // that story honestly.
-    candidates: ['mlx-community/Qwen3.6-27B-4bit', 'mlx-community/gemma-4-31b-it-4bit'],
     caps: ['text', 'vision', 'video'],
     approxGB: 16.5,
-    // candidates[0] Qwen3.6 27B reports max_position_embeddings 262144 on HF.
     defaultCtx: 262144,
     maxOutputTokens: 32768,
     noCoload: true,
@@ -105,13 +125,31 @@ export const TIERS: Record<Tier, TierSpec> = {
   }
 }
 
-/** Single source for tier display names — the "Extra High" rename lands here. */
+/**
+ * Per-tier specs with candidates DERIVED from FAMILY_LADDERS. Gemma is
+ * candidates[0] in every tier, keeping UTILITY_MODEL (= TIERS.low.candidates[0])
+ * the gemma E2B.
+ */
+export const TIERS: Record<Tier, TierSpec> = Object.fromEntries(
+  TIER_ORDER.map((tier): [Tier, TierSpec] => [
+    tier,
+    { ...TIER_POLICY[tier], candidates: [FAMILY_LADDERS.gemma[tier], FAMILY_LADDERS.qwen[tier]] }
+  ])
+) as Record<Tier, TierSpec>
+
+/** Single source for tier (size-rung) display names. */
 export const TIER_LABELS: Record<Tier, string> = {
   low: 'Low',
   medium: 'Medium',
   high: 'High',
-  extraHigh: 'Extra High',
+  extraHigh: 'Extra',
   ultra: 'Ultra'
+}
+
+/** Display names for the selection families. */
+export const FAMILY_LABELS: Record<Family, string> = {
+  gemma: 'Gemma',
+  qwen: 'Qwen'
 }
 
 /**
@@ -139,6 +177,7 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   'mlx-community/Qwen3.5-2B-4bit': 'Qwen 3.5 2B',
   'mlx-community/Qwen3.5-4B-MLX-4bit': 'Qwen 3.5 4B',
   'mlx-community/Qwen3.5-9B-MLX-4bit': 'Qwen 3.5 9B',
+  'mlx-community/Qwen3.6-35B-A3B-4bit': 'Qwen 3.6 35B',
   'mlx-community/Qwen3.6-27B-4bit': 'Qwen 3.6 27B'
 }
 
@@ -153,8 +192,6 @@ export function modelDisplayName(repoId: string): string {
     .trim()
   return short || repoId
 }
-
-export const TIER_ORDER: Tier[] = ['low', 'medium', 'high', 'extraHigh', 'ultra']
 
 /** Which tier each feature uses by default (user-overridable in settings). */
 export const FEATURE_DEFAULTS: Record<Feature, Tier> = {
@@ -230,6 +267,15 @@ export function familyOf(repoId: string): CatalogFamily {
   return repoId.toLowerCase().includes('gemma') ? 'gemma' : 'qwen'
 }
 
+/** The selection family (which ladder it lives in) for a curated repo; null otherwise. */
+export function selectionFamilyOf(repoId: string): Family | null {
+  const id = canonicalRepoId(repoId)
+  for (const family of FAMILIES) {
+    if (TIER_ORDER.some((t) => FAMILY_LADDERS[family][t] === id)) return family
+  }
+  return null
+}
+
 /** The tier a repo id is curated under (rename-aware); null when not curated. */
 export function tierOfRepo(repoId: string): Tier | null {
   const id = canonicalRepoId(repoId)
@@ -242,19 +288,48 @@ export function tierSpecFor(repoId: string): TierSpec | undefined {
   return tier ? TIERS[tier] : undefined
 }
 
+/**
+ * Per-MODEL policy that overrides the tier default. The Qwen 3.6 35B-A3B sits at
+ * the extraHigh rung, but its ~17.5 GB MoE footprint needs the ultra-grade guards
+ * (KV-quant, output cap, no-coload) to stay inside the RAM budget. A targeted map
+ * is cleaner than promoting every policy field per-model — only this cell deviates
+ * from its tier. (Enabling KV-quant clears the model's MTP engine-side; that
+ * RAM-vs-speed trade is intentional on a 24 GB machine.)
+ */
+const MODEL_POLICY_OVERRIDES: Record<
+  string,
+  Partial<Pick<TierSpec, 'maxOutputTokens' | 'noCoload' | 'kvQuantBits'>>
+> = {
+  'mlx-community/Qwen3.6-35B-A3B-4bit': { maxOutputTokens: 32768, noCoload: true, kvQuantBits: 4 }
+}
+
+/** Per-request output cap for a repo (override > tier); undefined = engine default. */
+export function maxOutputTokensFor(repoId: string): number | undefined {
+  const override = MODEL_POLICY_OVERRIDES[canonicalRepoId(repoId)]?.maxOutputTokens
+  return override ?? tierSpecFor(repoId)?.maxOutputTokens
+}
+
+/** Whether a repo must never share RAM with the utility model (override > tier). */
+export function isNoColoadRepo(repoId: string): boolean {
+  const id = canonicalRepoId(repoId)
+  return MODEL_POLICY_OVERRIDES[id]?.noCoload ?? tierSpecFor(id)?.noCoload ?? false
+}
+
 /** Visible-tool cap for a tier (builtin + MCP combined); undefined = no cap. */
 export function toolBudgetForTier(tier: Tier): number | undefined {
   return TIERS[tier].maxVisibleTools
 }
 
 /**
- * TurboQuant KV-cache bits for a repo by its EFFECTIVE tier: curated repos
- * resolve through rename-aware tierOfRepo; anything else (a big experimental
- * download) falls back to classifyByParams, so it benefits too. Null = full-
- * precision KV. The `engine.kvQuant` override is applied by the caller
- * (model-service), not here — this is pure policy.
+ * TurboQuant KV-cache bits for a repo. A per-model override (MODEL_POLICY_OVERRIDES)
+ * wins; otherwise it resolves by EFFECTIVE tier — curated repos through rename-aware
+ * tierOfRepo, anything else (a big experimental download) via classifyByParams, so
+ * it benefits too. Null = full-precision KV. The `engine.kvQuant` settings override
+ * is applied by the caller (model-service), not here — this is pure policy.
  */
 export function kvQuantBitsFor(repoId: string, sizeBytes?: number | null): number | null {
+  const override = MODEL_POLICY_OVERRIDES[canonicalRepoId(repoId)]?.kvQuantBits
+  if (override !== undefined) return override
   const tier = tierOfRepo(repoId) ?? classifyByParams(repoId, sizeBytes)
   return TIERS[tier].kvQuantBits ?? null
 }
@@ -288,15 +363,61 @@ export function estimateGB(repoId: string, sizeBytes?: number | null): number | 
   return params === null ? null : params * 0.55 + 0.6
 }
 
-/** Traffic-light fit against the engine budget and live available memory. */
-export function fitFor(
-  estGB: number,
-  ram: { budgetGB: number; availableGB: number | null }
-): ModelFit {
-  if (estGB > ram.budgetGB) return 'unable'
-  if (ram.availableGB !== null && estGB > ram.availableGB - 2) return 'risky'
-  if (estGB > ram.budgetGB * 0.7) return 'good'
+/**
+ * Traffic-light fit of a model against the engine's (static) memory budget. A
+ * pure function of estGB vs budgetGB, so the badge is STABLE and MONOTONIC — a
+ * smaller model can never rank worse than a larger one, and it doesn't flicker as
+ * live free memory swings. Live swap-risk (what's free RIGHT NOW) is enforced at
+ * load time by RamGuard.canLoad and shown by the RAM meter, not by this badge.
+ */
+export function fitFor(estGB: number, budgetGB: number): ModelFit {
+  if (estGB > budgetGB) return 'unable'
+  if (estGB > budgetGB * 0.9) return 'risky' // little headroom under the budget
+  if (estGB > budgetGB * 0.7) return 'good'
   return 'perfect'
+}
+
+// --- family/tier resolution --------------------------------------------------
+
+function otherFamily(family: Family): Family {
+  return family === 'gemma' ? 'qwen' : 'gemma'
+}
+
+/** Rungs nearest-first from `tier`: the tier itself, then downward, then upward. */
+function cascadeRungs(tier: Tier): Tier[] {
+  const i = TIER_ORDER.indexOf(tier)
+  return [tier, ...TIER_ORDER.slice(0, i).reverse(), ...TIER_ORDER.slice(i + 1)]
+}
+
+/**
+ * Pure (family, tier) → repo resolution behind every chat/agent model pick. An
+ * explicit family pin stays WITHIN that family, cascading by rung (nearest first).
+ * With no pin, an explicit per-tier selection wins — this is where Experimental
+ * and deliberate cross-family picks live — then the default family's cell, then
+ * the other family's. Returns null when nothing in scope is installed; the caller
+ * (model-service.resolveRepoFor) then falls back to the cross-tier cascade.
+ */
+export function resolveLadderRepo(args: {
+  tier: Tier
+  family: Family | null
+  defaultFamily: Family
+  tierSelection: string | null
+  installed: (repoId: string) => boolean
+}): string | null {
+  const { tier, family, defaultFamily, tierSelection, installed } = args
+  if (family) {
+    for (const t of cascadeRungs(tier)) {
+      const cell = FAMILY_LADDERS[family][t]
+      if (installed(cell)) return cell
+    }
+    return null
+  }
+  if (tierSelection && installed(tierSelection)) return tierSelection
+  const pref = repoForFamilyTier(defaultFamily, tier)
+  if (installed(pref)) return pref
+  const other = repoForFamilyTier(otherFamily(defaultFamily), tier)
+  if (installed(other)) return other
+  return null
 }
 
 // --- module-load consistency checks ------------------------------------------
@@ -321,5 +442,16 @@ for (const tier of TIER_ORDER) {
   const bits = TIERS[tier].kvQuantBits
   if (bits !== undefined && bits !== 4 && bits !== 8) {
     throw new Error(`model-tiers: ${tier}.kvQuantBits must be 4 or 8 (got ${bits})`)
+  }
+}
+// Every per-model policy override must target a curated repo with a legal KV width.
+for (const [repoId, policy] of Object.entries(MODEL_POLICY_OVERRIDES)) {
+  if (!isCuratedRepo(repoId)) {
+    throw new Error(`model-tiers: policy override ${repoId} is not a curated repo`)
+  }
+  if (policy.kvQuantBits !== undefined && policy.kvQuantBits !== 4 && policy.kvQuantBits !== 8) {
+    throw new Error(
+      `model-tiers: ${repoId}.kvQuantBits override must be 4 or 8 (got ${policy.kvQuantBits})`
+    )
   }
 }

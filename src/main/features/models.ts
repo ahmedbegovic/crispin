@@ -99,6 +99,11 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
     return { ok: true }
   })
 
+  handle('models.setActiveFamily', ({ family }) => {
+    modelService.setActiveFamily(family)
+    return { ok: true }
+  })
+
   // Engine paged SSD KV-cache (R1): size readout + clear for the Settings tab.
   handle('cache.size', () => modelService.cacheSize())
 

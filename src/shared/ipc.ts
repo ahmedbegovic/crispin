@@ -29,6 +29,8 @@ export const systemStatusSchema = z.object({
 })
 
 export const tierSchema = z.enum(['low', 'medium', 'high', 'extraHigh', 'ultra'])
+/** Selection family (Models tab + composers); distinct from catalogFamilySchema. */
+export const familySchema = z.enum(['gemma', 'qwen'])
 export const featureSchema = z.enum(['chat', 'agent', 'code', 'research', 'news'])
 
 export const engineModelStateSchema = z.enum(['unloaded', 'loading', 'loaded'])
@@ -137,6 +139,8 @@ export const modelsOverviewSchema = z.object({
   defaults: featureDefaultsSchema,
   /** Per-tier explicit model picks (Settings-backed); resolution honors them. */
   tierSelections: z.partialRecord(tierSchema, z.string()),
+  /** Global active family — the Models tab selector + the no-pin resolution default. */
+  defaultFamily: familySchema,
   ram: ramReportSchema
 })
 
@@ -186,6 +190,8 @@ export const conversationSchema = z.object({
   defaultTier: tierSchema,
   /** False = the effective tier follows featureDefaults.chat live. */
   tierPinned: z.boolean(),
+  /** Pinned model family; null = follow the global default family live. */
+  family: familySchema.nullable(),
   collectionId: z.string().nullable(),
   webEnabled: z.boolean(),
   archived: z.boolean(),
@@ -311,6 +317,8 @@ export const agentSessionMetaSchema = z.object({
   title: z.string().nullable(),
   /** Last explicitly chosen model tier — the composer restores it on switch. */
   tier: tierSchema.nullable(),
+  /** Last explicitly chosen model family; null = follow the global default. */
+  family: familySchema.nullable(),
   createdAt: z.number(),
   lastUsedAt: z.number().nullable()
 })
@@ -475,7 +483,9 @@ export const appSettingsSchema = z.object({
   /** News topic filter applied at fetch time; empty = keep everything. */
   newsTopics: z.array(z.string()),
   /** Per-tier model picks (repo ids) honored by resolveTier. */
-  tierSelections: z.partialRecord(tierSchema, z.string())
+  tierSelections: z.partialRecord(tierSchema, z.string()),
+  /** Global active family — the no-pin resolution default + the Models tab selector. */
+  defaultFamily: familySchema
 })
 
 export type AppSettings = z.infer<typeof appSettingsSchema>
@@ -584,6 +594,11 @@ export const contract = {
     input: z.object({ tier: tierSchema, repoId: z.string().nullable() }),
     output: z.object({ ok: z.boolean() })
   },
+  'models.setActiveFamily': {
+    /** The global default family — drives no-pin resolution + the composer default. */
+    input: z.object({ family: familySchema }),
+    output: z.object({ ok: z.boolean() })
+  },
 
   // --- chat ------------------------------------------------------------------
   'chat.list': {
@@ -593,6 +608,7 @@ export const contract = {
   'chat.create': {
     input: z.object({
       tier: tierSchema.optional(),
+      family: familySchema.optional(),
       collectionId: z.string().optional(),
       webEnabled: z.boolean().optional()
     }),
@@ -608,7 +624,8 @@ export const contract = {
       conversationId: z.string(),
       text: z.string(),
       attachments: z.array(attachmentInputSchema).optional(),
-      tier: tierSchema.optional()
+      tier: tierSchema.optional(),
+      family: familySchema.optional()
     }),
     output: z.object({ messageId: z.string(), assistantMessageId: z.string() })
   },
@@ -622,6 +639,7 @@ export const contract = {
       conversationId: z.string(),
       messageId: z.string(),
       tier: tierSchema.optional(),
+      family: familySchema.optional(),
       lengthHint: z.enum(['shorter', 'longer']).optional(),
       toneHint: z.enum(['formal', 'casual']).optional()
     }),
@@ -644,6 +662,8 @@ export const contract = {
       systemPrompt: z.string().nullable().optional(),
       /** A tier pins the conversation; null un-pins (follow featureDefaults.chat). */
       defaultTier: tierSchema.nullable().optional(),
+      /** Pins the conversation's family; null un-pins (follow the global default). */
+      family: familySchema.nullable().optional(),
       collectionId: z.string().nullable().optional(),
       webEnabled: z.boolean().optional(),
       archived: z.boolean().optional(),
@@ -764,6 +784,7 @@ export const contract = {
     input: z.object({
       directory: z.string(),
       tier: tierSchema.optional(),
+      family: familySchema.optional(),
       tab: agentTabSchema.optional()
     }),
     output: z.object({ session: agentSessionMetaSchema })
@@ -779,6 +800,7 @@ export const contract = {
       sessionId: z.string(),
       text: z.string(),
       tier: tierSchema.optional(),
+      family: familySchema.optional(),
       mode: permissionModeSchema.optional()
     }),
     output: z.object({ ok: z.boolean() })
@@ -933,7 +955,9 @@ export const contract = {
         docs: z.boolean(),
         permissionMode: permissionModeSchema.optional(),
         /** Stage model tier; undefined follows the session/feature default. */
-        tier: tierSchema.optional()
+        tier: tierSchema.optional(),
+        /** Stage model family; undefined follows the session/global default. */
+        family: familySchema.optional()
       })
     }),
     output: z.object({ pipelineId: z.string() })

@@ -68,6 +68,26 @@ Other commands:
 
 App data lives in `~/Library/Application Support/Crispin/`.
 
+## Acknowledgements
+
+Crispin is built on excellent open-source work:
+
+- [oMLX](https://github.com/jundot/omlx) — the OpenAI-compatible MLX inference
+  server Crispin embeds as its engine backend (Apache-2.0). Crispin runs a small,
+  lightly-patched fork; it began from [vllm-mlx](https://github.com/waybarrios/vllm-mlx).
+- [MLX](https://github.com/ml-explore/mlx) and
+  [mlx-lm](https://github.com/ml-explore/mlx-lm) by Apple — the array framework and
+  LLM inference that the engine runs on.
+- [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) and
+  [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) — vision-language and
+  embedding model inference on Apple Silicon.
+- [dflash-mlx](https://github.com/bstnxbt/dflash-mlx) — block-diffusion speculative
+  decoding on Apple Silicon.
+- [opencode](https://opencode.ai) — powers the agentic coding tabs.
+- The tools sidecar builds on [trafilatura](https://github.com/adbar/trafilatura),
+  [LanceDB](https://github.com/lancedb/lancedb),
+  [pymupdf4llm](https://github.com/pymupdf/RAG), ddgs, and feedparser.
+
 ## License
 
 [MIT](LICENSE)

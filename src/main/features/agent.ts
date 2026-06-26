@@ -6,14 +6,14 @@ import type { AgentService } from '../services/agent-service'
 export function registerAgentFeature(agent: AgentService): void {
   handle('agent.sessions', (filter) => ({ sessions: agent.sessions(filter) }))
 
-  handle('agent.create', async ({ directory, tier, tab }) => ({
-    session: await agent.create(directory, tier, tab)
+  handle('agent.create', async ({ directory, tier, family, tab }) => ({
+    session: await agent.create(directory, tier, family, tab)
   }))
 
   handle('agent.get', ({ sessionId }) => agent.get(sessionId))
 
-  handle('agent.prompt', async ({ sessionId, text, tier, mode }) => {
-    await agent.prompt(sessionId, text, tier, mode)
+  handle('agent.prompt', async ({ sessionId, text, tier, family, mode }) => {
+    await agent.prompt(sessionId, text, tier, family, mode)
     return { ok: true }
   })
 

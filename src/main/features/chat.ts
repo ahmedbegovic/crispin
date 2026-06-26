@@ -31,11 +31,13 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
     conversations: repo.listConversations(input?.archived ?? false)
   }))
 
-  handle('chat.create', ({ tier, collectionId, webEnabled }) => ({
+  handle('chat.create', ({ tier, family, collectionId, webEnabled }) => ({
     conversation: repo.createConversation({
       tier: tier ?? modelService.overview().defaults.chat,
       // No explicit tier = keep following featureDefaults.chat as it changes.
       tierPinned: tier !== undefined,
+      // No explicit family = follow the global default family live (null).
+      family: family ?? null,
       collectionId,
       webEnabled
     })
@@ -47,8 +49,8 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
 
   handle('chat.abort', ({ conversationId }) => ({ ok: orchestrator.abort(conversationId) }))
 
-  handle('chat.regenerate', ({ conversationId, messageId, tier, lengthHint, toneHint }) =>
-    orchestrator.regenerate(conversationId, messageId, { tier, lengthHint, toneHint })
+  handle('chat.regenerate', ({ conversationId, messageId, tier, family, lengthHint, toneHint }) =>
+    orchestrator.regenerate(conversationId, messageId, { tier, family, lengthHint, toneHint })
   )
 
   handle('chat.editResend', ({ conversationId, messageId, text }) =>

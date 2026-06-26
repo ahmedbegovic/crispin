@@ -4,11 +4,12 @@ import type { CrispinEvent } from '@shared/ipc'
 import type {
   AttachmentInput,
   Conversation,
+  Family,
   MessagePart,
   ModelSampling,
   Tier
 } from '@shared/types'
-import { TIERS, tierOfRepo, toolBudgetForTier } from '@shared/model-tiers'
+import { TIERS, maxOutputTokensFor, tierOfRepo, toolBudgetForTier } from '@shared/model-tiers'
 import type { CrispinDatabase } from '../db'
 import * as settings from '../settings'
 import { dataDir } from '../paths'
@@ -88,11 +89,8 @@ const visionCapable = (modelId: string): boolean => {
   return tier !== null && TIERS[tier].caps.includes('vision')
 }
 
-/** Per-request output cap from the model's tier; undefined = engine default. */
-const maxTokensFor = (modelId: string): number | undefined => {
-  const tier = tierOfRepo(modelId)
-  return tier ? TIERS[tier].maxOutputTokens : undefined
-}
+/** Per-request output cap for the model (per-model override > tier); undefined = engine default. */
+const maxTokensFor = (modelId: string): number | undefined => maxOutputTokensFor(modelId)
 
 /**
  * Append text to the trailing user message — gemma's template rejects
@@ -329,11 +327,15 @@ export class ChatOrchestrator {
     text: string
     attachments?: AttachmentInput[]
     tier?: Tier
+    family?: Family
   }): Promise<{ messageId: string; assistantMessageId: string }> {
     const conversation = this.deps.repo.getConversation(input.conversationId)
     const controller = this.claim(input.conversationId)
     try {
-      const modelId = this.resolveModel(input.tier ?? this.effectiveTier(conversation))
+      const modelId = this.resolveModel(
+        input.tier ?? this.effectiveTier(conversation),
+        input.family ?? this.effectiveFamily(conversation)
+      )
       const prepared = await this.prepareUserParts(input.text, input.attachments ?? [], conversation.collectionId)
       const messageId = this.deps.repo.insertMessage({
         conversationId: conversation.id,
@@ -372,16 +374,24 @@ export class ChatOrchestrator {
   async regenerate(
     conversationId: string,
     messageId: string,
-    opts?: { tier?: Tier; lengthHint?: 'shorter' | 'longer'; toneHint?: 'formal' | 'casual' }
+    opts?: {
+      tier?: Tier
+      family?: Family
+      lengthHint?: 'shorter' | 'longer'
+      toneHint?: 'formal' | 'casual'
+    }
   ): Promise<{ assistantMessageId: string }> {
     const conversation = this.deps.repo.getConversation(conversationId)
     const message = this.deps.repo.getMessage(messageId)
     if (message.role !== 'assistant') throw new Error('Can only regenerate assistant messages')
     const controller = this.claim(conversationId)
     try {
-      // An explicit tier escalates the regeneration (e.g. 2B → Ultra) without
-      // pinning the conversation; otherwise the conversation's effective tier.
-      const modelId = this.resolveModel(opts?.tier ?? this.effectiveTier(conversation))
+      // An explicit tier/family escalates the regeneration (e.g. 2B → Ultra, or
+      // switch family) without pinning the conversation; else its effective pick.
+      const modelId = this.resolveModel(
+        opts?.tier ?? this.effectiveTier(conversation),
+        opts?.family ?? this.effectiveFamily(conversation)
+      )
       const assistantMessageId = this.deps.repo.insertMessage({
         conversationId,
         parentId: message.parentId, // sibling of the regenerated message
@@ -415,7 +425,10 @@ export class ChatOrchestrator {
     if (edited.role !== 'user') throw new Error('Can only edit user messages')
     const controller = this.claim(conversationId)
     try {
-      const modelId = this.resolveModel(this.effectiveTier(conversation))
+      const modelId = this.resolveModel(
+        this.effectiveTier(conversation),
+        this.effectiveFamily(conversation)
+      )
       // Preserve the original message's attachments (image parts + document-
       // extracted text parts): replace ONLY the user's typed text, which is the
       // first text part. Editing a message used to drop its images/documents.
@@ -469,6 +482,11 @@ export class ChatOrchestrator {
   private effectiveTier(conversation: Conversation): Tier {
     if (conversation.tierPinned) return conversation.defaultTier
     return this.deps.modelService.overview().defaults.chat
+  }
+
+  /** Pinned family, or undefined to follow the global default family live. */
+  private effectiveFamily(conversation: Conversation): Family | undefined {
+    return conversation.family ?? undefined
   }
 
   /** Reserve the conversation's single generation slot before any awaits. */
@@ -1110,10 +1128,10 @@ export class ChatOrchestrator {
 
   // --- model resolution -----------------------------------------------------------
 
-  /** Context window of the tier's active model; null when nothing is installed. */
-  contextForTier(tier: Tier): number | null {
+  /** Context window of the (tier, family) active model; null when nothing is installed. */
+  contextForTier(tier: Tier, family?: Family): number | null {
     try {
-      return this.deps.modelService.contextLengthFor(this.resolveModel(tier))
+      return this.deps.modelService.contextLengthFor(this.resolveModel(tier, family))
     } catch {
       return null
     }
@@ -1121,16 +1139,16 @@ export class ChatOrchestrator {
 
   /**
    * Donut denominator for a conversation: the context window of its EFFECTIVE
-   * tier's active model. Shares effectiveTier() with generation so the displayed
-   * denominator can't drift from the tier the orchestrator actually runs.
+   * (tier, family) active model. Shares effectiveTier/effectiveFamily with
+   * generation so the displayed denominator can't drift from what runs.
    */
   contextForConversation(conversation: Conversation): number | null {
-    return this.contextForTier(this.effectiveTier(conversation))
+    return this.contextForTier(this.effectiveTier(conversation), this.effectiveFamily(conversation))
   }
 
-  /** Requested tier first, then nearest installed below, then above. */
-  private resolveModel(tier: Tier): string {
-    return this.deps.modelService.resolveActiveRepo(tier)
+  /** Requested (tier, family) first, then nearest installed below, then above. */
+  private resolveModel(tier: Tier, family?: Family): string {
+    return this.deps.modelService.resolveRepoFor(tier, family)
   }
 
   private ensureModelLoaded(modelId: string): Promise<void> {
