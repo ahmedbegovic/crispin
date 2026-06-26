@@ -43,7 +43,7 @@ export interface TierSpec {
 }
 
 /**
- * The six quality tiers. Single source of truth for model policy;
+ * The five quality tiers. Single source of truth for model policy;
  * user overrides are stored in settings and merged over this table.
  *
  * All Gemma 4 entries MUST be QAT quants — non-QAT MLX quants of Gemma 4

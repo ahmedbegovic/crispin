@@ -535,9 +535,9 @@ export const contract = {
   },
   'models.unload': {
     /**
-     * Unload one model. The engine has no per-model unload endpoint, so this
-     * restarts it (cheap in lazy registry mode) and re-warms the other loaded
-     * models in the background.
+     * Unload one model via the engine's real per-model unload endpoint —
+     * other loaded models stay resident, no engine restart. ok:false + reason
+     * while the engine is mid-generation.
      */
     input: z.object({ repoId: z.string() }),
     output: z.object({ ok: z.boolean(), reason: z.string().optional() })
