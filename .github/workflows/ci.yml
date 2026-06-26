@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      # `npm ci --ignore-scripts` skips the Electron download / node-pty rebuild
+      # (no test needs the native binding) if you want a faster run.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  sidecars:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8
+      # Mirrors `predist`: metadata-only, cross-platform.
+      # NOT `uv sync` — that installs MLX (darwin/arm64-only) and would fail on Linux.
+      - run: uv lock --check --project sidecars/tools
+      - run: uv lock --check --project sidecars/engine
