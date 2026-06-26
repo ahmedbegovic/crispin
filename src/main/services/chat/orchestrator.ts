@@ -38,6 +38,7 @@ import {
   stripThoughts,
   type ModelFamily
 } from './family'
+import { computeBudget, trimToBudget } from './budget'
 import {
   builtinToolDefs,
   executeTool,
@@ -162,19 +163,6 @@ function regenDirective(opts?: {
   return hints.length > 0
     ? `(Regeneration note: ${hints.join(' ')} Do not mention this note.)`
     : undefined
-}
-
-/** Rough token estimate for budgeting: ~4 chars/token + a flat per-image cost. */
-function estimateMessageTokens(parts: MessagePart[]): number {
-  let chars = 0
-  let images = 0
-  for (const p of parts) {
-    if (p.type === 'text' || p.type === 'thought') chars += p.text.length
-    else if (p.type === 'tool_call') chars += p.name.length + p.args.length + 16
-    else if (p.type === 'tool_result') chars += p.result.length + 16
-    else if (p.type === 'image') images += 1
-  }
-  return Math.ceil(chars / 4) + images * 900
 }
 
 /**
@@ -1169,17 +1157,7 @@ export class ChatOrchestrator {
     // pipeline appends to the trailing user turn AFTER this trim (it scales to
     // ~15k tokens, so a flat margin alone would overflow on big web turns).
     const evidenceReserve = webEvidence ? Math.ceil(scaledEvidenceLimit(contextLength) / 4) : 0
-    const budget = Math.max(2048, contextLength - outputReserve - 4096 - evidenceReserve)
-    let total = 0
-    const kept: T[] = []
-    for (let i = path.length - 1; i >= 0; i--) {
-      const cost = estimateMessageTokens(path[i].parts)
-      if (kept.length > 0 && total + cost > budget) break
-      total += cost
-      kept.unshift(path[i])
-    }
-    while (kept.length > 1 && kept[0].role === 'assistant') kept.shift()
-    return kept
+    return trimToBudget(path, computeBudget(contextLength, outputReserve, evidenceReserve))
   }
 
   private buildHistory(

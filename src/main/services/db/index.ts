@@ -25,13 +25,29 @@ export function openDatabase(dbPath: string): CrispinDatabase {
   mkdirSync(dirname(dbPath), { recursive: true })
   const db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: true })
   db.exec('PRAGMA journal_mode = WAL')
+  runMigrations(db, MIGRATIONS, log)
+  ensureChatSchema(db, log)
+  log.info(`open at ${dbPath} (schema v${MIGRATIONS.length})`)
+  return db
+}
 
+/**
+ * Apply pending migrations in order, keyed by PRAGMA user_version. Each migration
+ * runs in its own transaction and bumps user_version atomically; a failing
+ * migration rolls back and rethrows, leaving user_version at the last good
+ * version. Idempotent: re-running on an up-to-date DB never enters the loop.
+ */
+export function runMigrations(
+  db: DatabaseSync,
+  migrations: string[],
+  log?: { info(message: string): void }
+): void {
   const row = db.prepare('PRAGMA user_version').get() as { user_version: number }
-  for (let v = row.user_version; v < MIGRATIONS.length; v++) {
-    log.info(`applying migration ${v + 1}/${MIGRATIONS.length}`)
+  for (let v = row.user_version; v < migrations.length; v++) {
+    log?.info(`applying migration ${v + 1}/${migrations.length}`)
     db.exec('BEGIN')
     try {
-      db.exec(MIGRATIONS[v])
+      db.exec(migrations[v])
       db.exec(`PRAGMA user_version = ${v + 1}`)
       db.exec('COMMIT')
     } catch (err) {
@@ -39,9 +55,6 @@ export function openDatabase(dbPath: string): CrispinDatabase {
       throw err
     }
   }
-  ensureChatSchema(db, log)
-  log.info(`open at ${dbPath} (schema v${MIGRATIONS.length})`)
-  return db
 }
 
 /**
