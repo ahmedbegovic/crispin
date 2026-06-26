@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.2.0  # no floating major tag — pin the full version
       # Mirrors `predist`: metadata-only, cross-platform.
       # NOT `uv sync` — that installs MLX (darwin/arm64-only) and would fail on Linux.
       - run: uv lock --check --project sidecars/tools
