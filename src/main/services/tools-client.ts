@@ -1,3 +1,20 @@
+import type { ZodType } from 'zod'
+import {
+  checkSidecar,
+  extractResultSchema,
+  healthzSchema,
+  hubSearchSchema,
+  imageSearchSchema,
+  jobIdSchema,
+  jobSnapshotSchema,
+  localModelsSchema,
+  newsFetchSchema,
+  okSchema,
+  ragQuerySchema,
+  searchSchema,
+  visitResultSchema
+} from './sidecar-contract'
+
 export interface JobSnapshot<TData = unknown> {
   id: string
   kind: string
@@ -107,7 +124,8 @@ export class ToolsClient {
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
     body?: unknown,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    schema?: ZodType<unknown>
   ): Promise<T> {
     const res = await fetch(`${this.baseUrl()}${path}`, {
       method,
@@ -119,45 +137,59 @@ export class ToolsClient {
       const text = await res.text().catch(() => '')
       throw new Error(`tools ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`)
     }
-    return (await res.json()) as T
+    const data = (await res.json()) as T
+    // Dev-gated contract check at the response seam (no-op in prod).
+    return schema ? checkSidecar(schema, data, path) : data
   }
 
   healthz(): Promise<{ status: string; service: string; version: string }> {
-    return this.request('GET', '/healthz')
+    return this.request('GET', '/healthz', undefined, undefined, healthzSchema)
   }
 
   job<TData = unknown>(id: string): Promise<JobSnapshot<TData>> {
-    return this.request('GET', `/jobs/${id}`)
+    return this.request('GET', `/jobs/${id}`, undefined, undefined, jobSnapshotSchema)
   }
 
   cancelJob(id: string): Promise<{ ok: boolean }> {
-    return this.request('POST', `/jobs/${id}/cancel`)
+    return this.request('POST', `/jobs/${id}/cancel`, undefined, undefined, okSchema)
   }
 
   // --- models / HF cache -----------------------------------------------------
 
   downloadModel(repoId: string): Promise<{ job_id: string }> {
-    return this.request('POST', '/models/download', { repo_id: repoId })
+    return this.request('POST', '/models/download', { repo_id: repoId }, undefined, jobIdSchema)
   }
 
   localModels(): Promise<{ models: LocalModelEntry[] }> {
-    return this.request('GET', '/models/local')
+    return this.request('GET', '/models/local', undefined, undefined, localModelsSchema)
   }
 
   /** repo_id contains a slash — the sidecar uses a path-typed param. */
   deleteModel(repoId: string): Promise<{ ok: boolean }> {
-    return this.request('DELETE', `/models/${repoId}`)
+    return this.request('DELETE', `/models/${repoId}`, undefined, undefined, okSchema)
   }
 
   searchModels(q: string): Promise<{ results: HubSearchEntry[] }> {
-    return this.request('GET', `/models/search?q=${encodeURIComponent(q)}`)
+    return this.request(
+      'GET',
+      `/models/search?q=${encodeURIComponent(q)}`,
+      undefined,
+      undefined,
+      hubSearchSchema
+    )
   }
 
   // --- extraction / web (M2) --------------------------------------------------
 
   /** Sync — extraction is seconds, not a job. Exactly one of path|url. */
   extract(input: { path?: string; url?: string }, signal?: AbortSignal): Promise<ExtractResult> {
-    return this.request('POST', '/extract', { path: input.path, url: input.url }, bounded(signal))
+    return this.request(
+      'POST',
+      '/extract',
+      { path: input.path, url: input.url },
+      bounded(signal),
+      extractResultSchema
+    )
   }
 
   search(
@@ -178,7 +210,8 @@ export class ToolsClient {
         backend: input.backend ?? 'auto',
         searxng_url: input.searxngUrl
       },
-      bounded(signal)
+      bounded(signal),
+      searchSchema
     )
   }
 
@@ -190,7 +223,8 @@ export class ToolsClient {
       'POST',
       '/search_images',
       { query: input.query, max_results: input.maxResults ?? 6 },
-      bounded(signal)
+      bounded(signal),
+      imageSearchSchema
     )
   }
 
@@ -198,7 +232,13 @@ export class ToolsClient {
   // VISIT_MAX_CHARS (20k); the old 12k default silently capped model-loop page
   // reads 8k chars shorter than harness-driven ones.
   visit(url: string, maxChars = 20_000, signal?: AbortSignal): Promise<VisitResult> {
-    return this.request('POST', '/visit', { url, max_chars: maxChars }, bounded(signal))
+    return this.request(
+      'POST',
+      '/visit',
+      { url, max_chars: maxChars },
+      bounded(signal),
+      visitResultSchema
+    )
   }
 
   // --- news (M6) ----------------------------------------------------------------
@@ -212,7 +252,8 @@ export class ToolsClient {
       'POST',
       '/news/fetch',
       { url: input.url, etag: input.etag, last_modified: input.lastModified },
-      bounded(signal)
+      bounded(signal),
+      newsFetchSchema
     )
   }
 
@@ -227,15 +268,21 @@ export class ToolsClient {
     embeddingModel: string
     lancedbDir: string
   }): Promise<{ job_id: string }> {
-    return this.request('POST', '/rag/ingest', {
-      collection_id: input.collectionId,
-      doc_id: input.docId,
-      markdown: input.markdown,
-      title: input.title,
-      embeddings_url: input.embeddingsUrl,
-      embedding_model: input.embeddingModel,
-      lancedb_dir: input.lancedbDir
-    })
+    return this.request(
+      'POST',
+      '/rag/ingest',
+      {
+        collection_id: input.collectionId,
+        doc_id: input.docId,
+        markdown: input.markdown,
+        title: input.title,
+        embeddings_url: input.embeddingsUrl,
+        embedding_model: input.embeddingModel,
+        lancedb_dir: input.lancedbDir
+      },
+      undefined,
+      jobIdSchema
+    )
   }
 
   async ragQuery(
@@ -260,23 +307,29 @@ export class ToolsClient {
         embedding_model: input.embeddingModel,
         lancedb_dir: input.lancedbDir
       },
-      bounded(signal)
+      bounded(signal),
+      ragQuerySchema
     )
     return res.results
   }
 
   ragDeleteDoc(collectionId: string, docId: string, lancedbDir: string): Promise<{ ok: boolean }> {
-    return this.request('POST', '/rag/delete_doc', {
-      collection_id: collectionId,
-      doc_id: docId,
-      lancedb_dir: lancedbDir
-    })
+    return this.request(
+      'POST',
+      '/rag/delete_doc',
+      { collection_id: collectionId, doc_id: docId, lancedb_dir: lancedbDir },
+      undefined,
+      okSchema
+    )
   }
 
   ragDropCollection(collectionId: string, lancedbDir: string): Promise<{ ok: boolean }> {
-    return this.request('POST', '/rag/drop_collection', {
-      collection_id: collectionId,
-      lancedb_dir: lancedbDir
-    })
+    return this.request(
+      'POST',
+      '/rag/drop_collection',
+      { collection_id: collectionId, lancedb_dir: lancedbDir },
+      undefined,
+      okSchema
+    )
   }
 }

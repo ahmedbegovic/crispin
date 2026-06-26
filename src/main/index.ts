@@ -9,6 +9,7 @@ import { allocatePort } from './services/ports'
 import { ProcessManager } from './services/process-manager'
 import { ToolsClient } from './services/tools-client'
 import { EngineClient } from './services/engine-client'
+import { enableSidecarValidation } from './services/sidecar-contract'
 import { RamGuard } from './services/ram-guard'
 import { MacosMemory } from './services/macos-memory'
 import { ModelService } from './services/model-service'
@@ -149,6 +150,9 @@ const ports = { tools: 0, engine: 0 }
 
 export const toolsClient = new ToolsClient(() => `http://127.0.0.1:${ports.tools}`)
 export const engineClient = new EngineClient(() => `http://127.0.0.1:${ports.engine}`)
+// Validate sidecar responses against the contract schemas in dev only — surfaces
+// TS↔Python drift loudly without paying the parse cost (or risking a false break) in prod.
+enableSidecarValidation(!app.isPackaged)
 
 const macosMemory = new MacosMemory()
 const ramGuard = new RamGuard(macosMemory)

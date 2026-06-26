@@ -33,10 +33,11 @@ import {
 import type { CrispinDatabase } from './db'
 import * as settings from './settings'
 import type { AppSettingsService } from './app-settings'
-import { writeEngineConfig, omlxCacheDir, type EngineConfigModel } from './engine-config'
+import { writeEngineConfig, omlxCacheDir, engineModelSettings, type EngineConfigModel } from './engine-config'
 import { evictableLoaded } from './engine-eviction'
 import { embedderDiscoverAction } from './embedder-discovery'
-import type { EngineClient } from './engine-client'
+import { registryKey, registryDeltaFromKey } from './engine-registry-delta'
+import { engineModelId, type EngineClient } from './engine-client'
 import type { RamGuard } from './ram-guard'
 import type { ProcessManager } from './process-manager'
 import type { DownloadJobData, ToolsClient } from './tools-client'
@@ -85,18 +86,6 @@ function dirSizeBytes(dir: string): number {
   return total
 }
 
-/**
- * Order-insensitive fingerprint of a registry — drives restart decisions.
- * ttlSeconds is deliberately excluded: the TTL backstop follows the idle-unload
- * knob, and changing that knob must never force an engine restart — the new
- * value simply rides the next natural spawn (command() rewrites the config).
- */
-const registryKey = (entries: EngineConfigModel[]): string =>
-  JSON.stringify(
-    entries
-      .map((e): [string, number] => [e.name, e.maxTokens])
-      .sort((a, b) => a[0].localeCompare(b[0]))
-  )
 
 /**
  * Resolve TurboQuant KV-cache bits for a registry entry. The `engine.kvQuant`
@@ -410,7 +399,14 @@ export class ModelService {
       return
     }
 
-    if (registryKey(entries) === this.appliedRegistryKey) return
+    const delta = registryDeltaFromKey(this.appliedRegistryKey, entries)
+    if (delta.kind === 'none') return
+
+    // A purely additive change (a newly downloaded model — the common case) can
+    // ride a live rediscovery instead of a restart, so the warm model stays warm.
+    // Falls through to restart on a non-additive delta, an un-patched engine, or
+    // any rediscovery failure.
+    if (delta.kind === 'additive' && (await this.tryAdditiveRediscover(entries, delta.added))) return
 
     const restarted = await this.exclusive(0, () =>
       engine.restart('model registry changed').then(() => ({ ok: true as const }))
@@ -427,6 +423,39 @@ export class ModelService {
       }
       this.pendingRegistryRestart = true
     }
+  }
+
+  /**
+   * Try to apply a purely-additive registry change with a live rediscovery
+   * instead of a restart: push the new models' per-model settings and re-scan the
+   * cache, leaving the warm model loaded. Runs on the load chain (serializes with
+   * loads) but raises no drain gate — the re-scan is non-destructive. Returns
+   * true if it handled the change; false to fall back to a restart (un-patched
+   * engine → 404, or any rediscovery error).
+   */
+  private async tryAdditiveRediscover(entries: EngineConfigModel[], added: string[]): Promise<boolean> {
+    // Build the new models' oMLX settings, keyed by the engine '--' model id, so
+    // they arrive with their max_tokens / KV policy already set (no respawn to
+    // merge engine-config.json). One source of truth with the spawn-time write.
+    const settings: Record<string, Record<string, unknown>> = {}
+    for (const name of added) {
+      const m = entries.find((e) => e.name === name)
+      if (!m) continue
+      const { name: _name, ...wire } = engineModelSettings(m)
+      settings[engineModelId(name)] = wire
+    }
+
+    try {
+      const result = await this.enqueue(() => this.deps.engine.rediscover(settings))
+      if (result === null) return false // endpoint absent → restart
+    } catch (err) {
+      this.log.warn(`additive rediscover failed, falling back to restart: ${String(err)}`)
+      return false
+    }
+    this.appliedRegistryKey = registryKey(entries)
+    this.pendingRegistryRestart = false
+    await this.refreshEngineModels()
+    return true
   }
 
   /** True when no request is in flight and no model is mid-load. */
@@ -990,64 +1019,73 @@ export class ModelService {
 
   /**
    * The embedder was just downloaded into the shared HF cache. oMLX discovers
-   * cache models at spawn only, so a running engine cannot serve it until it
-   * restarts — but never mid-generation (that kills another surface's in-flight
-   * stream, the same hazard load()'s restart is idle-gated against). Wait,
-   * bounded, for the engine to go idle, then restart; the library ingest awaits
-   * this before its first /v1/embeddings call. Owned here because ModelService,
-   * not LibraryService, orchestrates the engine.
+   * cache models at spawn, so a running engine cannot serve it until it
+   * re-scans. The fast path is a live rediscovery (POST /v1/models/discover):
+   * non-destructive, so it leaves the warm chat model in place and needs no
+   * idle gate — the library ingest awaits this before its first /v1/embeddings
+   * call. On an un-patched engine (no discover route) we fall back to the old
+   * idle-gated restart, which still must never fire mid-generation. Owned here
+   * because ModelService, not LibraryService, orchestrates the engine. Run on
+   * the load chain so it serializes with loads/other lifecycle ops.
    */
   async discoverEmbedder(): Promise<{ ok: boolean; reason?: string }> {
-    const deadline = Date.now() + EMBEDDER_DISCOVER_WAIT_MS
-    for (;;) {
-      const engine = this.deps.processManager.get('engine')
-      const running = engine?.snapshot().state === 'running'
-      const alreadyDiscovered = this.engineModels.some((m) => m.id === EMBEDDING_MODEL)
-      // engineIdle() is an HTTP probe — only worth it when a restart is on the table.
-      const mustCheckIdle = !this.disposed && running && !alreadyDiscovered
-      const action = embedderDiscoverAction({
-        disposed: this.disposed,
-        running,
-        alreadyDiscovered,
-        idle: mustCheckIdle ? await this.engineIdle() : false,
-        timedOut: Date.now() >= deadline
-      })
-      if (action === 'done') return { ok: true }
-      if (action === 'restart' && engine) {
-        // Restart under the generation barrier (exclusive = chain + drain): blocks
-        // new generations and waits for any in flight, so the respawn can't SIGTERM
-        // a chat/agent stream. If a generation won't drain, loop back to the wait;
-        // the deadline check at the top of this loop bounds the total time.
-        const restarted = await this.exclusive(0, () =>
-          engine
-            .restart('embedding model downloaded — rediscover the HF cache')
-            .then(() => ({ ok: true as const }))
-        )
-        if (!restarted.ok) {
-          await sleep(ENGINE_POLL_MS)
-          continue
+    const action = embedderDiscoverAction({
+      disposed: this.disposed,
+      running: this.deps.processManager.get('engine')?.snapshot().state === 'running',
+      alreadyDiscovered: this.engineModels.some((m) => m.id === EMBEDDING_MODEL)
+    })
+    if (action === 'done') return { ok: true }
+    if (action === 'giveUp') return { ok: false, reason: 'app is shutting down' }
+
+    return this.enqueue(async () => {
+      // Re-check inside the chain — a load that ran just ahead of us may already
+      // have surfaced the embedder (or the engine may have stopped).
+      if (this.disposed) return { ok: false, reason: 'app is shutting down' }
+      if (this.deps.processManager.get('engine')?.snapshot().state !== 'running') return { ok: true }
+      if (this.engineModels.some((m) => m.id === EMBEDDING_MODEL)) return { ok: true }
+      try {
+        // No settings: the embedder's per-model entry was written into
+        // model_settings.json at the last spawn (writeConfig always includes it).
+        const result = await this.deps.engine.rediscover()
+        if (result !== null) {
+          await this.refreshEngineModels()
+          return this.engineModels.some((m) => m.id === EMBEDDING_MODEL)
+            ? { ok: true }
+            : { ok: false, reason: 'the embedding model did not surface after rediscovery — check the engine logs' }
         }
-        // Confirm the respawn actually surfaced the embedder rather than blindly
-        // reporting success — a discovery miss should fail the ingest with an
-        // actionable reason, not a downstream /v1/embeddings 404.
-        await this.refreshEngineModels()
-        return this.engineModels.some((m) => m.id === EMBEDDING_MODEL)
-          ? { ok: true }
-          : {
-              ok: false,
-              reason: 'the embedding model did not load after the engine restart — check the engine logs'
-            }
+        // result === null → endpoint absent (un-patched engine): fall through.
+      } catch (err) {
+        // A rediscovery failure must not fail the ingest outright — the restart
+        // path still works. Surface it for diagnostics, then fall back.
+        this.log.warn(`engine rediscover failed, falling back to restart: ${String(err)}`)
       }
-      if (action === 'giveUp') {
-        return {
-          ok: false,
-          reason: this.disposed
-            ? 'app is shutting down'
-            : 'the engine is busy — try the ingest again in a moment'
-        }
-      }
-      await sleep(ENGINE_POLL_MS) // 'wait'
-    }
+      return this.embedderViaRestart()
+    })
+  }
+
+  /**
+   * Fallback for an engine without the rediscovery route: restart it to re-scan
+   * the cache. Already on the load chain (called from discoverEmbedder's
+   * enqueue), so it uses the on-chain withDrain form — raising the generation
+   * barrier and waiting up to EMBEDDER_DISCOVER_WAIT_MS for in-flight generations
+   * to finish, so the respawn can't SIGTERM another surface's stream.
+   */
+  private async embedderViaRestart(): Promise<{ ok: boolean; reason?: string }> {
+    const engine = this.deps.processManager.get('engine')
+    if (!engine || engine.snapshot().state !== 'running') return { ok: true }
+    const restarted = await this.withDrain(EMBEDDER_DISCOVER_WAIT_MS, () =>
+      engine
+        .restart('embedding model downloaded — rediscover the HF cache')
+        .then(() => ({ ok: true as const }))
+    )
+    if (!restarted.ok) return { ok: false, reason: 'the engine is busy — try the ingest again in a moment' }
+    // Confirm the respawn actually surfaced the embedder rather than blindly
+    // reporting success — a discovery miss should fail the ingest with an
+    // actionable reason, not a downstream /v1/embeddings 404.
+    await this.refreshEngineModels()
+    return this.engineModels.some((m) => m.id === EMBEDDING_MODEL)
+      ? { ok: true }
+      : { ok: false, reason: 'the embedding model did not load after the engine restart — check the engine logs' }
   }
 
   // --- misc orchestration -----------------------------------------------------

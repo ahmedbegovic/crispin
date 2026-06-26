@@ -1,24 +1,21 @@
-export type EmbedderDiscoverAction = 'done' | 'restart' | 'wait' | 'giveUp'
+export type EmbedderDiscoverAction = 'done' | 'rediscover' | 'giveUp'
 
 /**
  * One decision in the embedder-rediscovery loop (F2). oMLX discovers cache
- * models at spawn only, so a running engine must restart to serve a freshly
- * downloaded embedder — but that restart must NEVER fire mid-generation, which
- * would kill another surface's in-flight stream (the same hazard load()'s
- * restart is idle-gated against). So this returns 'wait' (poll again) until the
- * engine is idle, 'restart' once it is, 'done' when there is nothing to do, and
- * 'giveUp' on shutdown or after the busy-wait deadline.
+ * models at spawn, so a running engine must be told to re-scan to serve a
+ * freshly downloaded embedder. That re-scan is a non-destructive, in-place merge
+ * (it preserves loaded models — see EngineClient.rediscover), so unlike the old
+ * engine restart it need NOT be idle-gated: it can run with a generation in
+ * flight without disturbing it. Returns 'rediscover' when there is an
+ * undiscovered embedder on a running engine, 'done' when there is nothing to do,
+ * and 'giveUp' on shutdown.
  */
 export function embedderDiscoverAction(s: {
   disposed: boolean
   running: boolean
   alreadyDiscovered: boolean
-  idle: boolean
-  timedOut: boolean
 }): EmbedderDiscoverAction {
   if (s.disposed) return 'giveUp'
   if (!s.running || s.alreadyDiscovered) return 'done'
-  if (s.idle) return 'restart'
-  if (s.timedOut) return 'giveUp'
-  return 'wait'
+  return 'rediscover'
 }

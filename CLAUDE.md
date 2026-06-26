@@ -21,9 +21,11 @@ Apple Silicon only; dev machine has 24GB unified memory — RAM headroom is the 
   `src/main/ipc/router.ts` validates input against the contract and dispatches, events go out via `src/main/ipc/events.ts`.
 - `src/main/services/process-manager.ts` — supervises sidecars (spawn/health/backoff/restart,
   process-group kills). A model *swap* is a per-model `/load`+`/unload` (`engine-client.ts`
-  `warm`/`unloadModel`), NOT a restart; engine *restarts* are still a feature (registry/config change —
-  a model added to the config, a freshly-downloaded model the engine must rediscover at spawn, a budget
-  change), not a failure.
+  `warm`/`unloadModel`), NOT a restart. A purely *additive* registry change (a freshly-downloaded model,
+  the new embedder) prefers a live **rediscovery** — `engine-client.ts` `rediscover()` → `POST
+  /v1/models/discover` (the engine re-scans the HF cache in place, leaving loaded models warm; needs the
+  oMLX patch, else 404 → falls back to restart). Engine *restarts* remain a feature for the rest
+  (a model *removed* or its budget changed, a config/budget change), not a failure.
 - Sidecars: `engine` (oMLX, OpenAI-compatible, preferred port 47621; also serves the RAG embedder —
   see model policy) and `tools` (FastAPI: downloads/extract/RAG/search/news, preferred port 47622).
   Ports are dynamic — always resolve via the port allocator, never hardcode. The engine is driven by

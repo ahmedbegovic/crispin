@@ -1,5 +1,11 @@
 import { createParser } from 'eventsource-parser'
 import type { EngineModelInfo } from '@shared/types'
+import {
+  checkSidecar,
+  engineApiStatusSchema,
+  engineDiscoverSchema,
+  engineModelsStatusSchema
+} from './sidecar-contract'
 
 /** oMLX flattens HF repo ids into directory-safe ids ('/' → '--', all slashes,
  *  matching run_engine.py's engine_model_id so the two never diverge). */
@@ -238,6 +244,7 @@ export class EngineClient {
    */
   async models(): Promise<EngineModelInfo[]> {
     const res = await this.request<ModelsStatusResponse>('GET', '/v1/models/status')
+    checkSidecar(engineModelsStatusSchema, res, '/v1/models/status')
     return (res.models ?? [])
       .filter((m) => typeof m.source_repo_id === 'string' && m.source_repo_id.length > 0)
       .map((m) => {
@@ -253,6 +260,7 @@ export class EngineClient {
   /** Liveness subset — used to avoid restarting mid-generation. */
   async status(): Promise<{ running: boolean; numRunning: number }> {
     const res = await this.request<ApiStatusResponse>('GET', '/api/status')
+    checkSidecar(engineApiStatusSchema, res, '/api/status')
     // models_loading counts: a request parked inside a lazy cold load (e.g.
     // opencode traffic that bypasses this client) registers in neither
     // active nor waiting, and the cached engineModels snapshot lags by a poll.
@@ -436,6 +444,38 @@ export class EngineClient {
     } finally {
       this.inflightCount -= 1
     }
+  }
+
+  /**
+   * Trigger a live re-scan of the HF cache so freshly downloaded models become
+   * servable WITHOUT an engine restart (Crispin's oMLX patch — POST
+   * /v1/models/discover). The re-scan is non-destructive: it merges new entries
+   * and leaves loaded models in place, so it needs no drain/idle gate and never
+   * counts as a generation. Optional `settings` (keyed by the engine '--' model
+   * id) are applied before the scan so a new chat model arrives with its
+   * max_tokens / KV policy already set.
+   *
+   * Returns the post-scan pool summary, or `null` when the endpoint is absent
+   * (404 on an un-patched engine) so the caller can fall back to a restart.
+   * Throws on any other failure.
+   */
+  async rediscover(
+    settings?: Record<string, Record<string, unknown>>
+  ): Promise<{ modelsDiscovered: number; loadedModels: string[] } | null> {
+    const res = await fetch(`${this.baseUrl()}/v1/models/discover`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(settings ? { settings } : {}),
+      signal: AbortSignal.timeout(30_000)
+    })
+    if (res.status === 404) return null // route absent → caller falls back to restart
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`engine POST /v1/models/discover → ${res.status}: ${text.slice(0, 300)}`)
+    }
+    const data = (await res.json()) as { models_discovered?: number; loaded_models?: string[] }
+    checkSidecar(engineDiscoverSchema, data, '/v1/models/discover')
+    return { modelsDiscovered: data.models_discovered ?? 0, loadedModels: data.loaded_models ?? [] }
   }
 
   /** Explicit load — blocks until the model is in memory (cold loads page weights). */
