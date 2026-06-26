@@ -3,7 +3,7 @@ import { Trash2 } from 'lucide-react'
 import { modelDisplayName } from '@shared/model-tiers'
 import type { InstalledModel, ModelsOverview } from '@shared/types'
 import { useModelsStore } from '@/stores/models'
-import { toastError } from '@/stores/toasts'
+import { pushToast, toastError } from '@/stores/toasts'
 import { formatBytes } from '@/lib/format'
 import ConfirmDialog from '@/components/ConfirmDialog'
 
@@ -56,7 +56,13 @@ export default function LocalModels({ overview }: { overview: ModelsOverview }) 
           </span>
           {anyLoaded && (
             <button
-              onClick={() => void unloadAll().catch(toastError)}
+              onClick={() =>
+                void unloadAll()
+                  .then((r) => {
+                    if (!r.ok) pushToast('error', r.reason ?? 'Unload all failed.')
+                  })
+                  .catch(toastError)
+              }
               className="rounded-md border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
             >
               Unload all

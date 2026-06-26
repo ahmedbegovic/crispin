@@ -568,8 +568,12 @@ export const contract = {
     output: z.object({ ok: z.boolean(), reason: z.string().optional() })
   },
   'models.unloadAll': {
+    /**
+     * Same mid-generation guard as `models.unload`: ok:false + reason while the
+     * engine is busy, so "Unload all" can't tear a model down under a live stream.
+     */
     input: z.undefined(),
-    output: z.object({ ok: z.boolean() })
+    output: z.object({ ok: z.boolean(), reason: z.string().optional() })
   },
   'models.setDefault': {
     input: z.object({ feature: featureSchema, tier: tierSchema }),

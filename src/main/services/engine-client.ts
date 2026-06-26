@@ -130,6 +130,13 @@ const CHAT_ONCE_TIMEOUT_MS = 600_000
 /** No chunk for this long means a wedged stream, not a slow model — bail out. */
 const STREAM_INACTIVITY_MS = 300_000
 
+/** A new generation parks at most this long for a lifecycle op (restart/evict) to
+ *  release the drain gate before proceeding anyway — a stuck op can't hang chat.
+ *  Generous vs a normal restart (the server respawns in seconds; models load lazily
+ *  on first request). A restart exceeding it means the engine is failing, and the
+ *  un-parked generation then surfaces that as its own connection error. */
+const DRAIN_GATE_MS = 30_000
+
 /** One entry of oMLX's /v1/models/status. */
 interface ModelStatusEntry {
   id: string
@@ -163,6 +170,36 @@ export class EngineClient {
 
   get inflight(): number {
     return this.inflightCount
+  }
+
+  /**
+   * Set by ModelService while a lifecycle op (restart / stop / per-model unload)
+   * needs the engine drained. New IN-CLIENT generations (chat/agent/research/news)
+   * park (see awaitDrainGate) until it clears, so the op runs with nothing in flight
+   * AND nothing able to start — the airtight half of the old idle gate, which a
+   * sampled status() probe could miss because a generation can begin between the
+   * probe and the act. NOTE: opencode talks to the engine directly and bypasses this
+   * gate; drained() still WAITS for an in-flight opencode request (via /api/status)
+   * but cannot block a NEW one — so the barrier is best-effort for opencode traffic.
+   */
+  private isDraining = false
+  private drainWaiters: Array<() => void> = []
+
+  setDraining(draining: boolean): void {
+    this.isDraining = draining
+    if (!draining) {
+      const waiters = this.drainWaiters
+      this.drainWaiters = []
+      for (const resolve of waiters) resolve()
+    }
+  }
+
+  private async awaitDrainGate(): Promise<void> {
+    if (!this.isDraining) return
+    await Promise.race([
+      new Promise<void>((resolve) => this.drainWaiters.push(resolve)),
+      new Promise<void>((resolve) => setTimeout(resolve, DRAIN_GATE_MS))
+    ])
   }
 
   constructor(private readonly baseUrl: () => string) {}
@@ -236,6 +273,7 @@ export class EngineClient {
    * abandoning the iterator (generator return()).
    */
   async *streamChat(opts: StreamChatOptions): AsyncGenerator<ChatStreamEvent, void, void> {
+    await this.awaitDrainGate() // park if a lifecycle op holds the drain gate
     this.inflightCount += 1
     // First token can be minutes away on a cold load, so there is no overall
     // timeout — only inactivity between chunks.
@@ -355,6 +393,7 @@ export class EngineClient {
    * timeout bounds the whole request instead.
    */
   async chat(opts: StreamChatOptions): Promise<ChatOnceResult> {
+    await this.awaitDrainGate() // park if a lifecycle op holds the drain gate
     this.inflightCount += 1
     try {
       const signals = [

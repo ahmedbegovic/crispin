@@ -18,7 +18,7 @@ interface ModelsStore {
     opts?: { force?: boolean; allowBroken?: boolean }
   ) => Promise<{ ok: boolean; reason?: string }>
   unload: (repoId: string) => Promise<{ ok: boolean; reason?: string }>
-  unloadAll: () => Promise<void>
+  unloadAll: () => Promise<{ ok: boolean; reason?: string }>
   setDefault: (feature: Feature, tier: Tier) => Promise<void>
   setTierSelection: (tier: Tier, repoId: string | null) => Promise<void>
 }
@@ -112,7 +112,9 @@ export const useModelsStore = create<ModelsStore>((set, get) => ({
   },
 
   unloadAll: async () => {
-    await call('models.unloadAll')
+    // Surfaced to the caller so the UI can toast the "engine busy" refusal,
+    // mirroring unload — else the mid-generation guard is a silent no-op button.
+    return call('models.unloadAll')
   },
 
   setTierSelection: async (tier, repoId) => {

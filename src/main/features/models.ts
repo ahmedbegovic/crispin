@@ -87,10 +87,7 @@ export function registerModelsFeature(deps: ModelsFeatureDeps): void {
 
   handle('models.unload', ({ repoId }) => modelService.unload(repoId))
 
-  handle('models.unloadAll', async () => {
-    await modelService.unloadAll()
-    return { ok: true }
-  })
+  handle('models.unloadAll', () => modelService.unloadAll())
 
   handle('models.setDefault', ({ feature, tier }) => {
     modelService.setDefault(feature, tier)

@@ -180,6 +180,8 @@ export class ModelService {
   private tick = 0
   /** Consecutive /v1/models/status failures — see pollTick's stale-state guard. */
   private modelsPollFailures = 0
+  /** Single-flight latch for the engine poller — see pollTick. */
+  private polling = false
   private disposed = false
   /** Serializes load() across surfaces — see load(). */
   private loadChain: Promise<unknown> = Promise.resolve()
@@ -371,34 +373,50 @@ export class ModelService {
 
     // 'failed' is also a start point: a registry change (new download) is the
     // cue to retry an engine that crash-looped earlier.
+    // Engine start/stop/restart go through exclusive() so they serialize with
+    // loads + cacheClear and hold the generation barrier. Finding C: this was the
+    // off-chain mutator that raced cacheClear's rmSync (download-complete restart).
     if (state === 'stopped' || state === 'failed') {
       // The engine never starts with an empty registry — nothing to serve.
       if (entries.length === 0) return
-      await engine.start()
+      await this.exclusive(0, () => engine.start().then(() => ({ ok: true as const })))
       return
     }
 
     // An empty registry can't be respawned (run_engine.py exits 2 on it, and
     // backoff would crash-loop into 'failed') — stop is the terminal state.
     if (entries.length === 0) {
+      // Stop FIRST; commit the state clears only if the drain actually let us stop.
+      // On refusal (a generation still in flight on the just-deleted model) defer
+      // like the restart branch below, so pollTick retries the stop once idle —
+      // otherwise the engine is left running with a wrongly-null registry and no retry.
+      const stopped = await this.exclusive(0, () => engine.stop().then(() => ({ ok: true as const })))
+      if (!stopped.ok) {
+        this.pendingRegistryRestart = true
+        return
+      }
       this.pendingRegistryRestart = false
       this.appliedRegistryKey = null
       this.engineModels = []
-      await engine.stop()
       return
     }
 
     if (registryKey(entries) === this.appliedRegistryKey) return
 
-    if (state === 'running' && (await this.engineIdle())) {
-      await engine.restart('model registry changed')
-    } else {
+    const restarted = await this.exclusive(0, () =>
+      engine.restart('model registry changed').then(() => ({ ok: true as const }))
+    )
+    if (!restarted.ok) {
+      // Toast only on the transition into 'deferred' — pollTick re-attempts this
+      // every idle tick, so re-broadcasting each time spams identical warns.
+      if (!this.pendingRegistryRestart) {
+        this.deps.broadcast({
+          type: 'system.toast',
+          level: 'warn',
+          message: 'Model registry changed — engine restart deferred until it is idle.'
+        })
+      }
       this.pendingRegistryRestart = true
-      this.deps.broadcast({
-        type: 'system.toast',
-        level: 'warn',
-        message: 'Model registry changed — engine restart deferred until it is idle.'
-      })
     }
   }
 
@@ -653,12 +671,77 @@ export class ModelService {
    * RAM budget. Queue them through one chain instead.
    */
   async load(repoId: string, force = false): Promise<{ ok: boolean; reason?: string }> {
-    const run = this.loadChain.then(
-      () => this.doLoad(repoId, force),
-      () => this.doLoad(repoId, force)
-    )
+    return this.enqueue(() => this.doLoad(repoId, force))
+  }
+
+  /**
+   * Run an engine-mutating op on the shared load chain. Anything that stops,
+   * starts, or restarts the engine (loads, the cache clear) must serialize here
+   * so it can't interleave with doLoad's judge→evict→warm or another op's
+   * stop→start (see load()'s NB and cacheClear).
+   */
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.loadChain.then(task, task)
     this.loadChain = run.catch(() => {})
     return run
+  }
+
+  /**
+   * Run an engine-DESTRUCTIVE op (restart / stop / per-model unload) under a
+   * generation barrier: raise the drain gate so engine-client parks any NEW
+   * streamChat/chat, then wait up to drainMs for in-flight generations to finish.
+   * Returns the op's result, or {ok:false,reason} if a generation won't drain.
+   * The gate — not a sampled engineIdle() probe — is what makes "no generation
+   * runs during the mutation" airtight: nothing new can start once it is up.
+   * Use from a caller ALREADY on the load chain (inside doLoad); top-level callers
+   * use exclusive() to also serialize against other lifecycle ops.
+   */
+  private async withDrain<T>(
+    drainMs: number,
+    fn: () => Promise<T>
+  ): Promise<T | { ok: false; reason: string }> {
+    this.deps.engine.setDraining(true)
+    try {
+      if (!(await this.drained(drainMs))) {
+        return { ok: false, reason: 'The engine is busy — wait for the generation to finish.' }
+      }
+      return await fn()
+    } finally {
+      this.deps.engine.setDraining(false)
+    }
+  }
+
+  /** enqueue + withDrain: the top-level form for callers not already on the chain. */
+  private async exclusive<T>(
+    drainMs: number,
+    fn: () => Promise<T>
+  ): Promise<T | { ok: false; reason: string }> {
+    return this.enqueue(() => this.withDrain(drainMs, fn))
+  }
+
+  /**
+   * Wait (bounded) for every in-flight generation to finish. With the drain gate
+   * up no new one can start, so this converges. Reads the engine's own /api/status
+   * (active + waiting, incl. opencode traffic that bypasses this client) so a
+   * server-side generation the TS inflight counter can't see still blocks the op.
+   */
+  private async drained(deadlineMs: number): Promise<boolean> {
+    const deadline = Date.now() + deadlineMs
+    for (;;) {
+      let running: number
+      try {
+        running = (await this.deps.engine.status()).numRunning ?? 0
+      } catch {
+        // status() unreachable: if the process is UP this is transient (a cold load
+        // can block /api/status) and a server-side/opencode generation may be live —
+        // treat as BUSY, never drain blindly. Only a stopped engine (no generation
+        // possible) counts as drained.
+        running = this.engineProcessRunning() ? this.deps.engine.inflight || 1 : 0
+      }
+      if (running === 0) return true
+      if (Date.now() >= deadline || this.disposed) return false
+      await sleep(150)
+    }
   }
 
   private async doLoad(
@@ -696,16 +779,19 @@ export class ModelService {
     if (registryKey(this.registryEntries()) !== this.appliedRegistryKey) {
       const engineKnowsRepo = this.engineModels.some((m) => m.id === repoId)
       if (!engineKnowsRepo) {
-        if (!(await this.engineIdle())) {
+        const applied = await this.withDrain(0, async () => {
+          this.pendingRegistryRestart = false
+          await this.deps.processManager.get('engine')?.restart('apply registry for explicit load')
+          await this.ensureEngineRunning()
+          return { ok: true as const }
+        })
+        if (!applied.ok) {
           this.pendingRegistryRestart = true
           return {
             ok: false,
             reason: 'A generation is running — the engine picks up the new model when it finishes.'
           }
         }
-        this.pendingRegistryRestart = false
-        await this.deps.processManager.get('engine')?.restart('apply registry for explicit load')
-        await this.ensureEngineRunning()
       }
       // The engine already serves this repo: the drift concerns other
       // models/settings — leave it to the idle-deferral instead of restarting.
@@ -745,26 +831,40 @@ export class ModelService {
       protectEmbedder: this.deps.isLibraryIngesting()
     })
     if (others.length === 0) return { ok: false, reason: refusal }
-    if (!(await this.engineIdle())) {
+    // Evict under the generation barrier (already on the load chain via doLoad, so
+    // withDrain not exclusive). The gate blocks a generation from STARTING on a
+    // model we're about to unload — what the old engineIdle() probe could miss.
+    const evicted = await this.withDrain(0, async () => {
+      this.log.info(`auto-swap: unloading ${others.map((m) => m.id).join(', ')} to fit ${repoId}`)
+      for (const m of others) {
+        await this.deps.engine.unloadModel(m.id)
+      }
+      const unloaded = new Set(others.map((m) => m.id))
+      this.engineModels = this.engineModels.map((m) =>
+        unloaded.has(m.id) ? { ...m, state: 'unloaded', memoryGB: null } : m
+      )
+      return { ok: true as const }
+    })
+    if (!evicted.ok) {
       return { ok: false, reason: 'A generation is running — try again when it finishes.' }
     }
-    this.log.info(`auto-swap: unloading ${others.map((m) => m.id).join(', ')} to fit ${repoId}`)
-    for (const m of others) {
-      await this.deps.engine.unloadModel(m.id)
-    }
-    const unloaded = new Set(others.map((m) => m.id))
-    this.engineModels = this.engineModels.map((m) =>
-      unloaded.has(m.id) ? { ...m, state: 'unloaded', memoryGB: null } : m
-    )
+    // Re-judge against THIS post-eviction snapshot, not this.engineModels (OUTSIDE
+    // the gate — the sleep waits on system memory, not generations): the
+    // 2.5s poller can overwrite that field mid-swap with the engine's lagging
+    // /v1/models/status and re-credit the eviction we just awaited, making the
+    // budget decision nondeterministic. The unloads above are awaited, so the
+    // snapshot is the truth canLoad needs; only system memory (re-read by
+    // ramGuard each pass) is what the sleep waits on.
+    const afterEvict = this.engineModels
     let verdict = this.deps.ramGuard.canLoad(estimatedGB, {
-      loadedModels: this.engineModels,
+      loadedModels: afterEvict,
       spec: tierSpecFor(repoId)
     })
     for (let attempt = 0; !verdict.ok && attempt < 3; attempt++) {
       await sleep(1500) // one vm_stat sampling period
       if (this.disposed) return { ok: false, reason: 'app is shutting down' }
       verdict = this.deps.ramGuard.canLoad(estimatedGB, {
-        loadedModels: this.engineModels,
+        loadedModels: afterEvict,
         spec: tierSpecFor(repoId)
       })
     }
@@ -777,18 +877,29 @@ export class ModelService {
    * evictableLoaded): force-unloading it here can tear down an in-flight RAG
    * embed that engineIdle() cannot see.
    */
-  async unloadAll(): Promise<void> {
-    if (!this.engineProcessRunning()) return
-    const targets = evictableLoaded(this.engineModels, {
-      protectEmbedder: this.deps.isLibraryIngesting()
-    })
-    for (const m of targets) {
-      await this.deps.engine.unloadModel(m.id)
+  async unloadAll(): Promise<{ ok: boolean; reason?: string }> {
+    if (!this.engineProcessRunning()) return { ok: true }
+    if (
+      evictableLoaded(this.engineModels, { protectEmbedder: this.deps.isLibraryIngesting() }).length === 0
+    ) {
+      return { ok: true }
     }
-    const unloaded = new Set(targets.map((m) => m.id))
-    this.engineModels = this.engineModels.map((m) =>
-      unloaded.has(m.id) ? { ...m, state: 'unloaded', memoryGB: null } : m
-    )
+    // Under the generation barrier: the engine's per-model /unload would tear a
+    // model down mid-stream. exclusive() blocks new generations and waits for any
+    // in flight to finish (refuses if they won't), then unloads.
+    return this.exclusive(0, async () => {
+      const targets = evictableLoaded(this.engineModels, {
+        protectEmbedder: this.deps.isLibraryIngesting()
+      })
+      for (const m of targets) {
+        await this.deps.engine.unloadModel(m.id)
+      }
+      const unloaded = new Set(targets.map((m) => m.id))
+      this.engineModels = this.engineModels.map((m) =>
+        unloaded.has(m.id) ? { ...m, state: 'unloaded', memoryGB: null } : m
+      )
+      return { ok: true as const }
+    })
   }
 
   /** Unload one model via the engine's per-model endpoint — others stay loaded. */
@@ -796,14 +907,13 @@ export class ModelService {
     if (!this.engineProcessRunning()) return { ok: true }
     const target = this.engineModels.find((m) => m.id === repoId)
     if (!target || target.state !== 'loaded') return { ok: true }
-    if (!(await this.engineIdle())) {
-      return { ok: false, reason: 'The engine is busy — wait for the generation to finish.' }
-    }
-    await this.deps.engine.unloadModel(repoId)
-    this.engineModels = this.engineModels.map((m) =>
-      m.id === repoId ? { ...m, state: 'unloaded', memoryGB: null } : m
-    )
-    return { ok: true }
+    return this.exclusive(0, async () => {
+      await this.deps.engine.unloadModel(repoId)
+      this.engineModels = this.engineModels.map((m) =>
+        m.id === repoId ? { ...m, state: 'unloaded', memoryGB: null } : m
+      )
+      return { ok: true as const }
+    })
   }
 
   // --- engine KV cache (R1) -----------------------------------------------------
@@ -823,25 +933,30 @@ export class ModelService {
    * stop it, delete the dir, then restart — refused while a generation is live.
    */
   async cacheClear(): Promise<{ ok: boolean; freedBytes: number; reason?: string }> {
-    if (this.engineProcessRunning() && !(await this.engineIdle())) {
-      return {
-        ok: false,
-        freedBytes: 0,
-        reason: 'The engine is busy — wait for the generation to finish.'
+    // Fast-reject a busy engine immediately (a sync inflight read, no probe, no
+    // chain wait) so the button answers now instead of hanging behind a queued
+    // cold load. The barrier below re-confirms authoritatively.
+    if (this.deps.engine.inflight > 0) {
+      return { ok: false, freedBytes: 0, reason: 'The engine is busy — wait for the generation to finish.' }
+    }
+    // exclusive(): serialize against every other lifecycle op — incl. the
+    // syncEngineRegistry restart fired by download-complete, which is now also on
+    // the chain (finding C) — so nothing starts the engine into the dir we rmSync.
+    const res = await this.exclusive(0, async () => {
+      const dir = omlxCacheDir()
+      const freedBytes = dirSizeBytes(dir)
+      const engine = this.deps.processManager.get('engine')
+      const wasRunning = this.engineProcessRunning()
+      if (engine && wasRunning) await engine.stop()
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch (err) {
+        this.log.warn(`cache clear: ${err instanceof Error ? err.message : err}`)
       }
-    }
-    const dir = omlxCacheDir()
-    const freedBytes = dirSizeBytes(dir)
-    const engine = this.deps.processManager.get('engine')
-    const wasRunning = this.engineProcessRunning()
-    if (engine && wasRunning) await engine.stop()
-    try {
-      rmSync(dir, { recursive: true, force: true })
-    } catch (err) {
-      this.log.warn(`cache clear: ${err instanceof Error ? err.message : err}`)
-    }
-    if (engine && wasRunning && this.installed.length > 0) await engine.start()
-    return { ok: true, freedBytes }
+      if (engine && wasRunning && this.installed.length > 0) await engine.start()
+      return { ok: true as const, freedBytes }
+    })
+    return res.ok ? res : { ok: false, freedBytes: 0, reason: res.reason }
   }
 
   private async ensureEngineRunning(): Promise<void> {
@@ -890,7 +1005,19 @@ export class ModelService {
       })
       if (action === 'done') return { ok: true }
       if (action === 'restart' && engine) {
-        await engine.restart('embedding model downloaded — rediscover the HF cache')
+        // Restart under the generation barrier (exclusive = chain + drain): blocks
+        // new generations and waits for any in flight, so the respawn can't SIGTERM
+        // a chat/agent stream. If a generation won't drain, loop back to the wait;
+        // the deadline check at the top of this loop bounds the total time.
+        const restarted = await this.exclusive(0, () =>
+          engine
+            .restart('embedding model downloaded — rediscover the HF cache')
+            .then(() => ({ ok: true as const }))
+        )
+        if (!restarted.ok) {
+          await sleep(ENGINE_POLL_MS)
+          continue
+        }
         // Confirm the respawn actually surfaced the embedder rather than blindly
         // reporting success — a discovery miss should fail the ingest with an
         // actionable reason, not a downstream /v1/embeddings 404.
@@ -1120,6 +1247,20 @@ export class ModelService {
   }
 
   private async pollTick(): Promise<void> {
+    // Single-flight: a tick whose awaits (models + idle + maybeIdleUnload's
+    // unloads + a possible sync/restart) can outrun the 2.5s interval; a second
+    // overlapping tick would double-consume pendingRegistryRestart and double-fire
+    // unloadAll/syncEngineRegistry. Skip while one is still in flight.
+    if (this.polling) return
+    this.polling = true
+    try {
+      await this.pollOnce()
+    } finally {
+      this.polling = false
+    }
+  }
+
+  private async pollOnce(): Promise<void> {
     this.tick += 1
     const running = this.engineProcessRunning()
 
@@ -1159,7 +1300,7 @@ export class ModelService {
 
     if (this.pendingRegistryRestart && running && (await this.engineIdle())) {
       this.pendingRegistryRestart = false
-      await this.syncEngineRegistry()
+      await this.syncEngineRegistry() // re-defers (re-sets the flag) if the drain refuses
     }
 
     await this.maybeIdleUnload()
@@ -1191,7 +1332,8 @@ export class ModelService {
     this.log.info(
       `app idle ${Math.round((Date.now() - this.deps.getLastAppActivityAt()) / 60_000)} min — unloading ${loaded.length} model(s)`
     )
-    await this.unloadAll()
+    const res = await this.unloadAll()
+    if (!res.ok) return // engine went busy between the idle check and here — skip the toast
     const minutes = Math.max(1, Math.round(knobSeconds / 60))
     this.deps.broadcast({
       type: 'system.toast',
