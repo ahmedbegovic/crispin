@@ -14,6 +14,8 @@ import {
   tierSpecFor,
   classifyByParams,
   estimateGB,
+  estimateLoadGB,
+  isOffloadableRepo,
   fitFor,
   kvQuantBitsFor,
   modelDisplayName,
@@ -161,6 +163,34 @@ describe('estimateGB — load footprint', () => {
   })
   it('returns null when neither sizeBytes nor a param token is available', () => {
     expect(estimateGB('x/model-4bit')).toBeNull()
+  })
+})
+
+describe('estimateLoadGB — expert-offload-aware footprint', () => {
+  const QWEN35 = 'mlx-community/Qwen3.6-35B-A3B-4bit'
+  const QWEN35_BYTES = 17.5e9 // ~19.25 GB full, over the 18.5 GB budget without offload
+
+  it('equals the full estimate when offload is off', () => {
+    expect(estimateLoadGB(QWEN35, QWEN35_BYTES, 0)).toBeCloseTo(19.25, 5)
+  })
+  it('drops a big MoE to its measured offloaded resident when offload is on', () => {
+    // Only this offloaded ~11 GB fits the 18.5 GB budget — the whole point of the fix.
+    expect(estimateLoadGB(QWEN35, QWEN35_BYTES, 6)).toBeCloseTo(11, 5)
+  })
+  it('scales the estimate with the cache size (each GB of cache ≈ 1 GB resident)', () => {
+    expect(estimateLoadGB(QWEN35, QWEN35_BYTES, 8)).toBeCloseTo(13, 5)
+    expect(estimateLoadGB(QWEN35, QWEN35_BYTES, 3)).toBeCloseTo(8, 5)
+  })
+  it('never estimates MORE than the full resident, however large the cache', () => {
+    expect(estimateLoadGB(QWEN35, QWEN35_BYTES, 30)).toBeCloseTo(19.25, 5)
+  })
+  it('leaves non-offloadable models at their full estimate even with offload on', () => {
+    expect(isOffloadableRepo('mlx-community/Qwen3.5-4B-MLX-4bit')).toBe(false)
+    expect(estimateLoadGB('mlx-community/Qwen3.5-4B-MLX-4bit', 3e9, 6)).toBeCloseTo(3.3, 5)
+  })
+  it('marks the curated big MoEs as offloadable', () => {
+    expect(isOffloadableRepo(QWEN35)).toBe(true)
+    expect(isOffloadableRepo('mlx-community/gemma-4-26B-A4B-it-qat-4bit')).toBe(true)
   })
 })
 

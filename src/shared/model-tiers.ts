@@ -363,6 +363,47 @@ export function estimateGB(repoId: string, sizeBytes?: number | null): number | 
   return params === null ? null : params * 0.55 + 0.6
 }
 
+/** The cache size (GB) the offload toggle defaults to — see SettingsTab. */
+export const DEFAULT_OFFLOAD_CACHE_GB = 6
+
+/**
+ * Measured RESIDENT footprint (GB) of an expert-offloaded model at the default 6 GB
+ * cache, on an M4 Pro 24 GB. With MoE offload on, the engine streams cold experts from
+ * disk and frees the resident expert weights, so the real footprint is far below the
+ * full weights — the Qwen 3.6 35B-A3B drops from ~19 GB to ~11 GB, which is the only
+ * way it fits the 18.5 GB budget. Absent = the model's experts are too small to offload
+ * (the engine skips < 6 GB of experts), so offload won't change its footprint.
+ */
+const OFFLOAD_RESIDENT_GB: Record<string, number> = {
+  'mlx-community/Qwen3.6-35B-A3B-4bit': 11,
+  'mlx-community/gemma-4-26B-A4B-it-qat-4bit': 9
+}
+
+/** Whether MoE expert-offload meaningfully shrinks this model's resident footprint. */
+export function isOffloadableRepo(repoId: string): boolean {
+  return OFFLOAD_RESIDENT_GB[canonicalRepoId(repoId)] !== undefined
+}
+
+/**
+ * Load-footprint estimate, expert-offload-aware. When the engine's MoE offload is on
+ * (moeOffloadGB > 0) and the model is offloadable, returns the measured offloaded
+ * resident, scaled for a non-default cache (each GB of cache is ~1 GB resident). This
+ * is what lets the Qwen 35B — which only fits OFFLOADED — pass the RAM guard. Identical
+ * to estimateGB when offload is off or the model isn't offloadable; never exceeds the
+ * full estimate.
+ */
+export function estimateLoadGB(
+  repoId: string,
+  sizeBytes: number | null | undefined,
+  moeOffloadGB: number
+): number | null {
+  const full = estimateGB(repoId, sizeBytes)
+  const base = OFFLOAD_RESIDENT_GB[canonicalRepoId(repoId)]
+  if (!(moeOffloadGB > 0) || base === undefined) return full
+  const offloaded = Math.max(base + (moeOffloadGB - DEFAULT_OFFLOAD_CACHE_GB), 0)
+  return full === null ? offloaded : Math.min(full, offloaded)
+}
+
 /**
  * Traffic-light fit of a model against the engine's (static) memory budget. A
  * pure function of estGB vs budgetGB, so the badge is STABLE and MONOTONIC — a

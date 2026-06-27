@@ -22,10 +22,11 @@ import {
   canonicalRepoId,
   candidateWarning,
   classifyByParams,
-  estimateGB,
+  estimateLoadGB,
   familyOf,
   fitFor,
   isCuratedRepo,
+  isOffloadableRepo,
   kvQuantBitsFor,
   maxOutputTokensFor,
   repoForFamilyTier,
@@ -816,10 +817,21 @@ export class ModelService {
     // (the models.load handler, behind `allowBroken`). Auto-load (ensureLoaded
     // for chat/agent/research/news) must not hard-fail on the name heuristic,
     // which has false positives (a PLE-safe re-quant named without "qat").
-    const estimatedGB = (model.sizeBytes / 1e9) * MEMORY_OVERHEAD
+    // Expert offload (when on) frees most of a big MoE's resident weights, so a model
+    // that only fits OFFLOADED — the Qwen 35B (~19 GB full, ~11 GB offloaded) — must be
+    // estimated at its offloaded footprint or the guard wrongly rejects it. When offload
+    // is OFF but the model could be offloaded, point the user at the toggle.
+    const moeOffloadGB = settings.get(this.deps.db, 'engine.moeOffloadGB', 0)
+    const estimatedGB =
+      estimateLoadGB(repoId, model.sizeBytes, moeOffloadGB) ?? (model.sizeBytes / 1e9) * MEMORY_OVERHEAD
+    const offloadHint =
+      isOffloadableRepo(repoId) && !(moeOffloadGB > 0)
+        ? ' Enable expert offload in Settings → Models to fit it on this machine.'
+        : undefined
     const verdict = this.deps.ramGuard.canLoad(estimatedGB, {
       loadedModels: this.engineModels,
-      spec: tierSpecFor(repoId)
+      spec: tierSpecFor(repoId),
+      offloadHint
     })
     if (!verdict.ok && !force) {
       // Auto-swap: a tier/model switch must never require a manual unload.
@@ -1261,6 +1273,9 @@ export class ModelService {
       .filter((m) => !isCuratedRepo(m.repoId))
       .filter((m) => classifyByParams(m.repoId, m.sizeBytes) === tier)
       .map((m) => m.repoId)
+    // Offload-aware fit: with offload on, a big MoE's badge reflects its (much smaller)
+    // offloaded footprint, so the Qwen 35B reads loadable instead of "unable".
+    const moeOffloadGB = settings.get(this.deps.db, 'engine.moeOffloadGB', 0)
     const candidates = [...curated, ...experimental].map((repoId) => {
       // Exact id first, then alias match: weights downloaded under a renamed
       // old id satisfy the curated slot. Surface the INSTALLED id — the engine
@@ -1270,7 +1285,7 @@ export class ModelService {
         this.installed.find((m) => m.repoId === repoId) ??
         this.installed.find((m) => canonicalRepoId(m.repoId) === canonicalRepoId(repoId))
       const effectiveId = model?.repoId ?? repoId
-      const estGB = estimateGB(effectiveId, model?.sizeBytes) ?? TIERS[tier].approxGB
+      const estGB = estimateLoadGB(effectiveId, model?.sizeBytes, moeOffloadGB) ?? TIERS[tier].approxGB
       return {
         repoId: effectiveId,
         installed: model !== undefined,

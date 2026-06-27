@@ -16,6 +16,8 @@ export interface CanLoadOptions {
   loadedModels: EngineModelInfo[]
   /** Tier policy for the model being loaded, when it matches a tier candidate. */
   spec?: TierSpec
+  /** Appended to a budget-exceeded reason (e.g. "enable expert offload …"). */
+  offloadHint?: string
 }
 
 export type CanLoadResult = { ok: true } | { ok: false; reason: string }
@@ -45,7 +47,9 @@ export class RamGuard {
     if (estimatedGB > ram.budgetGB) {
       return {
         ok: false,
-        reason: `Needs ~${estimatedGB.toFixed(1)} GB, which exceeds the ${ram.budgetGB.toFixed(1)} GB memory budget.`
+        reason:
+          `Needs ~${estimatedGB.toFixed(1)} GB, which exceeds the ${ram.budgetGB.toFixed(1)} GB memory budget.` +
+          (opts.offloadHint ?? '')
       }
     }
 
