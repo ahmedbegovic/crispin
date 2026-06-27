@@ -33,6 +33,9 @@ const normalizeTierSelections = (
 export interface AppSettingsServiceDeps {
   db: CrispinDatabase
   broadcast: (event: CrispinEvent) => void
+  /** Fired when a spawn-time engine setting (moeOffloadGB) changes, so the engine
+   *  can be restarted to apply it (otherwise it would ride an unrelated respawn). */
+  onMoeOffloadChange?: () => void
 }
 
 /**
@@ -110,12 +113,19 @@ export class AppSettingsService {
         settings.get(db, 'models.defaultFamily', 'gemma'),
         'gemma',
         'settings.defaultFamily'
+      ),
+      moeOffloadGB: parseOr(
+        shape.moeOffloadGB,
+        settings.get(db, 'engine.moeOffloadGB', 0),
+        0,
+        'settings.moeOffloadGB'
       )
     }
   }
 
   update(next: AppSettings): void {
     const db = this.deps.db
+    const prevMoeOffloadGB = this.get().moeOffloadGB
     settings.set(db, 'profile', next.profile)
     settings.set(db, 'instructions', next.instructions)
     settings.set(db, 'modules.enabled', next.modulesEnabled)
@@ -123,7 +133,11 @@ export class AppSettingsService {
     settings.set(db, 'news.topics', next.newsTopics)
     settings.set(db, 'models.tierSelections', next.tierSelections)
     settings.set(db, 'models.defaultFamily', next.defaultFamily)
+    settings.set(db, 'engine.moeOffloadGB', next.moeOffloadGB)
     this.deps.broadcast({ type: 'settings.changed', settings: this.get() })
+    // Spawn-time engine knob: restart the engine so the change actually applies
+    // (it's read into the engine env at spawn, not via the live model_settings path).
+    if (next.moeOffloadGB !== prevMoeOffloadGB) this.deps.onMoeOffloadChange?.()
   }
 
   profile(): AppSettings['profile'] {

@@ -485,7 +485,10 @@ export const appSettingsSchema = z.object({
   /** Per-tier model picks (repo ids) honored by resolveTier. */
   tierSelections: z.partialRecord(tierSchema, z.string()),
   /** Global active family — the no-pin resolution default + the Models tab selector. */
-  defaultFamily: familySchema
+  defaultFamily: familySchema,
+  /** MoE expert-offload cache budget, GB. 0 = off. When >0, large MoE models stream
+   *  cold experts from disk to free RAM (slower; takes effect on next engine restart). */
+  moeOffloadGB: z.number().int().min(0)
 })
 
 export type AppSettings = z.infer<typeof appSettingsSchema>

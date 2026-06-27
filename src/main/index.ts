@@ -285,7 +285,13 @@ app.whenReady().then(async () => {
   registerSidecars()
   registerIpcHandlers()
 
-  const appSettings = new AppSettingsService({ db, broadcast })
+  const appSettings = new AppSettingsService({
+    db,
+    broadcast,
+    // Late-bound: modelService is assigned below; the callback only fires on a
+    // settings update, well after init, so it's always set by then.
+    onMoeOffloadChange: () => void modelService?.restartForEngineSettingChange()
+  })
   registerSettingsFeature(appSettings)
 
   modelService = new ModelService({

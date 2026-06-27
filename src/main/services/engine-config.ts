@@ -21,6 +21,10 @@ export interface EngineConfigOptions {
   cacheDir: string
   /** Hard cap on the paged SSD cache, GB — replaces oMLX's "auto" (≈10% of free disk). */
   cacheMaxSizeGB: number
+  /** MoE expert-offload cache budget, GB. 0 = off. When >0, run_engine exports
+   *  OMLX_MOE_OFFLOAD_GB and large MoE models stream cold experts from disk
+   *  (trades speed for RAM; small models stay resident via the engine's threshold). */
+  moeOffloadGB: number
 }
 
 export function engineConfigPath(): string {
@@ -79,6 +83,7 @@ export function writeEngineConfig(opts: EngineConfigOptions): string {
   const config = {
     port: opts.port,
     memory_budget_gb: opts.budgetGB,
+    moe_offload_gb: opts.moeOffloadGB,
     cache: { dir: opts.cacheDir, max_size_gb: opts.cacheMaxSizeGB },
     models: opts.models.map(engineModelSettings)
   }

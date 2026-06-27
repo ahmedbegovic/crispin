@@ -16,4 +16,4 @@ dependencies = [
 # freshly downloaded model/embedder is served without an engine restart; pinned
 # by rev for reproducibility (bump as the fork advances).
 [tool.uv.sources]
-omlx = { git = "https://github.com/ahmedbegovic/omlx-crispin.git", rev = "8f7c7df6ba6ccc87af23b5bbb5318e33f981eb05" }
+omlx = { git = "https://github.com/ahmedbegovic/omlx-crispin.git", rev = "82c83e8" }

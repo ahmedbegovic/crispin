@@ -345,7 +345,10 @@ export class ModelService {
       // Crispin owns the paged SSD KV-cache: a fixed dir under app-data and a
       // hard cap, instead of oMLX's "auto" (≈10% of free disk on ~/.omlx/cache).
       cacheDir: omlxCacheDir(),
-      cacheMaxSizeGB: settings.get(this.deps.db, 'engine.ssdCacheMaxGB', 8)
+      cacheMaxSizeGB: settings.get(this.deps.db, 'engine.ssdCacheMaxGB', 8),
+      // Spawn-time only (run_engine reads it into OMLX_MOE_OFFLOAD_GB): rides the
+      // next natural spawn like the other engine.* knobs, never forces a restart.
+      moeOffloadGB: settings.get(this.deps.db, 'engine.moeOffloadGB', 0)
     })
     return entries
   }
@@ -425,6 +428,23 @@ export class ModelService {
       }
       this.pendingRegistryRestart = true
     }
+  }
+
+  /**
+   * Apply a spawn-time engine setting change (e.g. moeOffloadGB) by rewriting the
+   * engine-config and restarting — the setting is read into the engine env at spawn,
+   * not via the live model_settings path, so a swap/load on the running process can't
+   * pick it up. Idle-gated (exclusive): never kills an in-flight generation; if the
+   * engine is busy or stopped, the change rides the next natural spawn (writeConfigForSpawn).
+   */
+  async restartForEngineSettingChange(): Promise<void> {
+    if (this.disposed) return
+    const engine = this.deps.processManager.get('engine')
+    if (!engine || engine.snapshot().state !== 'running') return // not running → next spawn applies it
+    this.writeConfig(this.deps.getEnginePort()) // rewrite engine-config.json with the new setting
+    await this.exclusive(0, () =>
+      engine.restart('engine setting changed').then(() => ({ ok: true as const }))
+    )
   }
 
   /**

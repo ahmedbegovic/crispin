@@ -258,6 +258,26 @@ function ModelsSection({
     if (next !== minutes) update({ idleUnloadSeconds: next * 60 })
   }
 
+  // Default expert cache when enabling offload. Measured on M4 Pro 24 GB, the 26B's
+  // per-token expert working set is large (cache thrashes at any size), so decode speed
+  // scales with cache: 3 GB ~15 tok/s, 6 GB ~18 tok/s. 6 GB lands the 26B at ~9 GB
+  // resident — still well under the full ~16 GB — and is the better default.
+  const DEFAULT_OFFLOAD_GB = 6
+  const offloadOn = settings.moeOffloadGB > 0
+  const [gbDraft, setGbDraft] = useState(String(settings.moeOffloadGB || DEFAULT_OFFLOAD_GB))
+  useEffect(() => {
+    if (settings.moeOffloadGB > 0) setGbDraft(String(settings.moeOffloadGB))
+  }, [settings.moeOffloadGB])
+
+  const commitGb = (): void => {
+    const next = Math.max(1, Math.round(Number(gbDraft)))
+    if (!Number.isFinite(next)) {
+      setGbDraft(String(settings.moeOffloadGB || DEFAULT_OFFLOAD_GB))
+      return
+    }
+    if (next !== settings.moeOffloadGB) update({ moeOffloadGB: next })
+  }
+
   return (
     <Section
       title="Models"
@@ -277,6 +297,37 @@ function ModelsSection({
         />
         idle minutes
       </label>
+
+      <label className="mt-3 flex items-center gap-2 text-[12px] text-zinc-400">
+        <input
+          type="checkbox"
+          checked={offloadOn}
+          onChange={(e) => update({ moeOffloadGB: e.target.checked ? DEFAULT_OFFLOAD_GB : 0 })}
+          className="h-3.5 w-3.5 accent-zinc-500"
+        />
+        Expert offload for large MoE models
+        {offloadOn && (
+          <>
+            <input
+              value={gbDraft}
+              inputMode="numeric"
+              onChange={(e) => setGbDraft(e.target.value)}
+              onBlur={commitGb}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+              }}
+              className="ml-1 w-12 rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-right text-[12.5px] tabular-nums text-zinc-200 outline-none focus:border-zinc-600"
+            />
+            GB cache
+          </>
+        )}
+      </label>
+      <p className="text-[11px] leading-snug text-zinc-600">
+        Runs large MoE models (e.g. Gemma 26B-A4B) in ~9 GB instead of ~16 GB by streaming
+        experts from disk (~18 tok/s at the 6 GB cache — a larger cache is faster, a smaller
+        one saves more RAM). Restarts the engine to apply (waits for any running generation
+        to finish).
+      </p>
     </Section>
   )
 }
