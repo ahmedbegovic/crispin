@@ -17,6 +17,8 @@ build/
 # Env / local config
 .env
 .env.*
+AGENTS.md
+.agents/
 
 # OS / editor
 .DS_Store
