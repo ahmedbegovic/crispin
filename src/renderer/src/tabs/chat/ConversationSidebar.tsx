@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Archive,
   ArchiveRestore,
   Download,
+  MoreHorizontal,
   Pin,
   PinOff,
   Plus,
@@ -79,6 +81,97 @@ function Snippet({ text }: { text: string }): React.JSX.Element {
   return <>{out}</>
 }
 
+interface RowMenuState {
+  conversation: ConversationMeta
+  x: number
+  y: number
+}
+
+const MENU_W = 176
+
+/**
+ * A conversation's row actions (pin / export / archive / delete), opened by the
+ * kebab button or a right-click. Portalled to <body> with fixed positioning so
+ * the sidebar's overflow-y-auto can't clip it; clamped to the viewport.
+ */
+function RowActionsMenu({
+  conversation,
+  x,
+  y,
+  onClose,
+  onPin,
+  onExport,
+  onArchive,
+  onDelete
+}: RowMenuState & {
+  onClose: () => void
+  onPin: () => void
+  onExport: () => void
+  onArchive: () => void
+  onDelete: () => void
+}): React.JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const onDown = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  const left = Math.max(8, Math.min(x, window.innerWidth - MENU_W - 8))
+  const top = Math.max(8, Math.min(y, window.innerHeight - 168))
+  const row =
+    'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] text-zinc-300 hover:bg-zinc-800'
+
+  return createPortal(
+    <div
+      ref={ref}
+      role="menu"
+      style={{ position: 'fixed', left, top, width: MENU_W }}
+      className="z-50 rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-xl"
+    >
+      <button role="menuitem" onClick={() => { onClose(); onPin() }} className={row}>
+        {conversation.pinned ? (
+          <PinOff size={13} className="text-zinc-500" />
+        ) : (
+          <Pin size={13} className="text-zinc-500" />
+        )}
+        {conversation.pinned ? 'Unpin' : 'Pin'}
+      </button>
+      <button role="menuitem" onClick={() => { onClose(); onExport() }} className={row}>
+        <Download size={13} className="text-zinc-500" />
+        Export to Markdown
+      </button>
+      <button role="menuitem" onClick={() => { onClose(); onArchive() }} className={row}>
+        {conversation.archived ? (
+          <ArchiveRestore size={13} className="text-zinc-500" />
+        ) : (
+          <Archive size={13} className="text-zinc-500" />
+        )}
+        {conversation.archived ? 'Unarchive' : 'Archive'}
+      </button>
+      <div className="my-1 border-t border-zinc-800/80" />
+      <button
+        role="menuitem"
+        onClick={() => { onClose(); onDelete() }}
+        className={`${row} text-red-400 hover:bg-red-500/10`}
+      >
+        <Trash2 size={13} />
+        Delete
+      </button>
+    </div>,
+    document.body
+  )
+}
+
 export default function ConversationSidebar(): React.JSX.Element {
   const conversations = useChatStore((s) => s.conversations)
   const activeId = useChatStore((s) => s.activeId)
@@ -90,6 +183,7 @@ export default function ConversationSidebar(): React.JSX.Element {
   const remove = useChatStore((s) => s.remove)
   const setShowArchived = useChatStore((s) => s.setShowArchived)
   const [deleteTarget, setDeleteTarget] = useState<ConversationMeta | null>(null)
+  const [menu, setMenu] = useState<RowMenuState | null>(null)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<ChatSearchHit[] | null>(null)
 
@@ -230,6 +324,10 @@ export default function ConversationSidebar(): React.JSX.Element {
                           ? 'border-sky-500/80 bg-sky-500/[0.06]'
                           : 'border-transparent hover:bg-zinc-900/70'
                     }`}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setMenu({ conversation, x: e.clientX, y: e.clientY })
+                    }}
                   >
                     {/* Single-line title; relative time lives in the tooltip now. Actions
                         float over the scrim so nothing is reserved for them. */}
@@ -266,48 +364,26 @@ export default function ConversationSidebar(): React.JSX.Element {
                       aria-hidden
                       className="pointer-events-none absolute inset-y-0 right-0 w-28 rounded-r-md bg-gradient-to-l from-[#0f0f12] via-[#0f0f12] to-transparent opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                     />
-                    <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                    {/* One kebab opens the actions menu (same menu as right-click);
+                        stays visible while its menu is open. */}
+                    <div
+                      className={`absolute right-1 top-1/2 flex -translate-y-1/2 items-center transition-opacity ${
+                        menu?.conversation.id === conversation.id
+                          ? 'opacity-100'
+                          : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
+                      }`}
+                    >
                       <button
-                        onClick={() =>
-                          void update(conversation.id, { pinned: !conversation.pinned }).catch(
-                            toastError
-                          )
-                        }
-                        aria-label={conversation.pinned ? 'Unpin conversation' : 'Pin conversation'}
-                        title={conversation.pinned ? 'Unpin' : 'Pin'}
-                        className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-amber-400"
-                      >
-                        {conversation.pinned ? <PinOff size={12} /> : <Pin size={12} />}
-                      </button>
-                      <button
-                        onClick={() => exportChat(conversation.id)}
-                        aria-label="Export to Markdown"
-                        title="Export to Markdown"
+                        onClick={(e) => {
+                          const r = e.currentTarget.getBoundingClientRect()
+                          setMenu({ conversation, x: r.right - MENU_W, y: r.bottom + 4 })
+                        }}
+                        aria-label="Conversation actions"
+                        aria-haspopup="menu"
+                        title="Actions"
                         className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
                       >
-                        <Download size={12} />
-                      </button>
-                      <button
-                        onClick={() =>
-                          void update(conversation.id, { archived: !conversation.archived }).catch(
-                            toastError
-                          )
-                        }
-                        aria-label={
-                          conversation.archived ? 'Unarchive conversation' : 'Archive conversation'
-                        }
-                        title={conversation.archived ? 'Unarchive' : 'Archive'}
-                        className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
-                      >
-                        {conversation.archived ? <ArchiveRestore size={12} /> : <Archive size={12} />}
-                      </button>
-                      <button
-                        onClick={() => setDeleteTarget(conversation)}
-                        aria-label="Delete conversation"
-                        title="Delete"
-                        className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-red-400"
-                      >
-                        <Trash2 size={12} />
+                        <MoreHorizontal size={14} />
                       </button>
                     </div>
                   </div>
@@ -330,6 +406,25 @@ export default function ConversationSidebar(): React.JSX.Element {
         }}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      {menu && (
+        <RowActionsMenu
+          conversation={menu.conversation}
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          onPin={() =>
+            void update(menu.conversation.id, { pinned: !menu.conversation.pinned }).catch(toastError)
+          }
+          onExport={() => exportChat(menu.conversation.id)}
+          onArchive={() =>
+            void update(menu.conversation.id, { archived: !menu.conversation.archived }).catch(
+              toastError
+            )
+          }
+          onDelete={() => setDeleteTarget(menu.conversation)}
+        />
+      )}
     </aside>
   )
 }
