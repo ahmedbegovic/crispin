@@ -135,7 +135,7 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
         </div>
       ) : (
         <>
-          <div className="max-w-[80%] select-text whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-white/[0.05] bg-[#26262c] px-3.5 py-2 text-[13.5px] leading-relaxed text-zinc-100">
+          <div className="max-w-[80%] select-text whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-white/[0.05] bg-[#26262c] px-3.5 py-2 text-[length:var(--chat-fs,13.5px)] leading-[var(--chat-lh,1.7)] text-zinc-100">
             {text}
           </div>
           {images.length > 0 && (
@@ -300,6 +300,15 @@ function AssistantMessage({
             return null
         }
       })}
+      {/* Live "still generating" tick — a sibling AFTER the markdown (never inside
+          it, which would break MarkdownPart's per-delta memo), so it sits just
+          below the streamed text as a liveness cue rather than inline at the tail. */}
+      {streaming && runPhase === 'generating' && hasAnswer && (
+        <span
+          aria-hidden
+          className="caret-blink mt-0.5 inline-block h-4 w-[2px] rounded-full bg-emerald-400/90"
+        />
+      )}
       <div className="mt-1 flex h-5 items-center gap-1.5">
         {streaming ? (
           // Mid-stream: spinner first, then copy-so-far once there is content.

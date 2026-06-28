@@ -1,6 +1,7 @@
 import { isValidElement, useState, type ReactNode } from 'react'
-import { Check, Copy } from 'lucide-react'
+import { Check, Copy, WrapText } from 'lucide-react'
 import { toastError } from '@/stores/toasts'
+import { useChatPrefs } from '@/stores/chatPrefs'
 import Mermaid from './Mermaid'
 
 /** Language label from the highlighted <code class="language-xxx"> child. */
@@ -28,6 +29,10 @@ function nodeText(node: ReactNode): string {
  */
 export default function CodeBlock({ children }: { children?: ReactNode }): React.JSX.Element {
   const [copied, setCopied] = useState(false)
+  // Soft-wrap: follows the global default, with a per-block override (null = follow).
+  const globalWrap = useChatPrefs((s) => s.codeWrap)
+  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null)
+  const wrap = wrapOverride ?? globalWrap
   const lang = langOf(children)
   const raw = nodeText(children)
 
@@ -47,16 +52,33 @@ export default function CodeBlock({ children }: { children?: ReactNode }): React
     <div className="group/code relative my-2 overflow-hidden rounded-lg border border-zinc-800">
       <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900/60 px-2.5 py-1 text-[10.5px]">
         <span className="font-mono text-zinc-500">{lang}</span>
-        <button
-          onClick={copy}
-          aria-label="Copy code"
-          className="flex items-center gap-1 rounded px-1 py-0.5 text-zinc-500 opacity-0 transition-opacity hover:text-zinc-200 focus-visible:opacity-100 group-hover/code:opacity-100"
-        >
-          {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
-          {copied ? 'Copied' : 'Copy'}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setWrapOverride(!wrap)}
+            aria-label={wrap ? 'Stop wrapping long lines' : 'Wrap long lines'}
+            aria-pressed={wrap}
+            title={wrap ? 'No wrap' : 'Wrap lines'}
+            className={`flex items-center rounded px-1 py-0.5 transition-opacity hover:text-zinc-200 focus-visible:opacity-100 group-hover/code:opacity-100 ${
+              wrap ? 'text-emerald-400 opacity-100' : 'text-zinc-500 opacity-0'
+            }`}
+          >
+            <WrapText size={12} />
+          </button>
+          <button
+            onClick={copy}
+            aria-label="Copy code"
+            className="flex items-center gap-1 rounded px-1 py-0.5 text-zinc-500 opacity-0 transition-opacity hover:text-zinc-200 focus-visible:opacity-100 group-hover/code:opacity-100"
+          >
+            {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
       </div>
-      <pre className="overflow-x-auto text-[12px] leading-relaxed [&>code]:block [&>code]:p-3">
+      <pre
+        className={`text-[12px] leading-relaxed [&>code]:block [&>code]:p-3 ${
+          wrap ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'
+        }`}
+      >
         {children}
       </pre>
     </div>

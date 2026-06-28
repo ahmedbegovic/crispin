@@ -5,6 +5,7 @@ import 'katex/dist/katex.min.css'
 import { useChatStore } from '@/stores/chat'
 import { useLibraryStore } from '@/stores/library'
 import { useMcpStore } from '@/stores/mcp'
+import { useChatPrefs, chatPrefsVars } from '@/stores/chatPrefs'
 import { toastError } from '@/stores/toasts'
 import ConversationSidebar from './ConversationSidebar'
 import Thread from './Thread'
@@ -19,6 +20,8 @@ export default function ChatTab() {
     s.activeId !== null ? s.conversationById[s.activeId] : undefined
   )
   const create = useChatStore((s) => s.create)
+  const textSize = useChatPrefs((s) => s.textSize)
+  const width = useChatPrefs((s) => s.width)
 
   useEffect(() => {
     void init().catch(toastError)
@@ -27,13 +30,14 @@ export default function ChatTab() {
   }, [init, initLibrary, initMcp])
 
   return (
-    <div className="flex h-full">
+    // --chat-fs / --chat-lh / --chat-measure cascade to the thread + composer;
+    // reading the prefs here means the memoized MarkdownPart never re-renders.
+    <div className="flex h-full" style={chatPrefsVars(textSize, width)}>
       <ConversationSidebar />
-      {/* The thread has no header row, so an absolute strip keeps the titlebar
-          band draggable over it (the virtuoso h-12 Header spacer clears it). */}
+      {/* ThreadHeader is the draggable titlebar band for an open conversation;
+          the no-conversation / loading states keep their own absolute strip. */}
       {activeId !== null && conversation ? (
         <div className="relative flex min-w-0 flex-1 flex-col border-l border-zinc-800/60 bg-[#15151a]">
-          <div className="drag-region absolute inset-x-0 top-0 z-10 h-12" />
           <Thread key={activeId} conversationId={activeId} />
           <Composer key={`composer-${activeId}`} conversation={conversation} />
         </div>

@@ -3,7 +3,6 @@ import {
   Archive,
   ArchiveRestore,
   Download,
-  Loader2,
   Pin,
   PinOff,
   Plus,
@@ -39,7 +38,7 @@ interface ConversationGroup {
  * `allowPinned` is off in the archived view, where a Pinned section would hoist
  * pinned-and-archived rows out of their date bucket.
  */
-function groupConversations(
+export function groupConversations(
   list: ConversationMeta[],
   allowPinned: boolean
 ): ConversationGroup[] {
@@ -127,14 +126,28 @@ export default function ConversationSidebar(): React.JSX.Element {
   const isRunning = (id: string): boolean => id in streaming
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800/70 bg-[#0f0f12]">
-      <div className="drag-region flex h-12 shrink-0 items-center px-3">
+    <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800/70 bg-[#0f0f12]">
+      <div className="drag-region flex h-12 shrink-0 items-center gap-1.5 px-3">
         <button
           onClick={() => void create().catch(toastError)}
-          className="no-drag flex w-full items-center justify-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 py-1.5 text-[12px] font-medium text-zinc-300 hover:border-zinc-600 hover:text-zinc-100"
+          className="no-drag flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 py-1.5 text-[12px] font-medium text-zinc-300 hover:border-zinc-600 hover:text-zinc-100"
         >
           <Plus size={13} />
           New chat
+        </button>
+        {/* Archived lives here as a quiet toggle — no boxed footer rule. */}
+        <button
+          onClick={() => void setShowArchived(!showArchived).catch(toastError)}
+          title={showArchived ? 'Back to active chats' : 'Show archived'}
+          aria-label={showArchived ? 'Back to active chats' : 'Show archived'}
+          aria-pressed={showArchived}
+          className={`no-drag flex shrink-0 items-center justify-center rounded-lg border p-[7px] transition-colors ${
+            showArchived
+              ? 'border-zinc-700 bg-zinc-800 text-zinc-200'
+              : 'border-zinc-800 bg-zinc-900 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300'
+          }`}
+        >
+          {showArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
         </button>
       </div>
 
@@ -173,9 +186,9 @@ export default function ConversationSidebar(): React.JSX.Element {
                   hit.conversationId === activeId ? 'bg-zinc-800' : 'hover:bg-zinc-900'
                 }`}
               >
-                <span className="flex items-center gap-1 text-[12.5px] text-zinc-200">
+                <span className="flex items-center gap-1.5 text-[12.5px] text-zinc-200">
                   {isRunning(hit.conversationId) && (
-                    <Loader2 size={9} className="shrink-0 animate-spin text-emerald-500/80" />
+                    <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500" />
                   )}
                   <span className="fade-edge-r min-w-0 flex-1">{hit.title || 'New chat'}</span>
                 </span>
@@ -207,11 +220,12 @@ export default function ConversationSidebar(): React.JSX.Element {
                 return (
                   <div
                     key={conversation.id}
-                    // Left spine carries state: emerald = a run is alive, sky = you are
-                    // here, transparent = idle (reserved 2px so nothing shifts).
+                    // Left spine carries state: emerald (breathing) = a run is alive,
+                    // sky = you are here, transparent = idle (reserved 2px so nothing
+                    // shifts). The pulse replaces the old per-row spinner.
                     className={`group relative mb-0.5 rounded-md border-l-2 ${
                       isRunning(conversation.id)
-                        ? 'border-emerald-500 bg-emerald-500/[0.06]'
+                        ? 'spine-pulse border-emerald-500 bg-emerald-500/[0.06]'
                         : active
                           ? 'border-sky-500/80 bg-sky-500/[0.06]'
                           : 'border-transparent hover:bg-zinc-900/70'
@@ -228,8 +242,14 @@ export default function ConversationSidebar(): React.JSX.Element {
                       className="flex w-full items-center gap-1 px-2.5 py-1.5 text-left"
                     >
                       {conversation.pinned && <Pin size={9} className="shrink-0 text-amber-500/80" />}
+                      {/* Non-color shape cue for the running state — survives reduced
+                          motion (animate-pulse settles to a steady dot), so "generating"
+                          isn't conveyed by spine hue alone. */}
                       {isRunning(conversation.id) && (
-                        <Loader2 size={9} className="shrink-0 animate-spin text-emerald-500/80" />
+                        <span
+                          aria-hidden
+                          className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
+                        />
                       )}
                       {/* Edge-fade instead of an ellipsis; flex-1 so short titles don't fade. */}
                       <span
@@ -296,17 +316,6 @@ export default function ConversationSidebar(): React.JSX.Element {
             </div>
           ))
         )}
-      </div>
-
-      <div className="shrink-0 border-t border-zinc-800/80 px-3 py-2">
-        <button
-          onClick={() => void setShowArchived(!showArchived).catch(toastError)}
-          className={`text-[11px] ${
-            showArchived ? 'text-zinc-200' : 'text-zinc-600 hover:text-zinc-400'
-          }`}
-        >
-          {showArchived ? '← Back to chats' : 'Archived'}
-        </button>
       </div>
 
       <ConfirmDialog
