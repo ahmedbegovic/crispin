@@ -87,13 +87,20 @@ const components: Components = {
   ol: ({ node: _, ...props }) => <ol className="my-2 list-decimal space-y-1 pl-5" {...props} />,
   li: ({ node: _, ...props }) => <li className="leading-relaxed" {...props} />,
   h1: ({ node: _, ...props }) => (
-    <h1 className="mb-2 mt-4 text-[16px] font-semibold text-zinc-100 first:mt-0" {...props} />
+    <h1
+      className="mb-2 mt-6 text-[17px] font-semibold tracking-[-0.01em] text-zinc-100 first:mt-0"
+      {...props}
+    />
   ),
+  // The hairline underbar turns long answers into clearly outlined sections.
   h2: ({ node: _, ...props }) => (
-    <h2 className="mb-2 mt-4 text-[15px] font-semibold text-zinc-100 first:mt-0" {...props} />
+    <h2
+      className="mb-2 mt-5 border-b border-zinc-800/60 pb-1.5 text-[15px] font-semibold tracking-[-0.01em] text-zinc-100 first:mt-0"
+      {...props}
+    />
   ),
   h3: ({ node: _, ...props }) => (
-    <h3 className="mb-1.5 mt-3 text-[14px] font-semibold text-zinc-100 first:mt-0" {...props} />
+    <h3 className="mb-1.5 mt-4 text-[14px] font-semibold text-zinc-200 first:mt-0" {...props} />
   ),
   h4: ({ node: _, ...props }) => (
     <h4 className="mb-1 mt-3 text-[13.5px] font-semibold text-zinc-200 first:mt-0" {...props} />
@@ -112,20 +119,26 @@ const components: Components = {
     ),
   cite: ({ node: _, children }) => <Citation>{children}</Citation>,
   blockquote: ({ node: _, ...props }) => (
+    // Neutral rule: a quote has no "active" state, so it stays off the sky/emerald/amber spine.
     <blockquote className="my-2 border-l-2 border-zinc-700 pl-3 text-zinc-400" {...props} />
   ),
+  // Calm zebra ledger: a single rounded frame, horizontal rules only, an
+  // uppercase header row, and a faint stripe on even rows for scan-ability.
   table: ({ node: _, ...props }) => (
-    <div className="my-2 overflow-x-auto">
+    <div className="my-2 overflow-x-auto rounded-lg border border-zinc-800">
       <table className="w-full border-collapse text-[12.5px]" {...props} />
     </div>
   ),
+  tr: ({ node: _, ...props }) => <tr className="even:bg-white/[0.02]" {...props} />,
   th: ({ node: _, ...props }) => (
     <th
-      className="border border-zinc-800 bg-zinc-900 px-2 py-1 text-left font-medium text-zinc-200"
+      className="border-b border-zinc-800 bg-zinc-900/80 px-2 py-1 text-left text-[11px] font-medium uppercase tracking-[0.05em] text-zinc-400"
       {...props}
     />
   ),
-  td: ({ node: _, ...props }) => <td className="border border-zinc-800 px-2 py-1" {...props} />,
+  td: ({ node: _, ...props }) => (
+    <td className="border-b border-zinc-800 px-2 py-1 text-zinc-300" {...props} />
+  ),
   hr: ({ node: _, ...props }) => <hr className="my-3 border-zinc-800" {...props} />,
   img: ({ node: _, src, alt, ...props }) => {
     const url = typeof src === 'string' ? src : ''
@@ -164,7 +177,7 @@ interface Props {
  */
 const MarkdownPart = memo(function MarkdownPart({ text, sources }: Props) {
   return (
-    <div className="select-text break-words text-[13.5px] leading-relaxed text-zinc-200">
+    <div className="select-text break-words text-[13.5px] leading-[1.7] text-zinc-200">
       <SourcesContext.Provider value={sources ?? EMPTY_SOURCES}>
         <ReactMarkdown
           // singleDollarTextMath:false — a single `$` is currency far more often

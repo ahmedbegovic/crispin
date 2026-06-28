@@ -39,3 +39,26 @@ export function relativeTime(unixMs: number, now: number = Date.now()): string {
   if (days < 365) return `${Math.floor(days / 30)}mo ago`
   return `${Math.floor(days / 365)}y ago`
 }
+
+export type DateBucket = 'Today' | 'Yesterday' | 'Previous 7 Days' | 'Previous 30 Days' | 'Older'
+
+/**
+ * Which calendar-relative bucket a timestamp falls into, for grouping lists.
+ * Bucketed by LOCAL midnight (not raw 24h windows), so "Yesterday" means the
+ * previous calendar day regardless of the current time of day.
+ */
+export function dateBucket(unixMs: number, now: number = Date.now()): DateBucket {
+  // Each bound is a real local midnight N calendar days back (not a fixed-ms
+  // multiple), so DST-transition days don't shift the boundary by an hour.
+  const startOfDayBack = (n: number): number => {
+    const d = new Date(now)
+    d.setHours(0, 0, 0, 0)
+    d.setDate(d.getDate() - n)
+    return d.getTime()
+  }
+  if (unixMs >= startOfDayBack(0)) return 'Today'
+  if (unixMs >= startOfDayBack(1)) return 'Yesterday'
+  if (unixMs >= startOfDayBack(7)) return 'Previous 7 Days'
+  if (unixMs >= startOfDayBack(30)) return 'Previous 30 Days'
+  return 'Older'
+}

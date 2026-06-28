@@ -32,19 +32,19 @@ export default function ChatTab() {
       {/* The thread has no header row, so an absolute strip keeps the titlebar
           band draggable over it (the virtuoso h-12 Header spacer clears it). */}
       {activeId !== null && conversation ? (
-        <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className="relative flex min-w-0 flex-1 flex-col border-l border-zinc-800/60 bg-[#15151a]">
           <div className="drag-region absolute inset-x-0 top-0 z-10 h-12" />
           <Thread key={activeId} conversationId={activeId} />
           <Composer key={`composer-${activeId}`} conversation={conversation} />
         </div>
       ) : activeId !== null ? (
         // Selected but chat.get hasn't resolved yet — don't flash the empty CTA.
-        <div className="relative flex min-w-0 flex-1 items-center justify-center text-[13px] text-zinc-600">
+        <div className="relative flex min-w-0 flex-1 items-center justify-center border-l border-zinc-800/60 bg-[#15151a] text-[13px] text-zinc-600">
           <div className="drag-region absolute inset-x-0 top-0 h-12" />
           Loading…
         </div>
       ) : (
-        <div className="relative flex min-w-0 flex-1 flex-col items-center justify-center gap-4">
+        <div className="relative flex min-w-0 flex-1 flex-col items-center justify-center gap-4 border-l border-zinc-800/60 bg-[#15151a]">
           <div className="drag-region absolute inset-x-0 top-0 h-12" />
           <MessageSquare size={32} strokeWidth={1.5} className="text-zinc-700" />
           <div className="text-center">

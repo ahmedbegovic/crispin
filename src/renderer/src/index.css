@@ -12,13 +12,25 @@ body,
 
 body {
   margin: 0;
-  background-color: #0c0c0e;
+  /* Deepest of the three chat planes — the nav rail + body read darkest under
+     the lighter sidebar (#0f0f12) and thread page (#15151a). */
+  background-color: #0a0a0c;
   color: #d4d4d8;
   font-family:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial,
-    sans-serif;
+    'Inter Variable', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   user-select: none;
+}
+
+/* Soft right-edge fade for single-line labels — a gradient mask instead of an
+   ellipsis. The fade only bites when text actually reaches the edge, so short
+   titles are untouched (cf. the conversation list). */
+.fade-edge-r {
+  overflow: hidden;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 1.25rem), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 1.25rem), transparent);
 }
 
 .drag-region {

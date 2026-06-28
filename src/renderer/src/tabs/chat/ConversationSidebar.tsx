@@ -3,6 +3,7 @@ import {
   Archive,
   ArchiveRestore,
   Download,
+  Loader2,
   Pin,
   PinOff,
   Plus,
@@ -14,8 +15,53 @@ import type { ChatSearchHit, ConversationMeta } from '@shared/types'
 import { useChatStore } from '@/stores/chat'
 import { call } from '@/lib/ipc'
 import { pushToast, toastError } from '@/stores/toasts'
-import { relativeTime } from '@/lib/format'
+import { dateBucket, relativeTime, type DateBucket } from '@/lib/format'
 import ConfirmDialog from '@/components/ConfirmDialog'
+
+const BUCKET_ORDER: DateBucket[] = [
+  'Today',
+  'Yesterday',
+  'Previous 7 Days',
+  'Previous 30 Days',
+  'Older'
+]
+
+interface ConversationGroup {
+  label: string
+  pinned: boolean
+  items: ConversationMeta[]
+}
+
+/**
+ * Break the flat list into a Pinned section (any pinned, kept in store order)
+ * followed by date buckets — so the sidebar reads as dated groups instead of a
+ * wall of near-identical titles. Pure/render-time: no store or schema change.
+ * `allowPinned` is off in the archived view, where a Pinned section would hoist
+ * pinned-and-archived rows out of their date bucket.
+ */
+function groupConversations(
+  list: ConversationMeta[],
+  allowPinned: boolean
+): ConversationGroup[] {
+  const groups: ConversationGroup[] = []
+  if (allowPinned) {
+    const pinned = list.filter((c) => c.pinned)
+    if (pinned.length) groups.push({ label: 'Pinned', pinned: true, items: pinned })
+  }
+  const byBucket = new Map<DateBucket, ConversationMeta[]>()
+  for (const c of list) {
+    if (allowPinned && c.pinned) continue
+    const bucket = dateBucket(c.updatedAt)
+    const arr = byBucket.get(bucket)
+    if (arr) arr.push(c)
+    else byBucket.set(bucket, [c])
+  }
+  for (const label of BUCKET_ORDER) {
+    const items = byBucket.get(label)
+    if (items?.length) groups.push({ label, pinned: false, items })
+  }
+  return groups
+}
 
 /** Render an fts5 snippet() string, bolding the <b>…</b> match marks (no HTML injection). */
 function Snippet({ text }: { text: string }): React.JSX.Element {
@@ -37,6 +83,7 @@ function Snippet({ text }: { text: string }): React.JSX.Element {
 export default function ConversationSidebar(): React.JSX.Element {
   const conversations = useChatStore((s) => s.conversations)
   const activeId = useChatStore((s) => s.activeId)
+  const streaming = useChatStore((s) => s.streaming)
   const showArchived = useChatStore((s) => s.showArchived)
   const select = useChatStore((s) => s.select)
   const create = useChatStore((s) => s.create)
@@ -77,8 +124,10 @@ export default function ConversationSidebar(): React.JSX.Element {
       .catch(toastError)
   }
 
+  const isRunning = (id: string): boolean => id in streaming
+
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950/50">
+    <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800/70 bg-[#0f0f12]">
       <div className="drag-region flex h-12 shrink-0 items-center px-3">
         <button
           onClick={() => void create().catch(toastError)}
@@ -124,8 +173,11 @@ export default function ConversationSidebar(): React.JSX.Element {
                   hit.conversationId === activeId ? 'bg-zinc-800' : 'hover:bg-zinc-900'
                 }`}
               >
-                <span className="block truncate text-[12.5px] text-zinc-200">
-                  {hit.title || 'New chat'}
+                <span className="flex items-center gap-1 text-[12.5px] text-zinc-200">
+                  {isRunning(hit.conversationId) && (
+                    <Loader2 size={9} className="shrink-0 animate-spin text-emerald-500/80" />
+                  )}
+                  <span className="fade-edge-r min-w-0 flex-1">{hit.title || 'New chat'}</span>
                 </span>
                 {hit.snippet && (
                   <span className="mt-0.5 block truncate text-[10.5px] text-zinc-500">
@@ -140,78 +192,109 @@ export default function ConversationSidebar(): React.JSX.Element {
             {showArchived ? 'No archived conversations.' : 'No conversations yet.'}
           </p>
         ) : (
-          conversations.map((conversation) => {
-            const active = conversation.id === activeId
-            return (
+          groupConversations(conversations, !showArchived).map((group) => (
+            <div key={group.label}>
+              {/* Sticky quiet section label — the date group carries "when" so rows don't have to. */}
               <div
-                key={conversation.id}
-                className={`group relative mb-0.5 flex items-center rounded-md ${
-                  active ? 'bg-zinc-800' : 'hover:bg-zinc-900'
+                className={`sticky top-0 z-[1] bg-[#0f0f12]/95 px-2.5 pb-1 pt-3 text-[10.5px] font-medium uppercase tracking-[0.08em] backdrop-blur-sm ${
+                  group.pinned ? 'text-amber-500/70' : 'text-zinc-500'
                 }`}
               >
-                <button
-                  onClick={() => void select(conversation.id).catch(toastError)}
-                  className="min-w-0 flex-1 px-2.5 py-1.5 text-left"
-                >
-                  <span className="flex items-center gap-1">
-                    {conversation.pinned && <Pin size={9} className="shrink-0 text-amber-500/80" />}
-                    <span
-                      className={`truncate text-[12.5px] ${
-                        active ? 'text-zinc-100' : 'text-zinc-300'
-                      }`}
-                    >
-                      {conversation.title || 'New chat'}
-                    </span>
-                  </span>
-                  <span className="block text-[10.5px] text-zinc-600">
-                    {relativeTime(conversation.updatedAt)}
-                  </span>
-                </button>
-                <div className="flex shrink-0 items-center gap-0.5 pr-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                  <button
-                    onClick={() =>
-                      void update(conversation.id, { pinned: !conversation.pinned }).catch(
-                        toastError
-                      )
-                    }
-                    aria-label={conversation.pinned ? 'Unpin conversation' : 'Pin conversation'}
-                    title={conversation.pinned ? 'Unpin' : 'Pin'}
-                    className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-amber-400"
-                  >
-                    {conversation.pinned ? <PinOff size={12} /> : <Pin size={12} />}
-                  </button>
-                  <button
-                    onClick={() => exportChat(conversation.id)}
-                    aria-label="Export to Markdown"
-                    title="Export to Markdown"
-                    className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
-                  >
-                    <Download size={12} />
-                  </button>
-                  <button
-                    onClick={() =>
-                      void update(conversation.id, { archived: !conversation.archived }).catch(
-                        toastError
-                      )
-                    }
-                    aria-label={conversation.archived ? 'Unarchive conversation' : 'Archive conversation'}
-                    title={conversation.archived ? 'Unarchive' : 'Archive'}
-                    className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
-                  >
-                    {conversation.archived ? <ArchiveRestore size={12} /> : <Archive size={12} />}
-                  </button>
-                  <button
-                    onClick={() => setDeleteTarget(conversation)}
-                    aria-label="Delete conversation"
-                    title="Delete"
-                    className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-red-400"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
+                {group.label}
               </div>
-            )
-          })
+              {group.items.map((conversation) => {
+                const active = conversation.id === activeId
+                return (
+                  <div
+                    key={conversation.id}
+                    // Left spine carries state: emerald = a run is alive, sky = you are
+                    // here, transparent = idle (reserved 2px so nothing shifts).
+                    className={`group relative mb-0.5 rounded-md border-l-2 ${
+                      isRunning(conversation.id)
+                        ? 'border-emerald-500 bg-emerald-500/[0.06]'
+                        : active
+                          ? 'border-sky-500/80 bg-sky-500/[0.06]'
+                          : 'border-transparent hover:bg-zinc-900/70'
+                    }`}
+                  >
+                    {/* Single-line title; relative time lives in the tooltip now. Actions
+                        float over the scrim so nothing is reserved for them. */}
+                    <button
+                      onClick={() => void select(conversation.id).catch(toastError)}
+                      title={relativeTime(conversation.updatedAt)}
+                      aria-label={`${conversation.title || 'New chat'}, updated ${relativeTime(
+                        conversation.updatedAt
+                      )}`}
+                      className="flex w-full items-center gap-1 px-2.5 py-1.5 text-left"
+                    >
+                      {conversation.pinned && <Pin size={9} className="shrink-0 text-amber-500/80" />}
+                      {isRunning(conversation.id) && (
+                        <Loader2 size={9} className="shrink-0 animate-spin text-emerald-500/80" />
+                      )}
+                      {/* Edge-fade instead of an ellipsis; flex-1 so short titles don't fade. */}
+                      <span
+                        className={`fade-edge-r min-w-0 flex-1 text-[13px] leading-snug ${
+                          active ? 'text-zinc-100' : 'text-zinc-400'
+                        }`}
+                      >
+                        {conversation.title || 'New chat'}
+                      </span>
+                    </button>
+                    {/* Scrim: fades the row over the title's right edge so revealed icons
+                        never collide with the text. */}
+                    <div
+                      aria-hidden
+                      className="pointer-events-none absolute inset-y-0 right-0 w-28 rounded-r-md bg-gradient-to-l from-[#0f0f12] via-[#0f0f12] to-transparent opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                    />
+                    <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      <button
+                        onClick={() =>
+                          void update(conversation.id, { pinned: !conversation.pinned }).catch(
+                            toastError
+                          )
+                        }
+                        aria-label={conversation.pinned ? 'Unpin conversation' : 'Pin conversation'}
+                        title={conversation.pinned ? 'Unpin' : 'Pin'}
+                        className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-amber-400"
+                      >
+                        {conversation.pinned ? <PinOff size={12} /> : <Pin size={12} />}
+                      </button>
+                      <button
+                        onClick={() => exportChat(conversation.id)}
+                        aria-label="Export to Markdown"
+                        title="Export to Markdown"
+                        className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
+                      >
+                        <Download size={12} />
+                      </button>
+                      <button
+                        onClick={() =>
+                          void update(conversation.id, { archived: !conversation.archived }).catch(
+                            toastError
+                          )
+                        }
+                        aria-label={
+                          conversation.archived ? 'Unarchive conversation' : 'Archive conversation'
+                        }
+                        title={conversation.archived ? 'Unarchive' : 'Archive'}
+                        className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
+                      >
+                        {conversation.archived ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+                      </button>
+                      <button
+                        onClick={() => setDeleteTarget(conversation)}
+                        aria-label="Delete conversation"
+                        title="Delete"
+                        className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-red-400"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          ))
         )}
       </div>
 

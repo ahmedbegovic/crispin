@@ -3,10 +3,12 @@ import {
   FileText,
   Globe,
   Image as ImageIcon,
+  Library,
+  Loader2,
   Paperclip,
   SendHorizontal,
-  Settings2,
-  Sliders,
+  Server,
+  SlidersHorizontal,
   Sparkles,
   Square,
   X
@@ -25,12 +27,14 @@ import { useDismissable } from '@/lib/useDismissable'
 import { useChatStore } from '@/stores/chat'
 import { usePaletteStore } from '@/stores/palette'
 import { useLibraryStore } from '@/stores/library'
+import { useMcpStore } from '@/stores/mcp'
 import { useModelsStore } from '@/stores/models'
 import { pushToast, toastError } from '@/stores/toasts'
 import { basename, kindForPath, pathForFile } from './attachments'
 import McpDialog from './McpDialog'
 import LibraryDialog from './LibraryDialog'
 import ContextDonut from './ContextDonut'
+import { chatRunPhase, chatRunPhaseLabel } from './runStatus'
 
 const FILE_ACCEPT =
   'image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.pptx,.xlsx,.md,.txt,.html,.csv,.epub'
@@ -41,7 +45,12 @@ const MAX_TEXTAREA_PX = 176
 const MANAGE_SENTINEL = '__manage__'
 
 const selectClass =
-  'rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:text-zinc-200 focus:border-zinc-600'
+  'w-full rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:text-zinc-200 focus:border-zinc-600'
+const barSelectClass =
+  'rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:text-zinc-200 focus:border-emerald-500/70'
+// One row per tool in the context popover — same height, same hit area.
+const popoverRow =
+  'flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-[12px] text-zinc-300 hover:bg-zinc-800/80'
 
 /** Chunked base64 so a multi-MB pasted screenshot doesn't blow the call stack. */
 function toBase64(buf: ArrayBuffer): string {
@@ -63,11 +72,18 @@ export default function Composer({ conversation }: Props) {
   const abort = useChatStore((s) => s.abort)
   const update = useChatStore((s) => s.update)
   const create = useChatStore((s) => s.create)
-  const streaming = useChatStore((s) => conversation.id in s.streaming)
+  const streamingId = useChatStore((s) => s.streaming[conversation.id])
+  const messages = useChatStore((s) => s.messagesById[conversation.id])
   const usage = useChatStore((s) => s.usage[conversation.id])
   const collections = useLibraryStore((s) => s.collections)
+  const mcpEnabled = useMcpStore((s) => s.servers.filter((srv) => srv.enabled).length)
   const chatDefaultTier =
     useModelsStore((s) => s.overview?.defaults.chat) ?? FEATURE_DEFAULTS.chat
+  const streamingMessage = streamingId
+    ? messages?.find((message) => message.id === streamingId)
+    : undefined
+  const runPhase = chatRunPhase(streamingId, streamingMessage)
+  const streaming = runPhase !== 'idle'
 
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<AttachmentInput[]>([])
@@ -76,14 +92,14 @@ export default function Composer({ conversation }: Props) {
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [slashHighlight, setSlashHighlight] = useState(0)
-  const [samplingOpen, setSamplingOpen] = useState(false)
+  const [contextOpen, setContextOpen] = useState(false)
   // In-flight pasted/dropped image saves; submit blocks on these (see submit()).
   const [pendingPastes, setPendingPastes] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const samplingRef = useRef<HTMLDivElement>(null)
-  // Sampling popover: Escape / click-outside dismiss like every other overlay.
-  useDismissable(samplingOpen, () => setSamplingOpen(false), { outsideRef: samplingRef })
+  const contextRef = useRef<HTMLDivElement>(null)
+  // Context/tools popover: Escape / click-outside dismiss like every other overlay.
+  useDismissable(contextOpen, () => setContextOpen(false), { outsideRef: contextRef })
 
   useEffect(() => {
     // Chat only sees opted-in skills — the badge must match what the model
@@ -193,24 +209,15 @@ export default function Composer({ conversation }: Props) {
         ]
   ).filter((c) => c.name.startsWith(slashFilter ?? ''))
   const showSlash = slashCommands.length > 0
-
-  // Per-conversation sampling override; clearing all three reverts to model defaults.
-  const setSamplingField = (field: 'temperature' | 'topP' | 'topK', raw: string): void => {
-    const v = raw.trim() === '' ? null : Number(raw)
-    if (v !== null && !Number.isFinite(v)) return
-    const s = conversation.sampling
-    const next = {
-      temperature: field === 'temperature' ? v : (s?.temperature ?? null),
-      topP: field === 'topP' ? v : (s?.topP ?? null),
-      topK: field === 'topK' ? v : (s?.topK ?? null)
-    }
-    const allNull = next.temperature === null && next.topP === null && next.topK === null
-    void update(conversation.id, { sampling: allNull ? null : next }).catch(toastError)
-  }
+  const contextActive =
+    attachments.length > 0 ||
+    conversation.webEnabled ||
+    conversation.collectionId !== null ||
+    mcpEnabled > 0
 
   return (
     <div className="shrink-0">
-      <div className="mx-auto w-full max-w-3xl px-6 pb-4">
+      <div className="mx-auto w-full max-w-[42rem] px-6 pb-4">
         <div
           onDragOver={(e) => {
             e.preventDefault()
@@ -222,8 +229,10 @@ export default function Composer({ conversation }: Props) {
             setDragOver(false)
             addFiles(Array.from(e.dataTransfer.files))
           }}
-          className={`relative rounded-xl border bg-zinc-900/80 ${
-            dragOver ? 'border-emerald-500/60 ring-1 ring-emerald-500/30' : 'border-zinc-800'
+          className={`relative rounded-xl border bg-zinc-900 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03),0_8px_24px_-14px_rgba(0,0,0,0.7)] ${
+            dragOver
+              ? 'border-emerald-500/60 ring-1 ring-emerald-500/30'
+              : 'border-zinc-800/80 focus-within:border-emerald-500/50 focus-within:ring-1 focus-within:ring-emerald-500/20'
           }`}
         >
           {showSlash && (
@@ -278,9 +287,9 @@ export default function Composer({ conversation }: Props) {
               setSlashHighlight(0)
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Escape' && samplingOpen) {
+              if (e.key === 'Escape' && contextOpen) {
                 e.preventDefault()
-                setSamplingOpen(false)
+                setContextOpen(false)
                 return
               }
               if (showSlash) {
@@ -339,7 +348,7 @@ export default function Composer({ conversation }: Props) {
             className="block max-h-44 w-full resize-none bg-transparent px-3.5 py-3 text-[13px] leading-relaxed text-zinc-200 outline-none placeholder:text-zinc-600"
           />
 
-          <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
+          <div className="mt-1 flex items-center gap-1.5 border-t border-zinc-800/50 px-2.5 pb-2.5 pt-2">
             <input
               ref={fileRef}
               type="file"
@@ -351,93 +360,154 @@ export default function Composer({ conversation }: Props) {
                 e.target.value = ''
               }}
             />
-            {/* Order per the PDF: attach, web, MCP adjacent — then tier, then RAG. */}
-            <button
-              onClick={() => fileRef.current?.click()}
-              title="Attach images or documents"
-              className="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-            >
-              <Paperclip size={14} />
-            </button>
-
-            <button
-              onClick={() =>
-                void update(conversation.id, { webEnabled: !conversation.webEnabled }).catch(
-                  toastError
-                )
-              }
-              title={conversation.webEnabled ? 'Web search: on' : 'Web search: off'}
-              className={`rounded-md border p-1.5 ${
-                conversation.webEnabled
-                  ? 'border-sky-500/40 bg-sky-500/10 text-sky-400'
-                  : 'border-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
-              }`}
-            >
-              <Globe size={14} />
-            </button>
-
-            <button
-              onClick={() => setMcpOpen(true)}
-              title="MCP servers"
-              className="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-            >
-              <Settings2 size={14} />
-            </button>
-
-            <div ref={samplingRef} className="relative">
+            {/* Tools/context popover sits first; model + quality follow it. */}
+            <div ref={contextRef} className="relative">
               <button
-                onClick={() => setSamplingOpen((o) => !o)}
-                title="Sampling"
+                onClick={() => setContextOpen((o) => !o)}
+                title="Tools & context"
+                aria-label="Tools and context"
                 aria-haspopup="dialog"
-                aria-expanded={samplingOpen}
-                className={`rounded-md p-1.5 ${
-                  conversation.sampling
-                    ? 'text-amber-400'
-                    : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+                aria-expanded={contextOpen}
+                className={`relative rounded-md border p-1.5 ${
+                  contextActive
+                    ? 'border-emerald-600/40 bg-emerald-500/10 text-emerald-300'
+                    : contextOpen
+                      ? 'border-zinc-700 bg-zinc-800 text-zinc-200'
+                      : 'border-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
                 }`}
               >
-                <Sliders size={14} />
+                <SlidersHorizontal size={14} />
+                {/* Web on glances through the closed trigger (which tool). Neutral zinc,
+                    not sky — sky is reserved for the active/selection spine. */}
+                {conversation.webEnabled && (
+                  <span className="absolute -right-0.5 -top-0.5 grid h-3 w-3 place-items-center rounded-full bg-zinc-900">
+                    <Globe size={9} className="text-zinc-300" />
+                  </span>
+                )}
               </button>
-              {samplingOpen && (
-                <div className="absolute bottom-full left-0 z-20 mb-1 w-48 rounded-lg border border-zinc-700 bg-zinc-900 p-2.5 shadow-xl">
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <span className="text-[11px] font-medium text-zinc-300">Sampling</span>
-                    {conversation.sampling && (
-                      <button
-                        onClick={() => {
-                          void update(conversation.id, { sampling: null }).catch(toastError)
-                          setSamplingOpen(false)
-                        }}
-                        className="text-[10px] text-zinc-500 hover:text-zinc-300"
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
-                  {(
-                    [
-                      ['temperature', 'Temp'],
-                      ['topP', 'Top-P'],
-                      ['topK', 'Top-K']
-                    ] as const
-                  ).map(([field, label]) => (
-                    <label
-                      key={field}
-                      className="mb-1 flex items-center justify-between gap-2 text-[11px] text-zinc-500"
-                    >
-                      {label}
-                      <input
-                        defaultValue={conversation.sampling?.[field] ?? ''}
-                        placeholder="auto"
-                        inputMode="decimal"
-                        onBlur={(e) => setSamplingField(field, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') e.currentTarget.blur()
-                        }}
-                        className="w-16 rounded border border-zinc-800 bg-zinc-950 px-1.5 py-0.5 text-right text-[11px] text-zinc-200 outline-none focus:border-zinc-600"
+
+              {contextOpen && (
+                <div
+                  role="dialog"
+                  aria-label="Tools and context"
+                  className="absolute bottom-full left-0 z-20 mb-1 w-60 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl"
+                >
+                  {/* Web search — the persistent, per-conversation toggle. */}
+                  <button
+                    role="switch"
+                    aria-checked={conversation.webEnabled}
+                    onClick={() =>
+                      void update(conversation.id, { webEnabled: !conversation.webEnabled }).catch(
+                        toastError
+                      )
+                    }
+                    className={popoverRow}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Globe
+                        size={14}
+                        className={conversation.webEnabled ? 'text-sky-400' : 'text-zinc-500'}
                       />
-                    </label>
-                  ))}
+                      Web search
+                    </span>
+                    <span
+                      aria-hidden
+                      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
+                        conversation.webEnabled ? 'bg-sky-500' : 'bg-zinc-700'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
+                          conversation.webEnabled ? 'translate-x-3.5' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </span>
+                  </button>
+
+                  {/* Attach files */}
+                  <button
+                    onClick={() => {
+                      fileRef.current?.click()
+                      setContextOpen(false)
+                    }}
+                    className={popoverRow}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Paperclip size={14} className="text-zinc-500" />
+                      Attach files
+                    </span>
+                    <span className="text-[10.5px] text-zinc-600">Image, PDF, doc…</span>
+                  </button>
+
+                  {/* MCP servers — badge mirrors how many are switched on. */}
+                  <button
+                    onClick={() => {
+                      setMcpOpen(true)
+                      setContextOpen(false)
+                    }}
+                    aria-label={
+                      mcpEnabled > 0 ? `MCP servers, ${mcpEnabled} enabled` : 'MCP servers, none enabled'
+                    }
+                    className={popoverRow}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Server size={14} className="text-zinc-500" />
+                      MCP servers
+                    </span>
+                    <span
+                      className={`text-[10.5px] ${
+                        mcpEnabled > 0 ? 'text-emerald-400' : 'text-zinc-600'
+                      }`}
+                    >
+                      {mcpEnabled > 0 ? `${mcpEnabled} on` : 'Off'}
+                    </span>
+                  </button>
+
+                  <div className="my-1 border-t border-zinc-800/80" />
+
+                  {/* Library — pick a RAG collection or jump to manage it. */}
+                  <label className="block px-2 pb-1 pt-1.5">
+                    <span className="mb-1.5 flex items-center gap-2 text-[12px] text-zinc-300">
+                      <Library size={14} className="text-zinc-500" />
+                      Library
+                    </span>
+                    <select
+                      value={conversation.collectionId ?? ''}
+                      onChange={(e) => {
+                        // The select is controlled, so picking "Manage…" snaps back on re-render.
+                        if (e.target.value === MANAGE_SENTINEL) {
+                          setLibraryOpen(true)
+                          setContextOpen(false)
+                          return
+                        }
+                        void update(conversation.id, { collectionId: e.target.value || null }).catch(
+                          toastError
+                        )
+                      }}
+                      title="RAG collection"
+                      className={selectClass}
+                    >
+                      <option value="">No collection</option>
+                      {collections.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({c.docCount})
+                        </option>
+                      ))}
+                      <option value={MANAGE_SENTINEL}>Manage library…</option>
+                    </select>
+                  </label>
+
+                  {skills.length > 0 && (
+                    <div className="mt-1 flex items-center gap-1.5 border-t border-zinc-800/80 px-2 pt-2 text-[10.5px] text-zinc-600">
+                      <Sparkles size={11} className="shrink-0" />
+                      <span
+                        title={skills.map((s) => `${s.name} — ${s.description}`).join('\n')}
+                        className="truncate"
+                      >
+                        {skills.length} skill{skills.length === 1 ? '' : 's'} available to the model
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -450,8 +520,9 @@ export default function Composer({ conversation }: Props) {
                   family: e.target.value === '' ? null : (e.target.value as Family)
                 }).catch(toastError)
               }
-              title="Model family"
-              className={selectClass}
+              title="Model"
+              aria-label="Model family"
+              className={`${barSelectClass} w-24`}
             >
               <option value="">Default</option>
               {FAMILIES.map((family) => (
@@ -469,8 +540,9 @@ export default function Composer({ conversation }: Props) {
                   defaultTier: e.target.value === '' ? null : (e.target.value as Tier)
                 }).catch(toastError)
               }
-              title="Model tier"
-              className={selectClass}
+              title="Quality"
+              aria-label="Model quality"
+              className={`${barSelectClass} w-28`}
             >
               <option value="">Default ({TIER_LABELS[chatDefaultTier]})</option>
               {TIER_ORDER.map((tier) => (
@@ -480,56 +552,30 @@ export default function Composer({ conversation }: Props) {
               ))}
             </select>
 
-            <select
-              value={conversation.collectionId ?? ''}
-              onChange={(e) => {
-                // The select is controlled, so picking "Manage…" snaps back on re-render.
-                if (e.target.value === MANAGE_SENTINEL) {
-                  setLibraryOpen(true)
-                  return
-                }
-                void update(conversation.id, { collectionId: e.target.value || null }).catch(
-                  toastError
-                )
-              }}
-              title="RAG collection"
-              className={selectClass}
-            >
-              <option value="">No collection</option>
-              {collections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} ({c.docCount})
-                </option>
-              ))}
-              <option value={MANAGE_SENTINEL}>Manage library…</option>
-            </select>
-
-            {skills.length > 0 && (
-              <span
-                title={skills.map((s) => `${s.name} — ${s.description}`).join('\n')}
-                className="flex items-center gap-1 text-[11px] text-zinc-600"
-              >
-                <Sparkles size={12} />
-                {skills.length}
-              </span>
-            )}
-
             <div className="ml-auto flex items-center gap-2">
               {usage && <ContextDonut used={usage.used} contextLength={usage.contextLength} />}
               {streaming ? (
-                <button
-                  onClick={() => void abort(conversation.id).catch(toastError)}
-                  title="Stop generating"
-                  className="rounded-lg bg-red-600/90 p-2 text-white hover:bg-red-500"
-                >
-                  <Square size={13} />
-                </button>
+                <>
+                  <span className="hidden min-w-0 max-w-36 items-center gap-1.5 text-[11px] text-zinc-500 md:flex">
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
+                    <span className="truncate">{chatRunPhaseLabel(runPhase)}</span>
+                  </span>
+                  <button
+                    onClick={() => void abort(conversation.id).catch(toastError)}
+                    title="Stop generating"
+                    aria-label="Stop generating"
+                    className="rounded-lg bg-red-600/90 p-2 text-white hover:bg-red-500"
+                  >
+                    <Square size={13} />
+                  </button>
+                </>
               ) : (
                 <button
                   onClick={submit}
                   disabled={pendingPastes > 0 || (!text.trim() && attachments.length === 0)}
                   title="Send"
-                  className="rounded-lg bg-emerald-600 p-2 text-white enabled:hover:bg-emerald-500 disabled:opacity-40"
+                  aria-label="Send message"
+                  className="rounded-lg bg-emerald-600 p-2 text-white enabled:shadow-[0_0_0_1px_rgba(16,185,129,0.25)] enabled:hover:bg-emerald-500 disabled:opacity-40"
                 >
                   <SendHorizontal size={13} />
                 </button>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { AlertTriangle, MessageSquare, X } from 'lucide-react'
+import { AlertTriangle, Loader2, MessageSquare, X } from 'lucide-react'
 import type { ChatMessage } from '@shared/types'
 import { useChatStore } from '@/stores/chat'
 import { useModelsStore } from '@/stores/models'
@@ -8,6 +8,7 @@ import { useUiStore } from '@/stores/ui'
 import { toastError } from '@/stores/toasts'
 import { friendlyError } from '@/lib/friendlyError'
 import MessageBubble from './MessageBubble'
+import { chatRunPhase, chatRunPhaseLabel, type ChatRunPhase } from './runStatus'
 
 const SUGGESTIONS = [
   'What kinds of tasks are you good at?',
@@ -49,7 +50,7 @@ function ErrorBanner({ conversationId, error }: { conversationId: string; error:
   const engineRunning = useModelsStore((s) => s.overview?.engine.running)
   const setActiveTab = useUiStore((s) => s.setActiveTab)
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 pb-2">
+    <div className="mx-auto w-full max-w-[42rem] px-6 pb-2">
       <div
         role="alert"
         className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-300"
@@ -86,6 +87,18 @@ function ErrorBanner({ conversationId, error }: { conversationId: string; error:
   )
 }
 
+function ThreadRunStatus({ phase }: { phase: ChatRunPhase }) {
+  if (phase !== 'starting') return null
+  return (
+    <div className="mx-auto w-full max-w-[42rem] px-6 pb-2">
+      <div className="flex items-center gap-2 text-[12px] text-zinc-500">
+        <Loader2 size={13} className="animate-spin" />
+        {chatRunPhaseLabel(phase)}
+      </div>
+    </div>
+  )
+}
+
 interface Props {
   conversationId: string
 }
@@ -94,18 +107,22 @@ export default function Thread({ conversationId }: Props) {
   const messages = useChatStore((s) => s.messagesById[conversationId])
   const streamingId = useChatStore((s) => s.streaming[conversationId])
   const lastError = useChatStore((s) => s.lastError[conversationId])
-  const busy = streamingId !== undefined
+  const streamingMessage = streamingId
+    ? messages?.find((message) => message.id === streamingId)
+    : undefined
+  const runPhase = chatRunPhase(streamingId, streamingMessage)
+  const busy = runPhase !== 'idle'
 
   // Announce on the busy edges: a screen reader never hears a region being
   // cleared, so "stopped/cleared to ''" left completion silent. Announce the
   // falling edge ("Response ready") too.
   const [announce, setAnnounce] = useState('')
-  const prevBusy = useRef(false)
+  const prevPhase = useRef<ChatRunPhase>('idle')
   useEffect(() => {
-    if (prevBusy.current && !busy) setAnnounce('Response ready')
-    else if (!prevBusy.current && busy) setAnnounce('Generating response…')
-    prevBusy.current = busy
-  }, [busy])
+    if (prevPhase.current !== 'idle' && runPhase === 'idle') setAnnounce('Response ready')
+    else if (runPhase !== 'idle') setAnnounce(chatRunPhaseLabel(runPhase))
+    prevPhase.current = runPhase
+  }, [runPhase])
 
   if (!messages)
     return (
@@ -130,7 +147,7 @@ export default function Thread({ conversationId }: Props) {
           followOutput={(isAtBottom) => (isAtBottom ? 'auto' : false)}
           components={virtuosoComponents}
           itemContent={(_, message: ChatMessage) => (
-            <div className="mx-auto w-full max-w-3xl px-6">
+            <div className="mx-auto w-full max-w-[42rem] px-6">
               <MessageBubble
                 message={message}
                 streaming={message.id === streamingId}
@@ -144,6 +161,7 @@ export default function Thread({ conversationId }: Props) {
       <div role="status" aria-live="polite" aria-busy={busy} className="sr-only">
         {announce}
       </div>
+      <ThreadRunStatus phase={runPhase} />
       {lastError && <ErrorBanner conversationId={conversationId} error={lastError} />}
     </div>
   )

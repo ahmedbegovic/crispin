@@ -27,6 +27,7 @@ import { type ToolResultPart } from './ToolCallCard'
 import SourcesStrip from './SourcesStrip'
 import BranchSwitcher from './BranchSwitcher'
 import { basename, fileUrl } from './attachments'
+import { chatRunPhase, chatRunPhaseLabel } from './runStatus'
 
 function ImageThumb({ path }: { path: string }) {
   // file:// is blocked by webSecurity while the renderer runs off the dev
@@ -100,7 +101,7 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
   }
 
   return (
-    <div className="group flex flex-col items-end py-2">
+    <div className="group flex flex-col items-end pb-2 pt-6">
       {editing ? (
         <div className="w-full max-w-[80%]">
           <textarea
@@ -134,7 +135,7 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
         </div>
       ) : (
         <>
-          <div className="max-w-[80%] select-text whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-zinc-800 px-3.5 py-2 text-[13.5px] leading-relaxed text-zinc-100">
+          <div className="max-w-[80%] select-text whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-white/[0.05] bg-[#26262c] px-3.5 py-2 text-[13.5px] leading-relaxed text-zinc-100">
             {text}
           </div>
           {images.length > 0 && (
@@ -261,13 +262,20 @@ function AssistantMessage({
   const showActivity =
     processParts.some((x) => x.part.type !== 'thought' || x.part.text.trim().length > 0) ||
     (streaming && processParts.length > 0)
+  const runPhase = chatRunPhase(streaming ? message.id : undefined, message)
 
   return (
-    <div className="group py-2">
-      {message.parts.length === 0 && streaming && (
+    // Reserved left spine (pl-4 always present, so settling the stream never
+    // shifts content); it lights emerald — "alive" — while this turn streams.
+    <div
+      className={`group border-l-2 pb-4 pl-4 pt-1 ${
+        streaming ? 'border-emerald-500/60' : 'border-transparent'
+      }`}
+    >
+      {runPhase === 'waitingFirstToken' && (
         <div className="flex items-center gap-2 py-1 text-[12px] text-zinc-500">
           <Loader2 size={13} className="animate-spin" />
-          Generating…
+          {chatRunPhaseLabel(runPhase)}
         </div>
       )}
       {showActivity && (
@@ -294,17 +302,19 @@ function AssistantMessage({
       })}
       <div className="mt-1 flex h-5 items-center gap-1.5">
         {streaming ? (
-          // Mid-stream: spinner + copy-so-far (the response is already copyable).
+          // Mid-stream: spinner first, then copy-so-far once there is content.
           <div className="flex items-center gap-1.5 text-zinc-600">
             <Loader2 size={12} className="animate-spin" />
-            <button
-              onClick={copy}
-              title="Copy response so far"
-              aria-label="Copy response so far"
-              className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
-            >
-              {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
-            </button>
+            {runPhase === 'generating' && (
+              <button
+                onClick={copy}
+                title="Copy response so far"
+                aria-label="Copy response so far"
+                className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+              >
+                {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
@@ -349,7 +359,7 @@ function AssistantMessage({
                 {modelDisplayName(message.modelId)}
               </span>
             )}
-            {stats && <span className="text-[10.5px] text-zinc-600">{stats}</span>}
+            {stats && <span className="text-[10.5px] tabular-nums text-zinc-600">{stats}</span>}
             {stopped && <span className="text-[10.5px] text-amber-500/70">· stopped</span>}
           </div>
         )}
