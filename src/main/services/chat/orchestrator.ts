@@ -725,7 +725,7 @@ export class ChatOrchestrator {
     }
 
     if (!aborted && !error) {
-      void this.maybeGenerateTitle(conversationId).catch((err) => {
+      void this.maybeGenerateTitle(conversationId, modelId).catch((err) => {
         this.log.warn(`title generation failed: ${err instanceof Error ? err.message : err}`)
       })
     }
@@ -1385,8 +1385,9 @@ export class ChatOrchestrator {
 
   // --- titles ----------------------------------------------------------------------------
 
-  /** Fire-and-forget after the first completed exchange, on the LOW tier model. */
-  private async maybeGenerateTitle(conversationId: string): Promise<void> {
+  /** Fire-and-forget after the first completed exchange, refined with the model
+   *  that just answered (already warm) so it doesn't depend on the low tier. */
+  private async maybeGenerateTitle(conversationId: string, modelId: string): Promise<void> {
     const conversation = this.deps.repo.getConversation(conversationId)
 
     const path = this.deps.repo.activePath(conversationId)
@@ -1412,15 +1413,14 @@ export class ChatOrchestrator {
       return
     }
 
+    // Refine with the model that just answered (already warm), so this happens
+    // regardless of whether the LOW tier is resident. Never trigger a load: if
+    // that model was evicted since answering, skip rather than cold-loading it.
     const overview = this.deps.modelService.overview()
-    const lowModel = overview.tiers.find((t) => t.tier === 'low')?.active
-    if (!lowModel) return
-    // Never trigger a model load just for a title: refine opportunistically
-    // while the low model is already resident.
-    const lowLoaded =
+    const loaded =
       overview.engine.running &&
-      overview.engine.models.some((m) => m.id === lowModel && m.state === 'loaded')
-    if (!lowLoaded) return
+      overview.engine.models.some((m) => m.id === modelId && m.state === 'loaded')
+    if (!loaded) return
 
     // Title generation goes through EngineClient too — inflight stays truthful.
     const startedAt = Date.now()
@@ -1428,7 +1428,7 @@ export class ChatOrchestrator {
     let raw = ''
     try {
       for await (const event of this.deps.engine.streamChat({
-        model: lowModel,
+        model: modelId,
         messages,
         maxTokens: 200,
         // Live traces showed every refinement failing: gemma burned the whole
@@ -1446,7 +1446,7 @@ export class ChatOrchestrator {
         surface: 'chat',
         step: 'title',
         conversationId,
-        model: lowModel,
+        model: modelId,
         messages,
         output: raw,
         ok: false,
@@ -1455,12 +1455,12 @@ export class ChatOrchestrator {
       })
       throw err
     }
-    const title = cleanTitle(stripThoughts(raw, familyOf(lowModel)))
+    const title = cleanTitle(stripThoughts(raw, familyOf(modelId)))
     traceLlm({
       surface: 'chat',
       step: 'title',
       conversationId,
-      model: lowModel,
+      model: modelId,
       messages,
       output: raw,
       ok: title.length > 0,

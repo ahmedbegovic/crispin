@@ -83,12 +83,25 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
 }
 
 /**
- * Instant title for a brand-new conversation: the first question, flattened
- * and truncated. The LLM refinement only ever replaces exactly this string.
+ * Instant title for a brand-new conversation: the first question, stripped of
+ * leading markdown, reduced to its first sentence when substantial, flattened
+ * and truncated. MUST stay pure/deterministic — the refinement's never-overwrite
+ * guard compares the live title against this exact output. The LLM refinement
+ * only ever replaces this string.
  */
 export function instantTitle(text: string): string {
-  const flat = text.replaceAll('\n', ' ').replace(/\s+/g, ' ').trim()
-  return flat.length > 60 ? `${flat.slice(0, 59).trimEnd()}…` : flat
+  const flat = text
+    // Drop a leading markdown marker (heading, quote, list bullet, code fence).
+    .replace(/^\s*(?:#{1,6}|>|[-*+]|\d+[.)]|`{1,3})\s*/, '')
+    .replaceAll('\n', ' ')
+    // Strip inline markdown punctuation so the title reads as prose.
+    .replace(/[*_`#>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  // Prefer the first sentence, but only if it's substantial (avoid "Hi.").
+  const sentence = /^.*?[.!?](?=\s|$)/.exec(flat)?.[0]?.trim()
+  const base = sentence && sentence.length >= 16 ? sentence : flat
+  return base.length > 60 ? `${base.slice(0, 59).trimEnd()}…` : base
 }
 
 /** Messages for the fire-and-forget low-tier title generation. */
