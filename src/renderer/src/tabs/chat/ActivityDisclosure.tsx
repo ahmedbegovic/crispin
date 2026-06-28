@@ -1,11 +1,23 @@
 import type { ReactNode } from 'react'
-import { Brain, ChevronRight, Globe, Loader2, Wrench } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  Brain,
+  ChevronRight,
+  FileText,
+  Globe,
+  Image as ImageIcon,
+  Loader2,
+  Package,
+  Search,
+  Wrench
+} from 'lucide-react'
 import { useChatStore } from '@/stores/chat'
 import type { MessagePart } from '@shared/types'
-import ToolCallCard, { type ToolResultPart } from './ToolCallCard'
 import { segmentThought } from './thoughtSteps'
 
 export type ProcessPart = Extract<MessagePart, { type: 'thought' | 'tool_call' | 'tool_result' }>
+export type ToolCallPart = Extract<MessagePart, { type: 'tool_call' }>
+export type ToolResultPart = Extract<MessagePart, { type: 'tool_result' }>
 
 export function isProcessPart(p: MessagePart): p is ProcessPart {
   return p.type === 'thought' || p.type === 'tool_call' || p.type === 'tool_result'
@@ -30,6 +42,88 @@ interface Props {
   hasAnswer: boolean
   resultFor: (id: string) => ToolResultPart | undefined
   hasCall: (toolCallId: string) => boolean
+}
+
+// --- humanizing a tool call into a readable activity line -------------------------
+
+interface Action {
+  icon: LucideIcon
+  /** Leading word(s), e.g. "Searching" / "Read". */
+  verb: string
+  /** The object of the action, e.g. the query or "gsmarena.com — iPhone 17". */
+  detail: string
+}
+
+const PROVIDER_SOURCE: Record<string, string> = {
+  pypi: 'PyPI',
+  npm: 'npm',
+  github_release: 'GitHub',
+  arxiv: 'arXiv'
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
+function parseArgs(raw: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw)
+    return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** First "[n] Title" line of a tool result carries the page/source title. */
+function resultTitle(result: ToolResultPart | undefined): string | null {
+  if (!result) return null
+  const m = /^\s*\[\d+\]\s+(.+)$/m.exec(result.result)
+  return m ? m[1].trim() : null
+}
+
+/** "mcp__github__search_issues" -> "github · search_issues". */
+function friendlyName(name: string): string {
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(name)
+  return mcp ? `${mcp[1]} · ${mcp[2]}` : name
+}
+
+const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+/** Turn a tool call into a one-line, human-readable activity entry. */
+function describeAction(name: string, args: string, result: ToolResultPart | undefined, running: boolean): Action {
+  const a = parseArgs(args)
+  switch (name) {
+    case 'web_search':
+      return { icon: Search, verb: running ? 'Searching' : 'Searched', detail: str(a.query) || 'the web' }
+    case 'web_visit': {
+      const host = a.url ? hostOf(str(a.url)) : ''
+      const title = resultTitle(result)
+      return {
+        icon: Globe,
+        verb: running ? 'Opening' : 'Read',
+        detail: [host, title].filter(Boolean).join(' — ') || 'a page'
+      }
+    }
+    case 'web_lookup': {
+      const nm = str(a.name) || [str(a.owner), str(a.repo)].filter(Boolean).join('/')
+      const src = PROVIDER_SOURCE[str(a.kind)] ?? ''
+      return {
+        icon: Package,
+        verb: running ? 'Looking up' : 'Looked up',
+        detail: [nm, src && `on ${src}`].filter(Boolean).join(' ') || 'a source'
+      }
+    }
+    case 'image_search':
+      return { icon: ImageIcon, verb: running ? 'Finding images' : 'Found images', detail: str(a.query) }
+    case 'rag_search':
+      return { icon: FileText, verb: running ? 'Searching documents' : 'Searched documents', detail: str(a.query) }
+    default:
+      return { icon: Wrench, verb: running ? 'Running' : 'Ran', detail: friendlyName(name) }
+  }
 }
 
 /**
@@ -67,9 +161,10 @@ function summarize(parts: IndexedPart[], succeeded: (id: string) => boolean): st
 
 /**
  * One collapsible bubble holding everything the model did before answering —
- * web searches, page reads, and reasoning — instead of a tall stack of cards.
- * Auto-expands while the work is happening (so progress is visible live) and
- * collapses to a single summary line once the answer starts; a manual toggle
+ * web searches, page reads, and reasoning — as a readable activity narrative
+ * ("Searching … · Read gsmarena.com — … · Thinking …") rather than raw tool
+ * cards. Auto-expands while the work is happening (so progress is visible live)
+ * and collapses to a single summary line once the answer starts; a manual toggle
  * sticks and is never overridden afterward.
  */
 export default function ActivityDisclosure({
@@ -88,35 +183,36 @@ export default function ActivityDisclosure({
   // follow the auto behavior (expanded while working, collapsed once answered).
   const open = storedOpen ?? auto
 
-  const hasWeb = parts.some(
-    ({ part }) => part.type === 'tool_call' && WEB_TOOLS.has(part.name)
-  )
+  const hasWeb = parts.some(({ part }) => part.type === 'tool_call' && WEB_TOOLS.has(part.name))
   const hasTool = parts.some(({ part }) => part.type === 'tool_call')
   const Icon = hasWeb ? Globe : hasTool ? Wrench : Brain
   const working = streaming && !hasAnswer
-  const succeeded = (id: string): boolean => {
-    const r = resultFor(id)
-    return !!r && !r.result.startsWith('Error:')
-  }
-  // Live status names the tool actually running now (last tool_call with no
-  // result yet), so the label doesn't get stuck on "Searching the web…" while
-  // the model spends a while reading/reasoning after the search finished.
-  const inFlightCall = working
+
+  // Live status names what's happening NOW (the last tool_call with no result
+  // yet), with its detail — so the header reads "Searching latest flagship
+  // phones", Claude-style, rather than a generic "Searching the web…".
+  const inFlight = working
     ? [...parts]
         .reverse()
         .map((p) => p.part)
         .find(
-          (p): p is Extract<ProcessPart, { type: 'tool_call' }> =>
-            p.type === 'tool_call' && !resultFor(p.id)
+          (p): p is ToolCallPart => p.type === 'tool_call' && !resultFor(p.id)
         )
     : undefined
-  const label = working
-    ? inFlightCall
-      ? WEB_TOOLS.has(inFlightCall.name)
-        ? 'Searching the web…'
-        : `Running ${inFlightCall.name}…`
-      : 'Thinking…'
-    : summarize(parts, succeeded)
+  let label: string
+  if (working) {
+    if (inFlight) {
+      const a = describeAction(inFlight.name, inFlight.args, undefined, true)
+      label = a.detail ? `${a.verb} ${a.detail}` : a.verb
+    } else {
+      label = 'Thinking…'
+    }
+  } else {
+    label = summarize(parts, (id) => {
+      const r = resultFor(id)
+      return !!r && !r.result.startsWith('Error:')
+    })
+  }
 
   return (
     <div className="my-2 overflow-hidden rounded-lg border border-zinc-800/80 bg-zinc-900/40">
@@ -126,7 +222,7 @@ export default function ActivityDisclosure({
         className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11.5px] text-zinc-500 hover:text-zinc-300"
       >
         {working ? (
-          <Loader2 size={12} className="shrink-0 animate-spin text-amber-400" />
+          <Loader2 size={12} className="shrink-0 animate-spin text-zinc-400" />
         ) : (
           <Icon size={12} className="shrink-0" />
         )}
@@ -137,26 +233,22 @@ export default function ActivityDisclosure({
         />
       </button>
       {open && (
-        <div className="border-t border-zinc-800/80 px-2.5 py-2">
-          <StepRail parts={parts} working={working} resultFor={resultFor} hasCall={hasCall} />
+        <div className="space-y-1.5 border-t border-zinc-800/80 px-3 py-2">
+          <ActivityTimeline parts={parts} working={working} resultFor={resultFor} hasCall={hasCall} />
         </div>
       )}
     </div>
   )
 }
 
-type RailNode =
-  | { kind: 'step'; key: string; heading: string | null; body: string }
-  | { kind: 'tool'; key: string; el: ReactNode; status: 'running' | 'done' | 'error' }
-
 /**
- * The expanded activity as a vertical timeline: each reasoning step and tool call
- * is a node on a left rail, dotted with the shared state-color vocabulary
- * (emerald = done, amber = active, red = error). Reasoning steps are segmented
- * render-side from the existing 'thought' strings; tool nodes reuse ToolCallCard.
- * Parts are already in temporal order, so think→tool→think interleaves for free.
+ * The expanded activity as a plain temporal narrative: each reasoning step and
+ * tool call is one readable line (a muted icon + a sentence), no raw JSON and no
+ * coloured rail. Reasoning steps are segmented render-side from the existing
+ * 'thought' strings; parts are already in temporal order, so think→tool→think
+ * interleaves for free.
  */
-function StepRail({
+function ActivityTimeline({
   parts,
   working,
   resultFor,
@@ -167,69 +259,57 @@ function StepRail({
   resultFor: (id: string) => ToolResultPart | undefined
   hasCall: (toolCallId: string) => boolean
 }) {
-  const nodes: RailNode[] = []
-  for (const { part, i } of parts) {
-    if (part.type === 'thought') {
-      segmentThought(part.text).forEach((s, si) =>
-        nodes.push({ kind: 'step', key: `t${i}-${si}`, heading: s.heading, body: s.body })
-      )
-    } else if (part.type === 'tool_call') {
-      const r = resultFor(part.id)
-      const status = !r ? 'running' : r.result.startsWith('Error:') ? 'error' : 'done'
-      nodes.push({ kind: 'tool', key: `c${i}`, el: <ToolCallCard call={part} result={r} />, status })
-    } else if (!hasCall(part.toolCallId)) {
-      // Orphan tool_result (its call never landed).
-      const status = part.result.startsWith('Error:') ? 'error' : 'done'
-      nodes.push({ kind: 'tool', key: `r${i}`, el: <ToolCallCard result={part} />, status })
-    }
-  }
-  if (nodes.length === 0) return null
+  const rows: ReactNode[] = []
 
-  // The active node while working: a still-running tool if any, else the tail
-  // node — so the rail never reads as fully settled mid-generation (e.g. in the
-  // gap between a tool result landing and the next reasoning token).
-  const runningToolIdx = nodes.findIndex((n) => n.kind === 'tool' && n.status === 'running')
-  const activeIdx = working ? (runningToolIdx >= 0 ? runningToolIdx : nodes.length - 1) : -1
-
-  return (
-    <div>
-      {nodes.map((node, idx) => {
-        const last = idx === nodes.length - 1
-        const dot =
-          node.kind === 'tool' && node.status === 'error'
-            ? 'bg-red-400'
-            : idx === activeIdx || (node.kind === 'tool' && node.status === 'running')
-              ? 'animate-pulse bg-amber-400'
-              : 'bg-emerald-500/70'
-        return (
-          <div key={node.key} className="flex gap-2.5">
-            {/* rail: short top stub · dot · flexible connector down to the next node */}
-            <div className="flex w-2.5 shrink-0 flex-col items-center">
-              <span className={`h-1.5 w-px ${idx === 0 ? 'bg-transparent' : 'bg-zinc-800'}`} />
-              <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
-              <span className={`w-px flex-1 ${last ? 'bg-transparent' : 'bg-zinc-800'}`} />
-            </div>
-            <div className="min-w-0 flex-1 pb-2.5">
-              {node.kind === 'tool' ? (
-                // Strip ToolCallCard's standalone my-2 so the dot lines up with
-                // the card and node spacing stays even.
-                <div className="[&>details]:my-0">{node.el}</div>
-              ) : (
-                <div className="pt-px">
-                  {node.heading && (
-                    <div className="text-[11.5px] font-medium text-zinc-300">{node.heading}</div>
-                  )}
-                  {node.body && (
-                    <div className="max-h-60 select-text overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-zinc-500">
-                      {node.body}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+  const thoughtRow = (key: string, heading: string | null, body: string): ReactNode => (
+    <div key={key} className="flex items-start gap-2">
+      <Brain size={13} className="mt-0.5 shrink-0 text-zinc-600" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[12px] text-zinc-400">{heading ?? 'Thinking'}</div>
+        {body && (
+          <div className="mt-0.5 max-h-52 select-text overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-zinc-500">
+            {body}
           </div>
-        )
-      })}
+        )}
+      </div>
     </div>
   )
+
+  const actionRow = (
+    key: string,
+    a: Action,
+    running: boolean,
+    failed: boolean
+  ): ReactNode => (
+    <div key={key} className="flex items-center gap-2 text-[12px]">
+      {running ? (
+        <Loader2 size={13} className="shrink-0 animate-spin text-zinc-400" />
+      ) : (
+        <a.icon size={13} className={`shrink-0 ${failed ? 'text-red-400/70' : 'text-zinc-600'}`} />
+      )}
+      <div className="min-w-0 truncate" title={a.detail}>
+        <span className="text-zinc-300">{a.verb}</span>
+        {a.detail && <span className="text-zinc-500"> {a.detail}</span>}
+        {failed && <span className="text-red-400/70"> · failed</span>}
+      </div>
+    </div>
+  )
+
+  for (const { part, i } of parts) {
+    if (part.type === 'thought') {
+      segmentThought(part.text).forEach((s, si) => rows.push(thoughtRow(`t${i}-${si}`, s.heading, s.body)))
+    } else if (part.type === 'tool_call') {
+      const r = resultFor(part.id)
+      const running = working && !r
+      const failed = !!r && r.result.startsWith('Error:')
+      rows.push(actionRow(`c${i}`, describeAction(part.name, part.args, r, running), running, failed))
+    } else if (!hasCall(part.toolCallId)) {
+      // Orphan tool_result (its call never landed) — describe from the result.
+      const failed = part.result.startsWith('Error:')
+      rows.push(actionRow(`r${i}`, describeAction(part.name, '{}', part, false), false, failed))
+    }
+  }
+
+  if (rows.length === 0) return null
+  return <>{rows}</>
 }

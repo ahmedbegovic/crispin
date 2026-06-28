@@ -22,8 +22,11 @@ import DropdownMenu, { type MenuItem } from '@/components/DropdownMenu'
 import { formatDuration, formatTokensPerSec } from '@/lib/format'
 import { pushToast, toastError } from '@/stores/toasts'
 import MarkdownPart from './MarkdownPart'
-import ActivityDisclosure, { isProcessPart, type ProcessPart } from './ActivityDisclosure'
-import { type ToolResultPart } from './ToolCallCard'
+import ActivityDisclosure, {
+  isProcessPart,
+  type ProcessPart,
+  type ToolResultPart
+} from './ActivityDisclosure'
 import SourcesStrip from './SourcesStrip'
 import BranchSwitcher from './BranchSwitcher'
 import { basename, fileUrl } from './attachments'
@@ -265,13 +268,10 @@ function AssistantMessage({
   const runPhase = chatRunPhase(streaming ? message.id : undefined, message)
 
   return (
-    // Reserved left spine (pl-4 always present, so settling the stream never
-    // shifts content); it lights emerald — "alive" — while this turn streams.
-    <div
-      className={`group border-l-2 pb-4 pl-4 pt-1 ${
-        streaming ? 'border-emerald-500/60' : 'border-transparent'
-      }`}
-    >
+    // Reserved left indent (pl-4 always present, so settling the stream never
+    // shifts content). No coloured spine — liveness is shown by the activity
+    // narrative and the caret, not a green bar down the message.
+    <div className="group border-l-2 border-transparent pb-4 pl-4 pt-1">
       {runPhase === 'waitingFirstToken' && (
         <div className="flex items-center gap-2 py-1 text-[12px] text-zinc-500">
           <Loader2 size={13} className="animate-spin" />
@@ -306,7 +306,7 @@ function AssistantMessage({
       {streaming && runPhase === 'generating' && hasAnswer && (
         <span
           aria-hidden
-          className="caret-blink mt-0.5 inline-block h-4 w-[2px] rounded-full bg-emerald-400/90"
+          className="caret-blink mt-0.5 inline-block h-4 w-[2px] rounded-full bg-zinc-400/80"
         />
       )}
       <div className="mt-1 flex h-5 items-center gap-1.5">
