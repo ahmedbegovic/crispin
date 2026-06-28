@@ -17,6 +17,9 @@ interface IndexedPart {
   i: number
 }
 
+/** Tool calls that count as a "web action" for the icon/label/summary. */
+const WEB_TOOLS = new Set(['web_search', 'web_visit', 'web_lookup'])
+
 interface Props {
   /** Owning assistant message id — keys the persisted manual expand state. */
   messageId: string
@@ -43,7 +46,9 @@ function summarize(parts: IndexedPart[], succeeded: (id: string) => boolean): st
     if (part.type === 'thought') {
       if (part.text.trim()) thinking = true
     } else if (part.type === 'tool_call') {
-      if (part.name === 'web_search') searches++
+      // A structured lookup (web_lookup) returns one source, not a page read —
+      // count it as a search so a hit reads "Searched the web", not "Used 1 tool".
+      if (part.name === 'web_search' || part.name === 'web_lookup') searches++
       else if (part.name === 'web_visit') {
         if (succeeded(part.id)) visits++
       } else other++
@@ -84,8 +89,7 @@ export default function ActivityDisclosure({
   const open = storedOpen ?? auto
 
   const hasWeb = parts.some(
-    ({ part }) =>
-      part.type === 'tool_call' && (part.name === 'web_search' || part.name === 'web_visit')
+    ({ part }) => part.type === 'tool_call' && WEB_TOOLS.has(part.name)
   )
   const hasTool = parts.some(({ part }) => part.type === 'tool_call')
   const Icon = hasWeb ? Globe : hasTool ? Wrench : Brain
@@ -108,7 +112,7 @@ export default function ActivityDisclosure({
     : undefined
   const label = working
     ? inFlightCall
-      ? inFlightCall.name === 'web_search' || inFlightCall.name === 'web_visit'
+      ? WEB_TOOLS.has(inFlightCall.name)
         ? 'Searching the web…'
         : `Running ${inFlightCall.name}…`
       : 'Thinking…'

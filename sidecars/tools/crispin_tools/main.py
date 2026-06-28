@@ -2,12 +2,13 @@ from fastapi import FastAPI, HTTPException
 
 from . import __version__
 from .jobs import registry
-from .routers import downloads, extract, news, rag, web
+from .routers import downloads, extract, news, providers, rag, web
 
 app = FastAPI(title="crispin-tools", version=__version__)
 app.include_router(downloads.router)
 app.include_router(extract.router)
 app.include_router(news.router)
+app.include_router(providers.router)
 app.include_router(rag.router)
 app.include_router(web.router)
 

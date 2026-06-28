@@ -320,6 +320,24 @@ export function toolBudgetForTier(tier: Tier): number | undefined {
   return TIERS[tier].maxVisibleTools
 }
 
+/** Tier at/above which the chat model is trusted to own the web ReAct loop. */
+const MODEL_OWNS_WEB_LOOP_FROM: Tier = 'high'
+
+/**
+ * Whether the model may own the web search loop (drive web_search/web_visit with
+ * its own max_results). High-capability tiers (high+) do; low/medium lean on the
+ * harness search pipeline and, when it can't gather evidence, answer from
+ * parametric knowledge rather than dropping into a multi-turn tool loop they're
+ * unreliable at (~88% single-turn → ~17% multi-turn tool use at 2–4B). An
+ * uncurated repo (a big experimental download) is treated as capable, matching
+ * the tool-budget default.
+ */
+export function modelOwnsWebLoop(repoId: string): boolean {
+  const tier = tierOfRepo(repoId)
+  if (!tier) return true
+  return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf(MODEL_OWNS_WEB_LOOP_FROM)
+}
+
 /**
  * TurboQuant KV-cache bits for a repo. A per-model override (MODEL_POLICY_OVERRIDES)
  * wins; otherwise it resolves by EFFECTIVE tier — curated repos through rename-aware

@@ -9,7 +9,13 @@ import type {
   ModelSampling,
   Tier
 } from '@shared/types'
-import { TIERS, maxOutputTokensFor, tierOfRepo, toolBudgetForTier } from '@shared/model-tiers'
+import {
+  TIERS,
+  maxOutputTokensFor,
+  modelOwnsWebLoop,
+  tierOfRepo,
+  toolBudgetForTier
+} from '@shared/model-tiers'
 import type { CrispinDatabase } from '../db'
 import * as settings from '../settings'
 import { dataDir } from '../paths'
@@ -52,10 +58,14 @@ import { heuristicRoute, routeWithModel, type ChatRoute } from './search-router'
 import {
   runSearchPipeline,
   runVisitPipeline,
+  runProviderPipeline,
   scaledEvidenceLimit,
+  budgetFor,
+  type PipelineEmitter,
   type PipelineEvidence,
   type SearchPipelineOptions
 } from './search-pipeline'
+import { detectProvider } from './search-providers-core'
 import { verifyCitations } from './citations'
 import {
   fenceUntrustedWeb,
@@ -91,6 +101,24 @@ const visionCapable = (modelId: string): boolean => {
 
 /** Per-request output cap for the model (per-model override > tier); undefined = engine default. */
 const maxTokensFor = (modelId: string): number | undefined => maxOutputTokensFor(modelId)
+
+/**
+ * Outcome of the harness web-gather attempt. `reason` lets the caller tell a
+ * deliberate "no search needed" (model loop is correct) from a failed gather
+ * (a small tier should answer from knowledge, not be dropped into the loop).
+ */
+type WebGather = { evidence: PipelineEvidence | null; reason: 'ok' | 'direct' | 'error' }
+const DIRECT: WebGather = { evidence: null, reason: 'direct' }
+
+/**
+ * Appended to the trailing user turn when a small-tier web search was wanted but
+ * the harness gathered nothing (and the model isn't being handed the loop). Tells
+ * the model to be honest about the gap rather than fabricating current facts.
+ */
+const WEB_UNAVAILABLE_NOTE =
+  '[Note: a web search was attempted for this message but returned no usable results. ' +
+  "If answering accurately depends on current or real-time information you can't verify " +
+  'from your own knowledge, say you were unable to retrieve it rather than guessing.]'
 
 /**
  * Append text to the trailing user message — gemma's template rejects
@@ -632,7 +660,7 @@ export class ChatOrchestrator {
       // or ANY non-abort failure leaves toolDefs untouched: exactly today's
       // loop. Collection chats stay model-owned too: a tools-off synthesis
       // round would take rag_search away from the very turn that needs it.
-      const loopToolDefs = toolDefs
+      let loopToolDefs = toolDefs
       let loopStep: 'loop' | 'synthesis' = 'loop'
       // Synthesis round denies tool CALLS (via tool_choice:'none') but keeps the
       // tool DEFS in the request so the [system + tools] prompt prefix stays
@@ -641,20 +669,40 @@ export class ChatOrchestrator {
       // verified). The salvage net is neutralized too (empty knownToolNames).
       let denyToolCalls = false
       if (webEnabled && !hasCollection) {
-        const evidence = await this.tryGatherWebEvidence({
-          ctx,
-          stream,
-          path,
-          sources,
-          toolCtx,
-          webFenceId
-        })
-        if (evidence) {
-          appendToTrailingUserMessage(messages, evidence.text)
-          // Evidence in hand: the model synthesizes instead of re-looping (and
-          // cites the [n] numbers the pipeline minted).
+        // Structured fast path runs for EVERY tier (cheap, high-precision) ahead
+        // of the loop-ownership decision, so a high-tier model gets the clean
+        // PyPI/npm/GitHub/arXiv fact too instead of noisy generic search.
+        const fast = await this.tryProviderFastPath({ ctx, stream, path, sources, webFenceId })
+        if (fast) {
+          appendToTrailingUserMessage(messages, fast.text)
           loopStep = 'synthesis'
           denyToolCalls = true
+        } else if (!modelOwnsWebLoop(modelId)) {
+          // Tier-gated ownership: high-capability models (high+) own the web ReAct
+          // loop themselves (web_search/web_visit with their own max_results, Path
+          // B); low/medium lean on the harness pipeline as the floor.
+          const gathered = await this.tryGatherWebEvidence({
+            ctx,
+            stream,
+            path,
+            sources,
+            toolCtx,
+            webFenceId
+          })
+          if (gathered.evidence) {
+            appendToTrailingUserMessage(messages, gathered.evidence.text)
+            // Evidence in hand: the model synthesizes instead of re-looping (and
+            // cites the [n] numbers the pipeline minted).
+            loopStep = 'synthesis'
+            denyToolCalls = true
+          } else if (gathered.reason === 'error') {
+            // Search was wanted but the harness couldn't gather it. Don't hand a
+            // small model the multi-turn loop it collapses on — strip the web
+            // tools (skills/MCP stay) AND tell it the web is unavailable so it
+            // doesn't answer current facts from stale parametric knowledge.
+            loopToolDefs = loopToolDefs.filter((t) => !UNTRUSTED_WEB_TOOLS.has(t.function.name))
+            appendToTrailingUserMessage(messages, WEB_UNAVAILABLE_NOTE)
+          }
         }
       }
 
@@ -747,6 +795,58 @@ export class ChatOrchestrator {
     }
   }
 
+  /** The single text question of the latest user turn, or null for an image /
+   *  multi-part / empty turn that must stay model-owned (the router can't see an
+   *  image; an attachment turn is about the document). */
+  private webQuestion(path: Array<{ role: string; parts: MessagePart[] }>): string | null {
+    const lastUser = path.findLast((m) => m.role === 'user')
+    if (!lastUser) return null
+    if (lastUser.parts.some((p) => p.type === 'image')) return null
+    const textParts = lastUser.parts.filter(
+      (p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text'
+    )
+    if (textParts.length !== 1) return null
+    const question = textParts[0].text.trim()
+    return question || null
+  }
+
+  /**
+   * Structured fast path — a package/release/paper lookup that returns clean,
+   * citable facts generic search can't match. Runs for EVERY tier (high-tier
+   * models benefit too), ahead of the loop-ownership decision; a miss or failure
+   * returns null so the turn falls through to normal routing/search.
+   */
+  private async tryProviderFastPath(args: {
+    ctx: RunContext
+    stream: PartStream
+    path: Array<{ role: string; parts: MessagePart[] }>
+    sources: SourceTracker
+    webFenceId: string
+  }): Promise<PipelineEvidence | null> {
+    const { ctx, stream, path, sources, webFenceId } = args
+    const { controller } = ctx
+    try {
+      const question = this.webQuestion(path)
+      if (!question) return null
+      const provider = detectProvider(question)
+      if (!provider) return null
+      return await runProviderPipeline(provider, {
+        tools: this.deps.tools,
+        sources,
+        fenceId: webFenceId,
+        signal: controller.signal,
+        emit: {
+          addPart: (part) => stream.add(part),
+          toolEvent: (id, name, phase, detail) => this.toolEvent(ctx, id, name, phase, detail)
+        }
+      })
+    } catch (err) {
+      if (controller.signal.aborted) throw err
+      this.log.warn(`provider fast path failed: ${err instanceof Error ? err.message : err}`)
+      return null
+    }
+  }
+
   /**
    * Route the turn and, when it needs the web, run the harness-owned search
    * pipeline. Returns the evidence block to append to the trailing user
@@ -760,22 +860,18 @@ export class ChatOrchestrator {
     sources: SourceTracker
     toolCtx: ToolExecutionContext
     webFenceId: string
-  }): Promise<PipelineEvidence | null> {
+  }): Promise<WebGather> {
     const { ctx, stream, path, sources, toolCtx, webFenceId } = args
     const { controller } = ctx
     try {
       const lastUser = path.findLast((m) => m.role === 'user')
-      if (!lastUser) return null
-      // Image and document turns stay model-owned: the router can't see an
-      // image, and a turn that attaches a document is about the document
-      // (prepareUserParts appends extra text parts for attachments).
-      if (lastUser.parts.some((p) => p.type === 'image')) return null
-      const textParts = lastUser.parts.filter(
-        (p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text'
-      )
-      if (textParts.length !== 1) return null
-      const question = textParts[0].text.trim()
-      if (!question) return null
+      const question = this.webQuestion(path)
+      if (!lastUser || !question) return DIRECT
+
+      const emit: PipelineEmitter = {
+        addPart: (part) => stream.add(part),
+        toolEvent: (id, name, phase, detail) => this.toolEvent(ctx, id, name, phase, detail)
+      }
 
       const priorAssistant = path.findLast((m) => m.role === 'assistant')
       const priorUsedWeb =
@@ -784,7 +880,7 @@ export class ChatOrchestrator {
         ) ?? false
 
       const decision = heuristicRoute(question, priorUsedWeb)
-      if (decision.kind === 'direct') return null
+      if (decision.kind === 'direct') return DIRECT
       let route: ChatRoute
       if (decision.kind === 'visit') {
         route = { kind: 'visit', urls: decision.urls }
@@ -795,38 +891,43 @@ export class ChatOrchestrator {
           question,
           history: recentTextHistory(path, lastUser),
           forceSearch: decision.forceSearch,
+          freshHint: decision.freshHint,
           conversationId: ctx.conversationId,
           signal: controller.signal
         })
       }
-      if (route.kind === 'direct') return null
+      if (route.kind === 'direct') return DIRECT
 
       const opts: SearchPipelineOptions = {
         engine: this.deps.engine,
         tools: this.deps.tools,
         model: ctx.modelId,
         question,
+        // The router's scope drives the budget; a pasted-URL visit has no scope,
+        // so it falls back to the default band (visitAll ignores most fields).
+        budget: budgetFor(route.kind === 'search' ? route.scope : null),
         conversationId: ctx.conversationId,
         sources,
         searxngUrl: toolCtx.searxngUrl,
         fenceId: webFenceId,
         contextLength: this.deps.modelService.contextLengthFor(ctx.modelId),
         signal: controller.signal,
-        emit: {
-          addPart: (part) => stream.add(part),
-          toolEvent: (id, name, phase, detail) => this.toolEvent(ctx, id, name, phase, detail)
-        }
+        emit
       }
-      return route.kind === 'visit'
-        ? await runVisitPipeline(route.urls, opts)
-        : await runSearchPipeline(route.queries, opts)
+      const evidence =
+        route.kind === 'visit'
+          ? await runVisitPipeline(route.urls, opts)
+          : await runSearchPipeline(route.queries, opts)
+      // Search was intended; null means it gathered nothing (not a "no search
+      // needed" verdict) — reason 'error' so a small tier won't be handed the loop.
+      return { evidence, reason: evidence ? 'ok' : 'error' }
     } catch (err) {
       // Abort propagates to run()'s handler; everything else degrades.
       if (controller.signal.aborted) throw err
       this.log.warn(
         `search pipeline failed, falling back to the model loop: ${err instanceof Error ? err.message : err}`
       )
-      return null
+      return { evidence: null, reason: 'error' }
     }
   }
 

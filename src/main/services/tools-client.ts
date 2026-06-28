@@ -10,6 +10,7 @@ import {
   localModelsSchema,
   newsFetchSchema,
   okSchema,
+  providerLookupSchema,
   ragQuerySchema,
   searchSchema,
   visitResultSchema
@@ -108,6 +109,18 @@ export interface RagQueryHit {
   title: string | null
   score: number
   chunk_index: number
+}
+
+export interface ProviderLookupResult {
+  ok: boolean
+  /** Display label for the structured source ("PyPI", "npm", "GitHub", "arXiv"). */
+  source: string
+  title: string | null
+  /** Compact factual summary (version, release notes, abstract) for evidence. */
+  summary: string
+  /** Canonical page to cite; null when the lookup failed. */
+  url: string | null
+  error: string | null
 }
 
 /** Chat-loop endpoints are bounded: a stalled sidecar request must not wedge a generation. */
@@ -238,6 +251,26 @@ export class ToolsClient {
       { url, max_chars: maxChars },
       bounded(signal),
       visitResultSchema
+    )
+  }
+
+  // --- structured providers (fast paths) ----------------------------------------
+
+  /** Look up a package version / release / paper from a structured, key-free API. */
+  providerLookup(
+    input:
+      | { kind: 'pypi' | 'npm' | 'arxiv'; name: string }
+      | { kind: 'github_release'; owner: string; repo: string },
+    signal?: AbortSignal
+  ): Promise<ProviderLookupResult> {
+    return this.request(
+      'POST',
+      '/providers/lookup',
+      input.kind === 'github_release'
+        ? { kind: input.kind, owner: input.owner, repo: input.repo }
+        : { kind: input.kind, name: input.name },
+      bounded(signal),
+      providerLookupSchema
     )
   }
 

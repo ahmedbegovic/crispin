@@ -10,6 +10,7 @@ import {
   resolveLadderRepo,
   maxOutputTokensFor,
   isNoColoadRepo,
+  modelOwnsWebLoop,
   tierOfRepo,
   tierSpecFor,
   classifyByParams,
@@ -401,5 +402,22 @@ describe('resolveLadderRepo — pure (family, tier) precedence', () => {
 
   it('no pin with nothing installed returns null', () => {
     expect(resolveLadderRepo({ ...base, tier: 'high', family: null, installed: none })).toBeNull()
+  })
+})
+
+describe('modelOwnsWebLoop', () => {
+  it('keeps low/medium on the harness pipeline (model does not own the loop)', () => {
+    expect(modelOwnsWebLoop(TIERS.low.candidates[0])).toBe(false)
+    expect(modelOwnsWebLoop(TIERS.medium.candidates[0])).toBe(false)
+  })
+
+  it('lets high and above own the web ReAct loop', () => {
+    expect(modelOwnsWebLoop(TIERS.high.candidates[0])).toBe(true)
+    expect(modelOwnsWebLoop(TIERS.extraHigh.candidates[0])).toBe(true)
+    expect(modelOwnsWebLoop(TIERS.ultra.candidates[0])).toBe(true)
+  })
+
+  it('treats an uncurated repo as capable (matches the tool-budget default)', () => {
+    expect(modelOwnsWebLoop('some-org/some-unknown-experimental-model')).toBe(true)
   })
 })

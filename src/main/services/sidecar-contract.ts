@@ -141,6 +141,17 @@ export const newsFetchSchema = z.object({
   )
 })
 
+// POST /providers/lookup — structured fast paths (PyPI/npm/GitHub/arXiv). A miss
+// or upstream failure returns ok:false (the caller degrades to generic search).
+export const providerLookupSchema = z.object({
+  ok: z.boolean(),
+  source: z.string(),
+  title: z.string().nullable(),
+  summary: z.string(),
+  url: z.string().nullable(),
+  error: z.string().nullable()
+})
+
 export const ragQuerySchema = z.object({
   results: z.array(
     z.object({

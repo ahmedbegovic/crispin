@@ -6,6 +6,9 @@ import { condense, structured } from '../structured'
 import { scopedLogger } from '../logger'
 import type { SourceTracker } from './tools'
 import { fenceUntrustedWeb } from './untrusted-web'
+import { DEFAULT_SCOPE, type SearchScope } from './search-router-core'
+import { rankPassages, candidateScore, domainBonus, hostOf, queryTerms } from './search-rank'
+import type { ProviderQuery } from './search-providers-core'
 
 /**
  * Harness-owned web search for the Chat tab: search → select → visit →
@@ -30,23 +33,49 @@ import { fenceUntrustedWeb } from './untrusted-web'
 
 const log = scopedLogger('chat-pipeline')
 
-const RESULTS_PER_QUERY = 6
-// Pages read in full. Visits (fetch + condense) run concurrently, so a higher
-// cap costs parallel load, not wall-time; broader reads close coverage gaps
-// (e.g. a comparison where one entity never got a deep read).
-const MAX_VISITS = 5
-/** Below this many successful visits the harness tops up — no model decision. */
-const MIN_GOOD_VISITS = 3
-/** Adaptive deepening: how many "enough yet?" rounds may follow the first read. */
-const ADAPTIVE_MAX_ROUNDS = 3
-/** Pages added per adaptive round when the model wants to keep looking. */
-const ADAPTIVE_BATCH = 4
-/** Hard ceiling on total pages read across all rounds — latency + context guard. */
-const MAX_TOTAL_VISITS = 12
+/**
+ * Per-scope search budget. The MODEL picks the scope (search-router); the
+ * HARNESS owns every number here — depth scales with the question without ever
+ * handing a small model the loop it collapses on. `deep_research` ≈ the old
+ * fixed pipeline (6 results / 5 first-batch / 12 ceiling), so the widest band is
+ * a strict no-regression floor; the smaller bands are the whole point of the
+ * revamp ("why always 6?" → a quick lookup now pulls ~3 results and 1–2 reads).
+ */
+export interface SearchBudget {
+  /** Max router queries actually run (the router may write more; we clip). */
+  queries: number
+  /** Results fetched per query. */
+  resultsPerQuery: number
+  /** Floor of successful first-batch visits before judging sufficiency. */
+  minGoodVisits: number
+  /** Pages selected for the first read batch. */
+  maxVisits: number
+  /** Adaptive "need more?" rounds allowed after the first batch. */
+  adaptiveRounds: number
+  /** Pages added per adaptive round when the model wants to keep looking. */
+  adaptiveBatch: number
+  /** Hard ceiling on total pages read across all rounds — latency + context guard. */
+  maxTotalVisits: number
+}
+
+export const BUDGETS: Record<SearchScope, SearchBudget> = {
+  quick_lookup: { queries: 1, resultsPerQuery: 3, minGoodVisits: 1, maxVisits: 2, adaptiveRounds: 0, adaptiveBatch: 0, maxTotalVisits: 2 },
+  fresh_fact: { queries: 2, resultsPerQuery: 4, minGoodVisits: 2, maxVisits: 3, adaptiveRounds: 1, adaptiveBatch: 3, maxTotalVisits: 5 },
+  local_realtime: { queries: 2, resultsPerQuery: 4, minGoodVisits: 2, maxVisits: 3, adaptiveRounds: 1, adaptiveBatch: 3, maxTotalVisits: 5 },
+  comparison: { queries: 4, resultsPerQuery: 5, minGoodVisits: 3, maxVisits: 6, adaptiveRounds: 2, adaptiveBatch: 4, maxTotalVisits: 10 },
+  deep_research: { queries: 5, resultsPerQuery: 6, minGoodVisits: 3, maxVisits: 5, adaptiveRounds: 3, adaptiveBatch: 4, maxTotalVisits: 12 }
+}
+
+/** Resolve a scope (or a router omission) to its budget. */
+export const budgetFor = (scope: SearchScope | null | undefined): SearchBudget =>
+  BUDGETS[scope ?? DEFAULT_SCOPE]
+
 const VISIT_MAX_CHARS = 20_000
 /** Pages longer than this get condensed against the question; shorter clip. */
 const CONDENSE_THRESHOLD = 5_000
 const PER_SOURCE_CHAR_LIMIT = 1_500
+/** Passage-ranking keeps at most this many of a page's most relevant chars. */
+const RANK_CHAR_BUDGET = 8_000
 const EVIDENCE_CHAR_LIMIT = 9_000
 /** Snippets-only fallback when every visit failed. */
 const SNIPPET_FALLBACK_LIMIT = 12
@@ -71,6 +100,8 @@ export interface SearchPipelineOptions {
   model: string
   /** The user's latest typed text (un-clipped; prompts clip internally). */
   question: string
+  /** Scope-derived search budget (results/visits/rounds). */
+  budget: SearchBudget
   conversationId: string
   sources: SourceTracker
   searxngUrl: string | null
@@ -92,6 +123,8 @@ interface Candidate {
   entry: WebSearchEntry
   sourceId: number
   queryIndex: number
+  /** 0-based position within its query's results — a rerank position prior. */
+  rank: number
 }
 
 interface VisitNote {
@@ -127,7 +160,7 @@ async function searchAll(
       type: 'tool_call',
       id: job.callId,
       name: 'web_search',
-      args: JSON.stringify({ query: job.query, max_results: RESULTS_PER_QUERY })
+      args: JSON.stringify({ query: job.query, max_results: opts.budget.resultsPerQuery })
     })
     opts.emit.toolEvent(job.callId, 'web_search', 'start', job.query)
   }
@@ -138,7 +171,7 @@ async function searchAll(
         const res = await opts.tools.search(
           {
             query: job.query,
-            maxResults: RESULTS_PER_QUERY,
+            maxResults: opts.budget.resultsPerQuery,
             backend: 'auto',
             searxngUrl: opts.searxngUrl ?? undefined
           },
@@ -174,15 +207,15 @@ async function searchAll(
     }
     const lines: string[] = []
     const sourceIds: number[] = []
-    for (const r of s.results) {
+    s.results.forEach((r, rank) => {
       const source = opts.sources.add(r.url, r.title || null, r.snippet)
       sourceIds.push(source.id)
       lines.push(`[${source.id}] ${r.title}\n${r.url}\n${r.snippet}`)
       if (!seen.has(r.url)) {
         seen.add(r.url)
-        candidates.push({ entry: r, sourceId: source.id, queryIndex: s.job.queryIndex })
+        candidates.push({ entry: r, sourceId: source.id, queryIndex: s.job.queryIndex, rank })
       }
-    }
+    })
     const result = lines.length > 0 ? lines.join('\n\n') : `No results (backend: ${s.backend}).`
     opts.emit.addPart({
       type: 'tool_result',
@@ -203,13 +236,39 @@ const selectOut = z.object({
   picks: z.array(z.number().int())
 })
 
-/** Pick which results to read, by source number. Failure → top-1 per query. */
+/** Shortlist size handed to the model select when it runs (deeper scopes only). */
+const SELECT_SHORTLIST = 10
+
+/** Deterministic pre-rank: lexical overlap + position prior + source-type bonus. */
+function prerankCandidates(candidates: Candidate[], question: string): Candidate[] {
+  const terms = queryTerms(question)
+  return [...candidates]
+    .map((c, i) => ({ c, i, s: candidateScore({ url: c.entry.url, title: c.entry.title, snippet: c.entry.snippet, rank: c.rank }, terms) }))
+    // stable: ties fall back to the original pool order (i)
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.c)
+}
+
+/**
+ * Pick which results to read. A deterministic pre-rank (lexical + domain) leads
+ * — and on tiny budgets (quick_lookup) IS the decision, skipping the model call
+ * entirely. Deeper scopes still let the model choose, but from the pre-ranked
+ * TOP-K, not the raw pool. Failure → the pre-rank's top picks (strictly better
+ * than the old top-1-per-query fallback).
+ */
 async function selectCandidates(
   candidates: Candidate[],
   opts: SearchPipelineOptions
 ): Promise<Candidate[]> {
-  if (candidates.length <= MAX_VISITS) return candidates
-  const list = candidates
+  const ranked = prerankCandidates(candidates, opts.question)
+  if (ranked.length <= opts.budget.maxVisits) return ranked
+  // Quick scopes (no adaptive rounds / 1–2 visits): the pre-rank is enough, and
+  // a model select on so few reads isn't worth the latency or regression risk.
+  if (opts.budget.adaptiveRounds === 0 || opts.budget.maxVisits <= 2) {
+    return ranked.slice(0, opts.budget.maxVisits)
+  }
+  const shortlist = ranked.slice(0, SELECT_SHORTLIST)
+  const list = shortlist
     .map(
       (c) =>
         `[${c.sourceId}] ${clip(c.entry.title, 120)} — ${c.entry.url}\n${clip(c.entry.snippet, 240)}`
@@ -233,7 +292,7 @@ async function selectCandidates(
           content:
             `Question: ${clip(opts.question, 1000)}\n\n` +
             `Search results:\n${list}\n\n` +
-            `Pick the ${MAX_VISITS} result numbers most likely to answer the question. ` +
+            `Pick the ${opts.budget.maxVisits} result numbers most likely to answer the question. ` +
             'Prefer authoritative and current pages; skip near-duplicates.'
         }
       ],
@@ -245,20 +304,21 @@ async function selectCandidates(
     const picked = [...new Set(out.picks)]
       .map((n) => byId.get(n))
       .filter((c): c is Candidate => c !== undefined)
-      .slice(0, MAX_VISITS)
+      .slice(0, opts.budget.maxVisits)
     if (picked.length > 0) return picked
   } catch (err) {
     if (opts.signal.aborted) throw err
-    log.warn(`select failed, taking top-1 per query: ${err instanceof Error ? err.message : err}`)
+    log.warn(`select failed, taking the pre-rank top: ${err instanceof Error ? err.message : err}`)
   }
-  const byQuery = new Map<number, Candidate>()
-  for (const c of candidates) {
-    if (!byQuery.has(c.queryIndex)) byQuery.set(c.queryIndex, c)
-  }
-  return [...byQuery.values()].slice(0, MAX_VISITS)
+  // Fallback: the deterministic pre-rank's best — strictly better than the old
+  // top-1-per-query (which ignored relevance and source quality entirely).
+  return ranked.slice(0, opts.budget.maxVisits)
 }
 
 // --- assess sufficiency -------------------------------------------------------------
+
+/** What the harness should do next, decided by the coverage ledger. */
+type NextAction = 'stop' | 'read_more' | 'search_more' | 'cannot_answer'
 
 const sufficiencyOut = z.object({
   /**
@@ -269,22 +329,41 @@ const sufficiencyOut = z.object({
    * No consumer reads this field.
    */
   reasoning: z.string().optional(),
-  enough: z.boolean(),
-  /** Gap-filling searches when more breadth is needed; empty = just read more. */
+  /**
+   * The coverage ledger: the slots an answer needs, each marked covered / thin /
+   * missing. Bookkeeping, not epistemology — a small model classifies what it
+   * has far more reliably than it judges a vague "enough?". Advisory for the
+   * harness (next_action drives the loop); kept in the schema because filling it
+   * first makes the action that follows better grounded. Defaulted so a model
+   * that emits only next_action still validates.
+   */
+  required_slots: z
+    .array(
+      z.object({
+        name: z.string(),
+        status: z.enum(['covered', 'thin', 'missing'])
+      })
+    )
+    .default([]),
+  /** stop = answerable now · read_more = deepen on what we have · search_more =
+   *  fill a gap with new queries · cannot_answer = the web won't yield it. */
+  next_action: z.enum(['stop', 'read_more', 'search_more', 'cannot_answer']),
+  /** Gap-filling searches, used only when next_action is search_more. */
   more_queries: z.array(z.string()).default([])
 })
 
 /**
- * One constrained judgement between read batches: has enough been read to
- * answer fully, or should the harness keep looking? Failure or abort → null,
- * which the caller treats as "stop" (never loop on errors). This is the only
- * place depth is decided, and it's a single yes/no + optional queries — the
- * kind of bounded call small models stay reliable at.
+ * One constrained judgement between read batches: which evidence slots are
+ * covered, and what to do next? Replacing the old yes/no "enough?" with a slot
+ * ledger turns the call into classification + a four-way action — bookkeeping a
+ * 2–4B model stays reliable at, instead of an abstract sufficiency verdict.
+ * Failure or abort → null, which the caller treats as "stop" (never loop on
+ * errors). This remains the only place depth is decided.
  */
 async function assessSufficiency(
   notes: VisitNote[],
   opts: SearchPipelineOptions
-): Promise<{ enough: boolean; moreQueries: string[] } | null> {
+): Promise<{ action: NextAction; moreQueries: string[] } | null> {
   const digest = notes
     .map((n) => `[${n.sourceId}] ${n.title ?? n.url}\n${clip(n.text, 400)}`)
     .join('\n\n')
@@ -298,32 +377,36 @@ async function assessSufficiency(
         {
           role: 'system',
           content:
-            'You decide whether enough web pages have been read to answer a question ' +
-            'completely and accurately, or whether more reading is needed. ' +
-            'Reply with a single JSON object matching the requested schema.'
+            'You track whether enough web evidence has been gathered to answer a question. ' +
+            'List the slots the answer needs and mark each covered, thin, or missing, then ' +
+            'choose the next action. Reply with a single JSON object matching the requested schema.'
         },
         {
           role: 'user',
           content:
             `Question: ${clip(opts.question, 1000)}\n\n` +
             `Pages read so far:\n${clip(digest, 6000)}\n\n` +
-            'Is this enough to answer every part of the question completely and accurately? ' +
-            'Set enough=true if it is. If important parts are missing, unverified, or thin, ' +
-            'set enough=false and write up to 3 short search queries that would close the ' +
-            'gaps (leave more_queries empty to simply read more of what was already found).'
+            'List the key information slots this question needs (facts, entities, or ' +
+            'comparison axes) and mark each "covered", "thin", or "missing". Then set ' +
+            'next_action:\n' +
+            '- "stop" when every important slot is covered.\n' +
+            '- "read_more" when the answer is likely in pages already found but not yet read.\n' +
+            '- "search_more" when a slot is missing and needs a new search — write up to 3 ' +
+            'short gap-filling queries in more_queries.\n' +
+            '- "cannot_answer" when the web is unlikely to yield the missing slots.'
         }
       ],
-      maxTokens: 256,
+      maxTokens: 320,
       meta: { surface: 'chat', step: 'sufficiency', conversationId: opts.conversationId },
       signal: opts.signal
     })
     return {
-      enough: out.enough,
+      action: out.next_action,
       moreQueries: [...new Set(out.more_queries.map((q) => q.trim()).filter(Boolean))].slice(0, 3)
     }
   } catch (err) {
     if (opts.signal.aborted) throw err
-    log.warn(`sufficiency check failed, treating as enough: ${err instanceof Error ? err.message : err}`)
+    log.warn(`coverage check failed, treating as stop: ${err instanceof Error ? err.message : err}`)
     return null
   }
 }
@@ -355,6 +438,12 @@ async function visitAll(
       try {
         const page = await opts.tools.visit(job.url, VISIT_MAX_CHARS, opts.signal)
         let text = page.markdown.trim()
+        // Passage-rank first: lead with the sections relevant to the question so
+        // a short page's answer near the bottom isn't head-clipped away, and a
+        // long page hands condense a pre-filtered subset, not 20k of raw markdown.
+        if (text.length > PER_SOURCE_CHAR_LIMIT) {
+          text = rankPassages(text, opts.question, RANK_CHAR_BUDGET) || text
+        }
         if (text.length > CONDENSE_THRESHOLD) {
           try {
             text = await condense({
@@ -371,6 +460,7 @@ async function visitAll(
             text = clip(text, PER_SOURCE_CHAR_LIMIT)
           }
         } else {
+          // Relevance-first already, so this clip keeps the answer, not the header.
           text = clip(text, PER_SOURCE_CHAR_LIMIT)
         }
         if (!text.trim()) return { job, note: null, error: 'page had no readable content' }
@@ -430,6 +520,43 @@ export function scaledEvidenceLimit(contextLength: number | null): number {
   return Math.min(Math.max(Math.floor(contextLength * 4 * 0.22), 4000), 60_000)
 }
 
+/**
+ * Order evidence for the final prompt: group by host, sort groups by their best
+ * source-type bonus (reliable-leaning) then first-seen order, and round-robin
+ * across groups so no single domain monopolizes the front of a budget-truncated
+ * block. For a comparison this keeps ≥1 source per side — A can't eat the whole
+ * budget when A and B live on different domains.
+ */
+function orderEvidence(notes: VisitNote[]): VisitNote[] {
+  if (notes.length <= 1) return notes
+  const groups = new Map<string, VisitNote[]>()
+  const firstIndex = new Map<string, number>()
+  notes.forEach((n, i) => {
+    const host = hostOf(n.url) || n.url
+    const g = groups.get(host)
+    if (g) g.push(n)
+    else {
+      groups.set(host, [n])
+      firstIndex.set(host, i)
+    }
+  })
+  const ordered = [...groups.entries()].sort((a, b) => {
+    const bonus = domainBonus(`https://${b[0]}`) - domainBonus(`https://${a[0]}`)
+    return bonus !== 0 ? bonus : (firstIndex.get(a[0]) ?? 0) - (firstIndex.get(b[0]) ?? 0)
+  })
+  const out: VisitNote[] = []
+  for (let round = 0, added = true; added; round++) {
+    added = false
+    for (const [, g] of ordered) {
+      if (round < g.length) {
+        out.push(g[round])
+        added = true
+      }
+    }
+  }
+  return out
+}
+
 function buildEvidence(
   notes: VisitNote[],
   snippets: Candidate[],
@@ -440,7 +567,7 @@ function buildEvidence(
   if (notes.length > 0) {
     const blocks: string[] = []
     let total = 0
-    for (const n of notes) {
+    for (const n of orderEvidence(notes)) {
       // Clip the title (an unbounded page <title> could otherwise blow a whole
       // block past the limit); always keep at least the first block so a single
       // oversized source still yields evidence rather than an empty block.
@@ -514,7 +641,10 @@ export async function runSearchPipeline(
   queries: string[],
   opts: SearchPipelineOptions
 ): Promise<PipelineEvidence | null> {
-  let candidates = await searchAll(queries, opts)
+  const { budget } = opts
+  // The router may write more queries than the scope's budget allows; the
+  // harness runs only the first `budget.queries` (a quick_lookup uses one).
+  let candidates = await searchAll(queries.slice(0, Math.max(1, budget.queries)), opts)
   if (candidates.length === 0) return null
 
   const visited = new Set<string>()
@@ -525,9 +655,9 @@ export async function runSearchPipeline(
   const picked = await selectCandidates(candidates, opts)
   throwIfAborted(opts.signal)
   await visitBatch(picked, notes, visited, opts)
-  if (notes.length < MIN_GOOD_VISITS) {
+  if (notes.length < budget.minGoodVisits) {
     await visitBatch(
-      unvisited(candidates, visited).slice(0, MAX_VISITS - notes.length),
+      unvisited(candidates, visited).slice(0, budget.maxVisits - notes.length),
       notes,
       visited,
       opts
@@ -536,28 +666,31 @@ export async function runSearchPipeline(
 
   // Adaptive deepening: the model judges round by round whether it has a full
   // picture; the harness keeps executing, bounded by the page ceiling.
-  for (let round = 0; round < ADAPTIVE_MAX_ROUNDS && notes.length > 0; round++) {
-    if (notes.length >= MAX_TOTAL_VISITS) {
-      log.info(`sufficiency: reached ${MAX_TOTAL_VISITS}-page ceiling, stopping`)
+  for (let round = 0; round < budget.adaptiveRounds && notes.length > 0; round++) {
+    if (notes.length >= budget.maxTotalVisits) {
+      log.info(`sufficiency: reached ${budget.maxTotalVisits}-page ceiling, stopping`)
       break
     }
     const verdict = await assessSufficiency(notes, opts)
     throwIfAborted(opts.signal)
-    if (!verdict || verdict.enough) break
+    // stop (answerable) and cannot_answer (web won't help) both end the loop;
+    // a null verdict (engine error) is treated as stop. read_more / search_more
+    // continue — search_more also broadens with the gap-filling queries.
+    if (!verdict || verdict.action === 'stop' || verdict.action === 'cannot_answer') break
 
     // Broaden with the model's gap-filling queries, then deepen on the pool.
     let fresh: Candidate[] = []
-    if (verdict.moreQueries.length > 0) {
+    if (verdict.action === 'search_more' && verdict.moreQueries.length > 0) {
       fresh = await searchAll(verdict.moreQueries, opts)
       throwIfAborted(opts.signal)
       candidates = dedupeByUrl([...candidates, ...fresh])
     }
-    const budget = MAX_TOTAL_VISITS - notes.length
+    const remaining = budget.maxTotalVisits - notes.length
     // Read the gap-filling results FIRST when the model broadened: appending them
     // to the end of the pool and reading in pool order let leftover ORIGINAL
     // candidates crowd them out, so the broadening never actually read anything new.
     const order = fresh.length > 0 ? dedupeByUrl([...fresh, ...candidates]) : candidates
-    const next = unvisited(order, visited).slice(0, Math.min(ADAPTIVE_BATCH, budget))
+    const next = unvisited(order, visited).slice(0, Math.min(budget.adaptiveBatch, remaining))
     if (next.length === 0) break // nothing new to read — stop rather than spin
     await visitBatch(next, notes, visited, opts)
   }
@@ -575,4 +708,73 @@ export async function runVisitPipeline(
     opts
   )
   return buildEvidence(notes, [], opts.fenceId, opts.contextLength)
+}
+
+// --- structured providers (fast paths) ----------------------------------------
+
+/** The subset of pipeline plumbing a provider lookup needs (no search budget). */
+export interface ProviderPipelineOptions {
+  tools: ToolsClient
+  sources: SourceTracker
+  /** Per-turn random fence code for the untrusted evidence block. */
+  fenceId: string
+  signal: AbortSignal
+  emit: PipelineEmitter
+}
+
+const providerLabel = (q: ProviderQuery): string => {
+  if (q.kind === 'github_release') return `${q.owner}/${q.repo} release`
+  if (q.kind === 'arxiv') return `arXiv ${q.name}`
+  return `${q.name} on ${q.kind === 'pypi' ? 'PyPI' : 'npm'}`
+}
+
+/**
+ * Structured fast path: a single key-free registry/API lookup (PyPI/npm/GitHub/
+ * arXiv) surfaced as one web_lookup tool_call/result. Returns fenced evidence on
+ * a hit, or null on a miss/error so the caller falls back to generic search.
+ */
+export async function runProviderPipeline(
+  query: ProviderQuery,
+  opts: ProviderPipelineOptions
+): Promise<PipelineEvidence | null> {
+  const callId = `pipeline-${crypto.randomUUID()}`
+  const label = providerLabel(query)
+  opts.emit.addPart({ type: 'tool_call', id: callId, name: 'web_lookup', args: JSON.stringify(query) })
+  opts.emit.toolEvent(callId, 'web_lookup', 'start', label)
+
+  let res
+  try {
+    res = await opts.tools.providerLookup(query, opts.signal)
+  } catch (err) {
+    if (opts.signal.aborted) throw err
+    const result = `Error: ${err instanceof Error ? err.message : String(err)}`
+    opts.emit.addPart({ type: 'tool_result', toolCallId: callId, name: 'web_lookup', result })
+    opts.emit.toolEvent(callId, 'web_lookup', 'error', clip(result, 200))
+    return null
+  }
+
+  if (!res.ok || !res.url || !res.summary.trim()) {
+    const result = `No structured result (${res.error ?? 'miss'})`
+    opts.emit.addPart({ type: 'tool_result', toolCallId: callId, name: 'web_lookup', result })
+    opts.emit.toolEvent(callId, 'web_lookup', 'result', result)
+    return null
+  }
+
+  const source = opts.sources.add(res.url, res.title ?? res.source, res.summary)
+  const heading = (res.title ?? res.source).slice(0, 200)
+  const block = `[${source.id}] ${heading}\n${clip(res.summary, PER_SOURCE_CHAR_LIMIT * 2)}`
+  const result = `[${source.id}] ${heading}\n\n${res.summary}`
+  opts.emit.addPart({
+    type: 'tool_result',
+    toolCallId: callId,
+    name: 'web_lookup',
+    result,
+    sourceIds: [source.id]
+  })
+  opts.emit.toolEvent(callId, 'web_lookup', 'result', clip(result, 200))
+
+  return {
+    text: `[Structured ${res.source} result for this message — numbered source:]\n\n${fenceUntrustedWeb(block, opts.fenceId)}\n\n${EVIDENCE_INSTRUCTIONS}`,
+    sourceCount: 1
+  }
 }
