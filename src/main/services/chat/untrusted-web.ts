@@ -10,7 +10,12 @@
  */
 
 /** Built-in tools whose results are untrusted external content. */
-export const UNTRUSTED_WEB_TOOLS = new Set(['web_search', 'web_visit', 'image_search'])
+export const UNTRUSTED_WEB_TOOLS = new Set([
+  'web_search',
+  'web_visit',
+  'image_search',
+  'web_lookup'
+])
 
 /**
  * Whether a tool's result must be fenced as untrusted external content — the
@@ -29,9 +34,43 @@ export function newWebFenceId(): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, 10)
 }
 
-/** Wrap untrusted content in random-marker fences. */
+/**
+ * Chat-template control tokens that must never reach the model from a web page —
+ * the real breakout vector, since these are real special tokens in the family's
+ * tokenizer and can forge a turn boundary inside the fence. Covers ChatML,
+ * Llama-3 header/eot, Phi-3 <|end|>, Llama-2 [INST]/<<SYS>>, and crucially
+ * Gemma's <start_of_turn>/<end_of_turn>/<eos>/<bos> (gemma is the default family).
+ */
+const CONTROL_TOKENS_RE =
+  /<\|(?:im_start|im_end|im_sep|system|user|assistant|endoftext|eot_id|start_header_id|end_header_id|end)\|>|<(?:start|end)_of_turn>|<\/?(?:eos|bos|s|system)>|\[\/?INST\]|<<\/?SYS>>/gi
+/** Any forged fence marker — a page trying to inject its own open/close tag. */
+const FORGED_FENCE_RE = /\[\/?UNTRUSTED_WEB_[^\]\n]*\]/gi
+/** Executable / interactive HTML that survived extraction (block + contents). */
+const HTML_BLOCKS_RE = /<(script|style|form|template|iframe|svg|noscript)\b[\s\S]*?<\/\1>/gi
+const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g
+
+/**
+ * Scrub untrusted web/tool text before it is fenced: strip chat-template control
+ * tokens and forged fence markers (the real jailbreak vectors for small models),
+ * plus any executable/interactive HTML and comments that survived extraction.
+ * Defense-in-depth BEHIND the random-marker fence + system instruction — the
+ * fence is the actual containment; this just removes the high-signal payloads.
+ * Deliberately does NOT try to redact "ignore previous instructions"-style prose:
+ * such heuristics are trivially evaded (punctuation, synonyms) yet corrupt
+ * legitimate fetched content that merely discusses prompt injection, so only
+ * high-precision, low-false-positive patterns are touched.
+ */
+export function sanitizeUntrusted(content: string): string {
+  return content
+    .replace(HTML_BLOCKS_RE, ' ')
+    .replace(HTML_COMMENT_RE, ' ')
+    .replace(CONTROL_TOKENS_RE, ' ')
+    .replace(FORGED_FENCE_RE, ' ')
+}
+
+/** Wrap untrusted content in random-marker fences, scrubbing it first. */
 export function fenceUntrustedWeb(content: string, fenceId: string): string {
-  return `[UNTRUSTED_WEB_${fenceId}]\n${content}\n[/UNTRUSTED_WEB_${fenceId}]`
+  return `[UNTRUSTED_WEB_${fenceId}]\n${sanitizeUntrusted(content)}\n[/UNTRUSTED_WEB_${fenceId}]`
 }
 
 /**

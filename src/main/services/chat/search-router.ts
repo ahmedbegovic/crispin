@@ -2,7 +2,14 @@ import { z } from 'zod'
 import type { EngineClient } from '../engine-client'
 import { structured } from '../structured'
 import { scopedLogger } from '../logger'
-import { heuristicRoute, type ChatRoute } from './search-router-core'
+import {
+  heuristicRoute,
+  inferScopeFromQueries,
+  SEARCH_SCOPES,
+  DEFAULT_SCOPE,
+  type ChatRoute,
+  type SearchScope
+} from './search-router-core'
 
 /**
  * Decides what the harness does with a web-enabled user turn BEFORE the
@@ -16,7 +23,7 @@ import { heuristicRoute, type ChatRoute } from './search-router-core'
  */
 
 // Re-export the pure router pieces so existing importers keep a single source.
-export { heuristicRoute, type ChatRoute }
+export { heuristicRoute, SEARCH_SCOPES, DEFAULT_SCOPE, type ChatRoute, type SearchScope }
 export type { HeuristicDecision } from './search-router-core'
 
 const log = scopedLogger('chat-router')
@@ -39,7 +46,11 @@ const routeOut = z.object({
   // retry for nothing (no consumer reads this field; the order still cues the CoT).
   reasoning: z.string().optional(),
   needs_search: z.boolean(),
-  queries: z.array(z.string())
+  queries: z.array(z.string()),
+  // The information-need class → search budget (code owns the numbers). OPTIONAL
+  // for the same reason as `reasoning`: a small model that omits it shouldn't burn
+  // a repair retry — it falls back to DEFAULT_SCOPE post-validation.
+  scope: z.enum(SEARCH_SCOPES).optional()
 })
 
 // Local models default to their training-data era — without the date they
@@ -57,6 +68,8 @@ export interface RouteOptions {
   history: Array<{ role: 'user' | 'assistant'; text: string }>
   /** Heuristic verdict: this is a follow-up to a searched turn. */
   forceSearch: boolean
+  /** Heuristic verdict: the message carries current-information cues. */
+  freshHint?: boolean
   conversationId: string
   signal: AbortSignal
 }
@@ -97,11 +110,23 @@ export async function routeWithModel(opts: RouteOptions): Promise<ChatRoute> {
             `Write 1-${MAX_QUERIES} standalone web search queries (short keyword phrases). ` +
             'Each query must make sense on its own — resolve references like "it", "there", ' +
             '"what about X" from the conversation. Include the current year in time-sensitive ' +
-            'queries. Leave queries empty only when no search is needed.' +
+            'queries. Leave queries empty only when no search is needed.\n\n' +
+            'Also set "scope" to how much searching the question really needs — match the ' +
+            "effort to the question, do not over-search:\n" +
+            '- "quick_lookup": one discrete fact (a name, a date, a definition).\n' +
+            '- "fresh_fact": one current or time-sensitive fact (today\'s weather, a price, a version).\n' +
+            '- "local_realtime": here-and-now local info (open now, near me).\n' +
+            '- "comparison": weighing two or more options/entities against each other.\n' +
+            '- "deep_research": a broad or multi-part question that needs several sources.' +
             (opts.forceSearch
               ? '\n\nThis message reads like a follow-up to the previous searched answer — ' +
                 'strongly prefer needs_search true, and write standalone queries that resolve ' +
                 'its references.'
+              : '') +
+            (opts.freshHint
+              ? '\n\nThis message mentions current or time-sensitive information — strongly ' +
+                'prefer needs_search true and write standalone queries (include the current ' +
+                'year where relevant).'
               : '')
         }
       ],
@@ -111,8 +136,14 @@ export async function routeWithModel(opts: RouteOptions): Promise<ChatRoute> {
       signal: opts.signal
     })
     const queries = [...new Set(out.queries.map((q) => q.trim()).filter(Boolean))].slice(0, MAX_QUERIES)
-    if ((out.needs_search || opts.forceSearch) && queries.length > 0) {
-      return { kind: 'search', queries }
+    // A deterministic freshness/follow-up cue is a SEARCH FLOOR: if the model
+    // wrote queries, run them even when it (wrongly) judged needs_search false.
+    const leanSearch = opts.forceSearch || (opts.freshHint ?? false)
+    if ((out.needs_search || leanSearch) && queries.length > 0) {
+      // An explicit scope wins; on omission, infer breadth from the query count so
+      // the budget doesn't silently clip away queries the router deliberately wrote.
+      const scope = out.scope ?? inferScopeFromQueries(queries.length)
+      return { kind: 'search', queries, scope }
     }
     return { kind: 'direct' }
   } catch (err) {

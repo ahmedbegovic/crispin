@@ -7,12 +7,13 @@
  * GemmaSplitter is retained as a defensive net for marker leaks (it
  * passes clean text through untouched).
  *
- * Tool history: oMLX templates OpenAI-shaped gemma tool history natively
- * (the Agent tab's opencode traffic relies on that), so text-encoding it
- * here is a retained legacy choice, not a serving-path workaround — the
- * text shapes were live-verified across two engines. Candidate follow-up:
- * live-verify a gemma OpenAI-shaped tool round-trip through the Chat tab
- * and flip encodesToolHistoryAsText to false.
+ * Tool history: gemma now uses NATIVE OpenAI tool messages (flipped
+ * 2026-06-23 after a live oMLX round-trip confirmed gemma-4 emits AND accepts
+ * native tool_calls cleanly — see FAMILY_DIALECT below). Every family sets
+ * toolHistory:'native', so encodesToolHistoryAsText is uniformly false; the
+ * orchestrator's text-encoding replay branches remain only as inert legacy
+ * paths. The salvageTextCalls net stays on for gemma as a defensive backstop
+ * against occasional text-dialect imitation in visible content.
  */
 
 import type { WireToolCall } from '../engine-client'
