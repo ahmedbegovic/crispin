@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   appSettingsSchema,
   featureSchema,
+  promptPresetSchema,
   tierSchema,
   type AppSettings,
   type CrispinEvent
@@ -100,6 +101,11 @@ export class AppSettingsService {
         settings.get(db, 'news.topics', []),
         'settings.newsTopics'
       ),
+      promptPresets: parseArrayDropInvalid(
+        promptPresetSchema,
+        settings.get(db, 'prompts.presets', []),
+        'settings.promptPresets'
+      ),
       tierSelections: normalizeTierSelections(
         parseRecordDropInvalid(
           tierSchema,
@@ -137,6 +143,7 @@ export class AppSettingsService {
     settings.set(db, 'modules.enabled', next.modulesEnabled)
     settings.set(db, 'models.idleUnloadSeconds', next.idleUnloadSeconds)
     settings.set(db, 'news.topics', next.newsTopics)
+    settings.set(db, 'prompts.presets', next.promptPresets)
     settings.set(db, 'models.tierSelections', next.tierSelections)
     settings.set(db, 'models.defaultFamily', next.defaultFamily)
     settings.set(db, 'engine.moeOffloadGB', next.moeOffloadGB)

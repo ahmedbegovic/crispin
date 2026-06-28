@@ -470,6 +470,15 @@ export const newsItemSchema = z.object({
 
 // --- app settings (P2) -------------------------------------------------------
 
+/** A saved system-prompt + sampling preset, applied to a conversation on demand. */
+export const promptPresetSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  systemPrompt: z.string(),
+  sampling: samplingSchema.nullable()
+})
+export type PromptPreset = z.infer<typeof promptPresetSchema>
+
 export const appSettingsSchema = z.object({
   profile: z.object({ userName: z.string(), assistantName: z.string() }),
   instructions: z.object({
@@ -482,6 +491,8 @@ export const appSettingsSchema = z.object({
   idleUnloadSeconds: z.number().int().min(0),
   /** News topic filter applied at fetch time; empty = keep everything. */
   newsTopics: z.array(z.string()),
+  /** Saved system-prompt + sampling presets, applied to a conversation on demand. */
+  promptPresets: z.array(promptPresetSchema),
   /** Per-tier model picks (repo ids) honored by resolveTier. */
   tierSelections: z.partialRecord(tierSchema, z.string()),
   /** Global active family — the no-pin resolution default + the Models tab selector. */

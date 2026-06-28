@@ -529,6 +529,14 @@ export class ChatOrchestrator {
     }
 
     try {
+      // Snapshot the per-conversation system prompt + sampling override at run
+      // START — before the (possibly slow) cold load below — so editing the
+      // settings panel during a cold load affects only the NEXT turn, not this
+      // already-submitted one.
+      const submitted = this.deps.repo.getConversation(conversationId)
+      const submittedSystemPrompt = submitted.systemPrompt
+      const samplingOverride = submitted.sampling
+
       // A cold load can take minutes and is not itself cancellable (the warm
       // request counts toward inflight and may as well finish in the
       // background) — but Stop must release THIS run immediately.
@@ -563,7 +571,7 @@ export class ChatOrchestrator {
         family,
         visionCapable(modelId),
         {
-          customPrompt: conversation.systemPrompt,
+          customPrompt: submittedSystemPrompt,
           skills,
           webEnabled,
           ragEnabled: hasCollection,
@@ -605,10 +613,18 @@ export class ChatOrchestrator {
         signal: controller.signal
       }
 
-      // Per-conversation sampling override (composer Advanced) wins; otherwise
-      // the model's own generation_config.json sampling (gemma: 1.0/0.95) —
-      // without it the engine falls back to its generic 0.7/0.9 defaults.
-      const sampling = conversation.sampling ?? this.deps.modelService.samplingFor(modelId)
+      // Per-conversation override wins PER FIELD; any field the user left blank
+      // follows the model's recommended sampling (gemma 1.0/0.95), not the
+      // engine's generic 0.7/0.9. Snapshotted at run start (above) so a mid-run
+      // settings edit can't change this in-flight turn.
+      const recommended = this.deps.modelService.samplingFor(modelId)
+      const sampling = samplingOverride
+        ? {
+            temperature: samplingOverride.temperature ?? recommended?.temperature ?? null,
+            topP: samplingOverride.topP ?? recommended?.topP ?? null,
+            topK: samplingOverride.topK ?? recommended?.topK ?? null
+          }
+        : recommended
 
       // Harness-owned web pipeline: when routing says the turn needs the web,
       // gather the evidence up front and let the model only write the answer —
@@ -725,7 +741,7 @@ export class ChatOrchestrator {
     }
 
     if (!aborted && !error) {
-      void this.maybeGenerateTitle(conversationId).catch((err) => {
+      void this.maybeGenerateTitle(conversationId, modelId).catch((err) => {
         this.log.warn(`title generation failed: ${err instanceof Error ? err.message : err}`)
       })
     }
@@ -1385,8 +1401,9 @@ export class ChatOrchestrator {
 
   // --- titles ----------------------------------------------------------------------------
 
-  /** Fire-and-forget after the first completed exchange, on the LOW tier model. */
-  private async maybeGenerateTitle(conversationId: string): Promise<void> {
+  /** Fire-and-forget after the first completed exchange, refined with the model
+   *  that just answered (already warm) so it doesn't depend on the low tier. */
+  private async maybeGenerateTitle(conversationId: string, modelId: string): Promise<void> {
     const conversation = this.deps.repo.getConversation(conversationId)
 
     const path = this.deps.repo.activePath(conversationId)
@@ -1408,19 +1425,21 @@ export class ChatOrchestrator {
       firstUserParts.find(
         (p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text'
       )?.text ?? ''
+    // Accepted one-time edge: a title written by an OLDER release's instantTitle
+    // won't equal this recompute, so that conversation skips refinement — fine
+    // for a single user with few stale un-refined titles.
     if (conversation.title !== 'New chat' && conversation.title !== instantTitle(rawUserText)) {
       return
     }
 
+    // Refine with the model that just answered (already warm), so this happens
+    // regardless of whether the LOW tier is resident. Never trigger a load: if
+    // that model was evicted since answering, skip rather than cold-loading it.
     const overview = this.deps.modelService.overview()
-    const lowModel = overview.tiers.find((t) => t.tier === 'low')?.active
-    if (!lowModel) return
-    // Never trigger a model load just for a title: refine opportunistically
-    // while the low model is already resident.
-    const lowLoaded =
+    const loaded =
       overview.engine.running &&
-      overview.engine.models.some((m) => m.id === lowModel && m.state === 'loaded')
-    if (!lowLoaded) return
+      overview.engine.models.some((m) => m.id === modelId && m.state === 'loaded')
+    if (!loaded) return
 
     // Title generation goes through EngineClient too — inflight stays truthful.
     const startedAt = Date.now()
@@ -1428,7 +1447,7 @@ export class ChatOrchestrator {
     let raw = ''
     try {
       for await (const event of this.deps.engine.streamChat({
-        model: lowModel,
+        model: modelId,
         messages,
         maxTokens: 200,
         // Live traces showed every refinement failing: gemma burned the whole
@@ -1446,7 +1465,7 @@ export class ChatOrchestrator {
         surface: 'chat',
         step: 'title',
         conversationId,
-        model: lowModel,
+        model: modelId,
         messages,
         output: raw,
         ok: false,
@@ -1455,12 +1474,12 @@ export class ChatOrchestrator {
       })
       throw err
     }
-    const title = cleanTitle(stripThoughts(raw, familyOf(lowModel)))
+    const title = cleanTitle(stripThoughts(raw, familyOf(modelId)))
     traceLlm({
       surface: 'chat',
       step: 'title',
       conversationId,
-      model: lowModel,
+      model: modelId,
       messages,
       output: raw,
       ok: title.length > 0,

@@ -1,7 +1,9 @@
+import type { ReactNode } from 'react'
 import { Brain, ChevronRight, Globe, Loader2, Wrench } from 'lucide-react'
 import { useChatStore } from '@/stores/chat'
 import type { MessagePart } from '@shared/types'
 import ToolCallCard, { type ToolResultPart } from './ToolCallCard'
+import { segmentThought } from './thoughtSteps'
 
 export type ProcessPart = Extract<MessagePart, { type: 'thought' | 'tool_call' | 'tool_result' }>
 
@@ -131,29 +133,99 @@ export default function ActivityDisclosure({
         />
       </button>
       {open && (
-        <div className="space-y-1 border-t border-zinc-800/80 px-2 py-1.5">
-          {parts.map(({ part, i }) => {
-            if (part.type === 'thought') {
-              if (!part.text.trim()) return null
-              return (
-                <div
-                  key={i}
-                  className="max-h-60 select-text overflow-y-auto whitespace-pre-wrap break-words px-1 py-1 text-[12px] leading-relaxed text-zinc-500"
-                >
-                  {part.text}
-                </div>
-              )
-            }
-            if (part.type === 'tool_call') {
-              // Key by the stable original index, not part.id (the engine's
-              // call id, which z.string() permits to be '' or collide).
-              return <ToolCallCard key={i} call={part} result={resultFor(part.id)} />
-            }
-            // tool_result: render only orphans (the paired call renders it otherwise).
-            return hasCall(part.toolCallId) ? null : <ToolCallCard key={i} result={part} />
-          })}
+        <div className="border-t border-zinc-800/80 px-2.5 py-2">
+          <StepRail parts={parts} working={working} resultFor={resultFor} hasCall={hasCall} />
         </div>
       )}
+    </div>
+  )
+}
+
+type RailNode =
+  | { kind: 'step'; key: string; heading: string | null; body: string }
+  | { kind: 'tool'; key: string; el: ReactNode; status: 'running' | 'done' | 'error' }
+
+/**
+ * The expanded activity as a vertical timeline: each reasoning step and tool call
+ * is a node on a left rail, dotted with the shared state-color vocabulary
+ * (emerald = done, amber = active, red = error). Reasoning steps are segmented
+ * render-side from the existing 'thought' strings; tool nodes reuse ToolCallCard.
+ * Parts are already in temporal order, so think→tool→think interleaves for free.
+ */
+function StepRail({
+  parts,
+  working,
+  resultFor,
+  hasCall
+}: {
+  parts: IndexedPart[]
+  working: boolean
+  resultFor: (id: string) => ToolResultPart | undefined
+  hasCall: (toolCallId: string) => boolean
+}) {
+  const nodes: RailNode[] = []
+  for (const { part, i } of parts) {
+    if (part.type === 'thought') {
+      segmentThought(part.text).forEach((s, si) =>
+        nodes.push({ kind: 'step', key: `t${i}-${si}`, heading: s.heading, body: s.body })
+      )
+    } else if (part.type === 'tool_call') {
+      const r = resultFor(part.id)
+      const status = !r ? 'running' : r.result.startsWith('Error:') ? 'error' : 'done'
+      nodes.push({ kind: 'tool', key: `c${i}`, el: <ToolCallCard call={part} result={r} />, status })
+    } else if (!hasCall(part.toolCallId)) {
+      // Orphan tool_result (its call never landed).
+      const status = part.result.startsWith('Error:') ? 'error' : 'done'
+      nodes.push({ kind: 'tool', key: `r${i}`, el: <ToolCallCard result={part} />, status })
+    }
+  }
+  if (nodes.length === 0) return null
+
+  // The active node while working: a still-running tool if any, else the tail
+  // node — so the rail never reads as fully settled mid-generation (e.g. in the
+  // gap between a tool result landing and the next reasoning token).
+  const runningToolIdx = nodes.findIndex((n) => n.kind === 'tool' && n.status === 'running')
+  const activeIdx = working ? (runningToolIdx >= 0 ? runningToolIdx : nodes.length - 1) : -1
+
+  return (
+    <div>
+      {nodes.map((node, idx) => {
+        const last = idx === nodes.length - 1
+        const dot =
+          node.kind === 'tool' && node.status === 'error'
+            ? 'bg-red-400'
+            : idx === activeIdx || (node.kind === 'tool' && node.status === 'running')
+              ? 'animate-pulse bg-amber-400'
+              : 'bg-emerald-500/70'
+        return (
+          <div key={node.key} className="flex gap-2.5">
+            {/* rail: short top stub · dot · flexible connector down to the next node */}
+            <div className="flex w-2.5 shrink-0 flex-col items-center">
+              <span className={`h-1.5 w-px ${idx === 0 ? 'bg-transparent' : 'bg-zinc-800'}`} />
+              <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+              <span className={`w-px flex-1 ${last ? 'bg-transparent' : 'bg-zinc-800'}`} />
+            </div>
+            <div className="min-w-0 flex-1 pb-2.5">
+              {node.kind === 'tool' ? (
+                // Strip ToolCallCard's standalone my-2 so the dot lines up with
+                // the card and node spacing stays even.
+                <div className="[&>details]:my-0">{node.el}</div>
+              ) : (
+                <div className="pt-px">
+                  {node.heading && (
+                    <div className="text-[11.5px] font-medium text-zinc-300">{node.heading}</div>
+                  )}
+                  {node.body && (
+                    <div className="max-h-60 select-text overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-zinc-500">
+                      {node.body}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
