@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { dataDir } from './paths'
+import { isOffloadEnabled, type MoeOffloadGB } from '@shared/model-tiers'
 
 export interface EngineConfigModel {
   /** Canonical HF repo id; run_engine maps to oMLX's '--' form. */
@@ -21,10 +22,38 @@ export interface EngineConfigOptions {
   cacheDir: string
   /** Hard cap on the paged SSD cache, GB — replaces oMLX's "auto" (≈10% of free disk). */
   cacheMaxSizeGB: number
-  /** MoE expert-offload cache budget, GB. 0 = off. When >0, run_engine exports
-   *  OMLX_MOE_OFFLOAD_GB and large MoE models stream cold experts from disk
-   *  (trades speed for RAM; small models stay resident via the engine's threshold). */
-  moeOffloadGB: number
+  /** MoE expert-offload cache budget. 0 = off, N = a fixed N-GB cache, 'auto' = the
+   *  engine sizes the cache to the device budget (and shrinks it as the KV cache grows).
+   *  When on, run_engine exports OMLX_MOE_OFFLOAD_GB[/_DYNAMIC] and large MoE models
+   *  stream cold experts from disk (trades speed for RAM; small models stay resident). */
+  moeOffloadGB: MoeOffloadGB
+  /** Optimistic decode (OMLX_MOE_OPTIMISTIC): drops the per-layer host sync on a warm
+   *  expert cache. Only helps a MoE small enough to keep all experts cached — the engine
+   *  auto-disables it for the big 35B/26B where every token streams an expert. */
+  moeOffloadOptimistic: boolean
+}
+
+/** The offload-related fields written into engine-config.json. run_engine.py is a dumb
+ *  translator of these into the OMLX_MOE_* env vars — the policy (dynamic sizing rides
+ *  auto; optimistic is moot when offload is off) lives here so the file is self-describing. */
+export interface OffloadConfigFields {
+  moe_offload_gb: MoeOffloadGB
+  moe_offload_dynamic: boolean
+  moe_offload_optimistic: boolean
+}
+
+export function offloadConfigFields(
+  moeOffloadGB: MoeOffloadGB,
+  moeOffloadOptimistic: boolean
+): OffloadConfigFields {
+  const enabled = isOffloadEnabled(moeOffloadGB)
+  return {
+    moe_offload_gb: moeOffloadGB,
+    // Dynamic shrink-as-KV-grows pairs with auto-sizing; a hand-set fixed cache stays put.
+    moe_offload_dynamic: moeOffloadGB === 'auto',
+    // No offloaded experts when offload is off → optimistic is inert; clear it.
+    moe_offload_optimistic: enabled && moeOffloadOptimistic
+  }
 }
 
 export function engineConfigPath(): string {
@@ -83,7 +112,7 @@ export function writeEngineConfig(opts: EngineConfigOptions): string {
   const config = {
     port: opts.port,
     memory_budget_gb: opts.budgetGB,
-    moe_offload_gb: opts.moeOffloadGB,
+    ...offloadConfigFields(opts.moeOffloadGB, opts.moeOffloadOptimistic),
     cache: { dir: opts.cacheDir, max_size_gb: opts.cacheMaxSizeGB },
     models: opts.models.map(engineModelSettings)
   }

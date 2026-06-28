@@ -27,6 +27,8 @@ import {
   fitFor,
   isCuratedRepo,
   isOffloadableRepo,
+  isOffloadEnabled,
+  type MoeOffloadGB,
   kvQuantBitsFor,
   maxOutputTokensFor,
   repoForFamilyTier,
@@ -160,6 +162,16 @@ export class ModelService {
   /** Registry fingerprint the running engine was spawned with. */
   private appliedRegistryKey: string | null = null
   private pendingRegistryRestart = false
+  /** A spawn-time engine knob (moeOffloadGB / moeOffloadOptimistic) changed while the
+   *  engine was busy or transitioning: the restart is deferred and retried by pollTick
+   *  once running+idle, so the new setting can't be silently dropped (leaving the DB/UI/
+   *  RAM math ahead of the still-old engine env until an unrelated respawn). */
+  private pendingEngineSettingRestart = false
+  /** The offload config the RUNNING engine was actually spawned with (set in
+   *  writeConfigForSpawn). The persisted setting can run ahead of this during a deferred
+   *  restart, so load estimates judge against THIS — never crediting an offload discount
+   *  the engine hasn't applied — and the deferred restart no-ops once it already matches. */
+  private appliedOffload: { gb: MoeOffloadGB; optimistic: boolean } | null = null
   /** downloadId → tools job id, for every download we're actively polling. */
   private readonly activeDownloads = new Map<string, string>()
   /** downloadIds the user paused — kept resumable; the poller maps them to 'paused'. */
@@ -347,9 +359,10 @@ export class ModelService {
       // hard cap, instead of oMLX's "auto" (≈10% of free disk on ~/.omlx/cache).
       cacheDir: omlxCacheDir(),
       cacheMaxSizeGB: settings.get(this.deps.db, 'engine.ssdCacheMaxGB', 8),
-      // Spawn-time only (run_engine reads it into OMLX_MOE_OFFLOAD_GB): rides the
-      // next natural spawn like the other engine.* knobs, never forces a restart.
-      moeOffloadGB: settings.get(this.deps.db, 'engine.moeOffloadGB', 0)
+      // Spawn-time only (run_engine reads these into OMLX_MOE_*): ride the next
+      // natural spawn like the other engine.* knobs; a deliberate change restarts.
+      moeOffloadGB: settings.get<MoeOffloadGB>(this.deps.db, 'engine.moeOffloadGB', 0),
+      moeOffloadOptimistic: settings.get(this.deps.db, 'engine.moeOffloadOptimistic', false)
     })
     return entries
   }
@@ -357,6 +370,40 @@ export class ModelService {
   /** Called from the engine ManagedProcess command() at every spawn. */
   writeConfigForSpawn(port: number): void {
     this.appliedRegistryKey = registryKey(this.writeConfig(port))
+    // Every spawn reads the live offload config from the DB and bakes it into the engine
+    // env, so the just-spawned process now HAS the desired settings — record that and
+    // retire any deferred restart (a registry/crash respawn that applied it makes a second
+    // setting-restart redundant).
+    this.appliedOffload = this.desiredOffload()
+    this.pendingEngineSettingRestart = false
+  }
+
+  /** The offload config the user has configured (persisted), regardless of what the
+   *  running engine currently has applied. */
+  private desiredOffload(): { gb: MoeOffloadGB; optimistic: boolean } {
+    return {
+      gb: settings.get<MoeOffloadGB>(this.deps.db, 'engine.moeOffloadGB', 0),
+      optimistic: settings.get(this.deps.db, 'engine.moeOffloadOptimistic', false)
+    }
+  }
+
+  /** Whether the running engine already has the desired offload config (so a restart
+   *  would be redundant). False when unknown (never spawned by us) so an explicit user
+   *  change still restarts. */
+  private offloadApplied(): boolean {
+    const a = this.appliedOffload
+    if (!a) return false
+    const d = this.desiredOffload()
+    return a.gb === d.gb && a.optimistic === d.optimistic
+  }
+
+  /** The offload cache the RAM math should assume for a load. The running engine can only
+   *  deliver what it was spawned with, so judge a load against the APPLIED config while
+   *  it's up (don't credit an offload discount a deferred restart hasn't applied yet); a
+   *  load on a stopped engine spawns it fresh with the desired config. */
+  offloadGBForEstimate(): MoeOffloadGB {
+    if (this.engineProcessRunning() && this.appliedOffload) return this.appliedOffload.gb
+    return settings.get<MoeOffloadGB>(this.deps.db, 'engine.moeOffloadGB', 0)
   }
 
   /**
@@ -435,17 +482,50 @@ export class ModelService {
    * Apply a spawn-time engine setting change (e.g. moeOffloadGB) by rewriting the
    * engine-config and restarting — the setting is read into the engine env at spawn,
    * not via the live model_settings path, so a swap/load on the running process can't
-   * pick it up. Idle-gated (exclusive): never kills an in-flight generation; if the
-   * engine is busy or stopped, the change rides the next natural spawn (writeConfigForSpawn).
+   * pick it up. Idle-gated (exclusive): never kills an in-flight generation. If the
+   * engine is stopped, the change rides the next natural spawn (writeConfigForSpawn). If
+   * it's busy, the exclusive drain refuses — so we DEFER (pollTick retries once idle)
+   * rather than drop the change, which would leave the engine on the old OMLX_MOE_* env
+   * while the DB/UI/RAM math already reflect the new setting.
    */
   async restartForEngineSettingChange(): Promise<void> {
     if (this.disposed) return
     const engine = this.deps.processManager.get('engine')
-    if (!engine || engine.snapshot().state !== 'running') return // not running → next spawn applies it
+    const state = engine?.snapshot().state
+    if (!engine || state === 'stopped' || state === 'failed') {
+      return // not live → the next natural spawn reads the new setting from the DB
+    }
+    if (state !== 'running') {
+      // Transient (spawning / waiting_healthy / unhealthy / restarting): that spawn may
+      // have already baked in the OLD env, so don't assume it applied — defer and let
+      // pollTick restart once it reaches a running+idle state.
+      this.pendingEngineSettingRestart = true
+      return
+    }
+    if (this.offloadApplied()) {
+      // The running engine already has the desired config (e.g. an interleaving respawn
+      // applied it) — a restart would be redundant.
+      this.pendingEngineSettingRestart = false
+      return
+    }
     this.writeConfig(this.deps.getEnginePort()) // rewrite engine-config.json with the new setting
-    await this.exclusive(0, () =>
+    const restarted = await this.exclusive(0, () =>
       engine.restart('engine setting changed').then(() => ({ ok: true as const }))
     )
+    if (restarted.ok) {
+      this.pendingEngineSettingRestart = false
+      return
+    }
+    // Busy: the drain refused. Toast only on the transition into 'deferred' (the flag
+    // guards re-broadcast across pollTick retries — pollTick no longer pre-clears it).
+    if (!this.pendingEngineSettingRestart) {
+      this.deps.broadcast({
+        type: 'system.toast',
+        level: 'warn',
+        message: 'Engine setting changed — restart deferred until the engine is idle.'
+      })
+    }
+    this.pendingEngineSettingRestart = true
   }
 
   /**
@@ -821,13 +901,18 @@ export class ModelService {
     // that only fits OFFLOADED — the Qwen 35B (~19 GB full, ~11 GB offloaded) — must be
     // estimated at its offloaded footprint or the guard wrongly rejects it. When offload
     // is OFF but the model could be offloaded, point the user at the toggle.
-    const moeOffloadGB = settings.get(this.deps.db, 'engine.moeOffloadGB', 0)
+    const desiredOffloadGB = settings.get<MoeOffloadGB>(this.deps.db, 'engine.moeOffloadGB', 0)
+    const effectiveOffloadGB = this.offloadGBForEstimate() // what the engine can actually deliver now
     const estimatedGB =
-      estimateLoadGB(repoId, model.sizeBytes, moeOffloadGB) ?? (model.sizeBytes / 1e9) * MEMORY_OVERHEAD
-    const offloadHint =
-      isOffloadableRepo(repoId) && !(moeOffloadGB > 0)
+      estimateLoadGB(repoId, model.sizeBytes, effectiveOffloadGB) ??
+      (model.sizeBytes / 1e9) * MEMORY_OVERHEAD
+    const offloadHint = !isOffloadableRepo(repoId)
+      ? undefined
+      : !isOffloadEnabled(desiredOffloadGB)
         ? ' Enable expert offload in Settings → Models to fit it on this machine.'
-        : undefined
+        : !isOffloadEnabled(effectiveOffloadGB)
+          ? ' Your expert-offload change applies after the engine restarts (it finishes the current generation first).'
+          : undefined
     const verdict = this.deps.ramGuard.canLoad(estimatedGB, {
       loadedModels: this.engineModels,
       spec: tierSpecFor(repoId),
@@ -1275,7 +1360,7 @@ export class ModelService {
       .map((m) => m.repoId)
     // Offload-aware fit: with offload on, a big MoE's badge reflects its (much smaller)
     // offloaded footprint, so the Qwen 35B reads loadable instead of "unable".
-    const moeOffloadGB = settings.get(this.deps.db, 'engine.moeOffloadGB', 0)
+    const moeOffloadGB = settings.get<MoeOffloadGB>(this.deps.db, 'engine.moeOffloadGB', 0)
     const candidates = [...curated, ...experimental].map((repoId) => {
       // Exact id first, then alias match: weights downloaded under a renamed
       // old id satisfy the curated slot. Surface the INSTALLED id — the engine
@@ -1444,6 +1529,12 @@ export class ModelService {
     if (this.pendingRegistryRestart && running && (await this.engineIdle())) {
       this.pendingRegistryRestart = false
       await this.syncEngineRegistry() // re-defers (re-sets the flag) if the drain refuses
+    }
+
+    if (this.pendingEngineSettingRestart && running && (await this.engineIdle())) {
+      // Don't pre-clear: restartForEngineSettingChange owns the flag (clears on success/
+      // no-op, keeps it on a re-refusal) so a lost idle/drain race can't re-toast.
+      await this.restartForEngineSettingChange()
     }
 
     await this.maybeIdleUnload()

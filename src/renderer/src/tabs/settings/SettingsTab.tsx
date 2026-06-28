@@ -258,21 +258,33 @@ function ModelsSection({
     if (next !== minutes) update({ idleUnloadSeconds: next * 60 })
   }
 
-  // Default expert cache when enabling offload. Measured on M4 Pro 24 GB, the 26B's
-  // per-token expert working set is large (cache thrashes at any size), so decode speed
-  // scales with cache: 3 GB ~15 tok/s, 6 GB ~18 tok/s. 6 GB lands the 26B at ~9 GB
-  // resident — still well under the full ~16 GB — and is the better default.
-  const DEFAULT_OFFLOAD_GB = 6
-  const offloadOn = settings.moeOffloadGB > 0
-  const [gbDraft, setGbDraft] = useState(String(settings.moeOffloadGB || DEFAULT_OFFLOAD_GB))
+  // Default fixed expert cache. Measured on M4 Pro 24 GB, the 26B's per-token expert
+  // working set is large (cache thrashes at any size), so decode speed scales with cache:
+  // 3 GB ~15 tok/s, 6 GB ~18 tok/s. 6 GB lands the 26B at ~9 GB resident. Auto is the
+  // recommended mode (sizes the cache to the budget); Fixed is the manual escape hatch.
+  const FIXED_DEFAULT_GB = 6
+  const offloadMode: 'off' | 'auto' | 'fixed' =
+    settings.moeOffloadGB === 0 ? 'off' : settings.moeOffloadGB === 'auto' ? 'auto' : 'fixed'
+  const fixedGB =
+    typeof settings.moeOffloadGB === 'number' && settings.moeOffloadGB > 0
+      ? settings.moeOffloadGB
+      : FIXED_DEFAULT_GB
+  const [gbDraft, setGbDraft] = useState(String(fixedGB))
   useEffect(() => {
-    if (settings.moeOffloadGB > 0) setGbDraft(String(settings.moeOffloadGB))
+    if (typeof settings.moeOffloadGB === 'number' && settings.moeOffloadGB > 0)
+      setGbDraft(String(settings.moeOffloadGB))
   }, [settings.moeOffloadGB])
+
+  const setOffloadMode = (mode: 'off' | 'auto' | 'fixed'): void => {
+    if (mode === 'off') update({ moeOffloadGB: 0 })
+    else if (mode === 'auto') update({ moeOffloadGB: 'auto' })
+    else update({ moeOffloadGB: Math.max(1, Math.round(Number(gbDraft)) || FIXED_DEFAULT_GB) })
+  }
 
   const commitGb = (): void => {
     const next = Math.max(1, Math.round(Number(gbDraft)))
     if (!Number.isFinite(next)) {
-      setGbDraft(String(settings.moeOffloadGB || DEFAULT_OFFLOAD_GB))
+      setGbDraft(String(fixedGB))
       return
     }
     if (next !== settings.moeOffloadGB) update({ moeOffloadGB: next })
@@ -299,14 +311,17 @@ function ModelsSection({
       </label>
 
       <label className="mt-3 flex items-center gap-2 text-[12px] text-zinc-400">
-        <input
-          type="checkbox"
-          checked={offloadOn}
-          onChange={(e) => update({ moeOffloadGB: e.target.checked ? DEFAULT_OFFLOAD_GB : 0 })}
-          className="h-3.5 w-3.5 accent-zinc-500"
-        />
         Expert offload for large MoE models
-        {offloadOn && (
+        <select
+          value={offloadMode}
+          onChange={(e) => setOffloadMode(e.target.value as 'off' | 'auto' | 'fixed')}
+          className="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-[12.5px] text-zinc-200 outline-none focus:border-zinc-600"
+        >
+          <option value="off">Off</option>
+          <option value="auto">Auto (recommended)</option>
+          <option value="fixed">Fixed cache…</option>
+        </select>
+        {offloadMode === 'fixed' && (
           <>
             <input
               value={gbDraft}
@@ -322,11 +337,32 @@ function ModelsSection({
           </>
         )}
       </label>
+      {offloadMode !== 'off' && (
+        <label className="mt-2 flex items-center gap-2 text-[12px] text-zinc-400">
+          <input
+            type="checkbox"
+            checked={settings.moeOffloadOptimistic}
+            onChange={(e) => update({ moeOffloadOptimistic: e.target.checked })}
+            className="h-3.5 w-3.5 accent-zinc-500"
+          />
+          Optimistic decode
+          <span className="text-[10.5px] text-zinc-600">advanced</span>
+        </label>
+      )}
       <p className="text-[11px] leading-snug text-zinc-600">
-        Runs large MoE models (e.g. Gemma 26B-A4B) in ~9 GB instead of ~16 GB by streaming
-        experts from disk (~18 tok/s at the 6 GB cache — a larger cache is faster, a smaller
-        one saves more RAM). Restarts the engine to apply (waits for any running generation
-        to finish).
+        Runs large MoE models (e.g. Gemma 26B-A4B) by streaming cold experts from disk
+        instead of keeping them resident — ~9 GB instead of ~16 GB. <b>Auto</b> sizes the
+        expert cache to your memory budget and shrinks it as context grows; <b>Fixed</b>{' '}
+        pins a cache size (bigger is faster, smaller saves more RAM). Restarts the engine to
+        apply (waits for any running generation to finish).
+        {offloadMode !== 'off' && (
+          <>
+            {' '}
+            Optimistic decode only speeds up MoE models small enough to keep every expert
+            cached — the engine auto-disables it for the big 35B/26B (every token streams an
+            expert) and it has no effect during structured output.
+          </>
+        )}
       </p>
     </Section>
   )

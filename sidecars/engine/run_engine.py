@@ -102,8 +102,55 @@ def write_model_settings(models: list[dict[str, Any]]) -> None:
             fail(f"cannot write {path}: {exc}")
 
 
-def build_argv(config_path: Path) -> tuple[list[str], list[dict[str, Any]], float]:
-    """Read engine-config.json, return (serve argv, per-model settings, moe_offload_gb)."""
+# The OMLX_MOE_* env vars run_engine OWNS (sets from the config, or pops so a stale
+# inherited value can't shadow it). The engine's other knobs (CONCURRENT_LOAD,
+# LOAD_WORKERS, RESERVE_GIB, …) are left at their engine defaults — not managed here.
+MANAGED_OFFLOAD_ENV = (
+    "OMLX_MOE_OFFLOAD_GB",
+    "OMLX_MOE_OFFLOAD_DYNAMIC",
+    "OMLX_MOE_OPTIMISTIC",
+)
+
+
+def read_offload_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Parse the MoE expert-offload fields from engine-config.json into a normalized
+    dict: ``gb`` is a float (a fixed cache), the string ``"auto"`` (engine sizes the
+    cache to the device budget), or ``0.0`` (off); ``dynamic``/``optimistic`` are bools.
+    Tolerant: a junk or missing budget reads as off rather than crashing the spawn."""
+    raw = config.get("moe_offload_gb", 0)
+    gb: float | str
+    if isinstance(raw, str) and raw.strip().lower() == "auto":
+        gb = "auto"
+    else:
+        try:
+            gb = float(raw or 0)
+        except (TypeError, ValueError):
+            gb = 0.0
+    return {
+        "gb": gb,
+        "dynamic": bool(config.get("moe_offload_dynamic", False)),
+        "optimistic": bool(config.get("moe_offload_optimistic", False)),
+    }
+
+
+def offload_env(offload: dict[str, Any]) -> dict[str, str]:
+    """The OMLX_MOE_* env vars to SET for this offload config. Empty when offload is off
+    (``main`` then pops every MANAGED_OFFLOAD_ENV name that isn't returned). DYNAMIC and
+    OPTIMISTIC are only meaningful with offload on, so they ride a non-zero / auto cache."""
+    gb = offload.get("gb", 0)
+    enabled = gb == "auto" or (isinstance(gb, (int, float)) and gb > 0)
+    if not enabled:
+        return {}
+    env = {"OMLX_MOE_OFFLOAD_GB": "auto" if gb == "auto" else str(gb)}
+    if offload.get("dynamic"):
+        env["OMLX_MOE_OFFLOAD_DYNAMIC"] = "1"
+    if offload.get("optimistic"):
+        env["OMLX_MOE_OPTIMISTIC"] = "1"
+    return env
+
+
+def build_argv(config_path: Path) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    """Read engine-config.json, return (serve argv, per-model settings, offload config)."""
     try:
         config: dict[str, Any] = json.loads(config_path.read_text())
     except FileNotFoundError:
@@ -144,12 +191,7 @@ def build_argv(config_path: Path) -> tuple[list[str], list[dict[str, Any]], floa
         if max_gb:
             argv += ["--paged-ssd-cache-max-size", f"{int(float(max_gb))}GB"]
 
-    try:
-        moe_offload_gb = float(config.get("moe_offload_gb", 0) or 0)
-    except (TypeError, ValueError):
-        moe_offload_gb = 0.0
-
-    return argv, models, moe_offload_gb
+    return argv, models, read_offload_config(config)
 
 
 def main() -> None:
@@ -162,7 +204,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    argv, models, moe_offload_gb = build_argv(Path(args.config))
+    argv, models, offload = build_argv(Path(args.config))
     if args.print_args:
         print(json.dumps(argv))
         return
@@ -179,14 +221,17 @@ def main() -> None:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
     # MoE expert offload (Crispin fork): when enabled, the engine streams cold experts
-    # from disk for large MoE models, freeing their resident weight RAM (trades speed
-    # for memory). Set UNCONDITIONALLY from the config (not setdefault) so the config is
-    # authoritative — a stale inherited OMLX_MOE_OFFLOAD_GB must not shadow it, and
-    # toggling the setting OFF must actually clear it.
-    if moe_offload_gb > 0:
-        os.environ["OMLX_MOE_OFFLOAD_GB"] = str(moe_offload_gb)
-    else:
-        os.environ.pop("OMLX_MOE_OFFLOAD_GB", None)
+    # from disk for large MoE models, freeing their resident weight RAM (trades speed for
+    # memory). 'auto' sizes the cache to the device budget (+ OMLX_MOE_OFFLOAD_DYNAMIC to
+    # shrink it as the KV cache grows); OMLX_MOE_OPTIMISTIC drops the per-layer host sync.
+    # Applied UNCONDITIONALLY from the config (not setdefault) so it's authoritative — a
+    # stale inherited value must not shadow it, and toggling a setting OFF must clear it.
+    desired = offload_env(offload)
+    for name in MANAGED_OFFLOAD_ENV:
+        if name in desired:
+            os.environ[name] = desired[name]
+        else:
+            os.environ.pop(name, None)
 
     # Run the CLI in-process: one PID, so SIGTERM/SIGKILL from the supervisor
     # hit the actual server. Imported late so config errors stay fast.

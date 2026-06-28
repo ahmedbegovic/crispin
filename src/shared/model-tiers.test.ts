@@ -16,6 +16,7 @@ import {
   estimateGB,
   estimateLoadGB,
   isOffloadableRepo,
+  isOffloadEnabled,
   fitFor,
   kvQuantBitsFor,
   modelDisplayName,
@@ -191,6 +192,27 @@ describe('estimateLoadGB — expert-offload-aware footprint', () => {
   it('marks the curated big MoEs as offloadable', () => {
     expect(isOffloadableRepo(QWEN35)).toBe(true)
     expect(isOffloadableRepo('mlx-community/gemma-4-26B-A4B-it-qat-4bit')).toBe(true)
+  })
+
+  it('estimates "auto" at the offloaded floor (the engine sizes auto to fit available RAM)', () => {
+    // Auto offloads as much as needed to fit free memory (engine-side), so an auto load
+    // always fits — estimate the offloaded baseline and let the engine fit the rest,
+    // rather than over-blocking. This is what lets the 35B load on a memory-tight machine.
+    expect(estimateLoadGB(QWEN35, QWEN35_BYTES, 'auto')).toBeCloseTo(11, 5)
+  })
+  it('never estimates MORE than the full resident for "auto" either', () => {
+    expect(estimateLoadGB(QWEN35, 8e9, 'auto')).toBeCloseTo(8.8, 5) // full 8.8 < baseline 11
+  })
+  it('leaves non-offloadable models at their full estimate with "auto"', () => {
+    expect(estimateLoadGB('mlx-community/Qwen3.5-4B-MLX-4bit', 3e9, 'auto')).toBeCloseTo(3.3, 5)
+  })
+})
+
+describe('isOffloadEnabled — off vs fixed vs auto', () => {
+  it('is true for a positive cache or "auto", false for 0', () => {
+    expect(isOffloadEnabled(6)).toBe(true)
+    expect(isOffloadEnabled('auto')).toBe(true)
+    expect(isOffloadEnabled(0)).toBe(false)
   })
 })
 

@@ -385,22 +385,39 @@ export function isOffloadableRepo(repoId: string): boolean {
 }
 
 /**
- * Load-footprint estimate, expert-offload-aware. When the engine's MoE offload is on
- * (moeOffloadGB > 0) and the model is offloadable, returns the measured offloaded
- * resident, scaled for a non-default cache (each GB of cache is ~1 GB resident). This
- * is what lets the Qwen 35B — which only fits OFFLOADED — pass the RAM guard. Identical
- * to estimateGB when offload is off or the model isn't offloadable; never exceeds the
- * full estimate.
+ * The user's MoE-offload cache budget. `0` = off, `N` = a fixed N-GB expert cache,
+ * `'auto'` = let the engine size the cache to the device memory budget (and shrink it
+ * as the KV cache grows). Threaded from settings (`engine.moeOffloadGB`) to the engine
+ * config and the RAM math.
+ */
+export type MoeOffloadGB = number | 'auto'
+
+/** Whether expert offload is on at all (a fixed cache > 0 or auto-sizing). */
+export function isOffloadEnabled(moeOffloadGB: MoeOffloadGB): boolean {
+  return moeOffloadGB === 'auto' || moeOffloadGB > 0
+}
+
+/**
+ * Load-footprint estimate, expert-offload-aware. When the engine's MoE offload is on and
+ * the model is offloadable, returns the offloaded resident. A fixed cache scales ~1 GB
+ * resident per GB of cache. For `'auto'` the engine sizes the expert cache to fit the
+ * AVAILABLE memory (omlx-crispin's available-aware auto-sizing — it offloads more as RAM
+ * gets tight), so an auto load always fits: estimate the offloaded floor (the baseline)
+ * and let the engine fit the rest, rather than over-blocking on a budget-sized upper
+ * bound. This is what lets the Qwen 35B — which only fits OFFLOADED — pass the RAM guard.
+ * Identical to estimateGB when offload is off or the model isn't offloadable; never
+ * exceeds the full estimate.
  */
 export function estimateLoadGB(
   repoId: string,
   sizeBytes: number | null | undefined,
-  moeOffloadGB: number
+  moeOffloadGB: MoeOffloadGB
 ): number | null {
   const full = estimateGB(repoId, sizeBytes)
   const base = OFFLOAD_RESIDENT_GB[canonicalRepoId(repoId)]
-  if (!(moeOffloadGB > 0) || base === undefined) return full
-  const offloaded = Math.max(base + (moeOffloadGB - DEFAULT_OFFLOAD_CACHE_GB), 0)
+  if (!isOffloadEnabled(moeOffloadGB) || base === undefined) return full
+  const cacheGB = moeOffloadGB === 'auto' ? DEFAULT_OFFLOAD_CACHE_GB : moeOffloadGB
+  const offloaded = Math.max(base + (cacheGB - DEFAULT_OFFLOAD_CACHE_GB), 0)
   return full === null ? offloaded : Math.min(full, offloaded)
 }
 

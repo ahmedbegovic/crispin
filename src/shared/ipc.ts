@@ -486,9 +486,16 @@ export const appSettingsSchema = z.object({
   tierSelections: z.partialRecord(tierSchema, z.string()),
   /** Global active family — the no-pin resolution default + the Models tab selector. */
   defaultFamily: familySchema,
-  /** MoE expert-offload cache budget, GB. 0 = off. When >0, large MoE models stream
-   *  cold experts from disk to free RAM (slower; takes effect on next engine restart). */
-  moeOffloadGB: z.number().int().min(0)
+  /** MoE expert-offload cache. 0 = off, N = a fixed N-GB expert cache, 'auto' = the
+   *  engine sizes the cache to the device budget and shrinks it as context grows. When
+   *  on, large MoE models stream cold experts from disk to free RAM (slower; takes
+   *  effect on next engine restart). */
+  moeOffloadGB: z.union([z.number().int().min(0), z.literal('auto')]),
+  /** Optimistic decode for offloaded MoE: drops the per-layer host sync on a warm
+   *  expert cache. Only helps a MoE small enough to keep all experts cached — the engine
+   *  auto-disables it for the big 35B/26B where every token streams an expert. Off by
+   *  default; spawn-time env var, takes effect on next engine restart. */
+  moeOffloadOptimistic: z.boolean()
 })
 
 export type AppSettings = z.infer<typeof appSettingsSchema>

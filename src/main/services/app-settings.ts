@@ -119,13 +119,19 @@ export class AppSettingsService {
         settings.get(db, 'engine.moeOffloadGB', 0),
         0,
         'settings.moeOffloadGB'
+      ),
+      moeOffloadOptimistic: parseOr(
+        shape.moeOffloadOptimistic,
+        settings.get(db, 'engine.moeOffloadOptimistic', false),
+        false,
+        'settings.moeOffloadOptimistic'
       )
     }
   }
 
   update(next: AppSettings): void {
     const db = this.deps.db
-    const prevMoeOffloadGB = this.get().moeOffloadGB
+    const prev = this.get()
     settings.set(db, 'profile', next.profile)
     settings.set(db, 'instructions', next.instructions)
     settings.set(db, 'modules.enabled', next.modulesEnabled)
@@ -134,10 +140,16 @@ export class AppSettingsService {
     settings.set(db, 'models.tierSelections', next.tierSelections)
     settings.set(db, 'models.defaultFamily', next.defaultFamily)
     settings.set(db, 'engine.moeOffloadGB', next.moeOffloadGB)
+    settings.set(db, 'engine.moeOffloadOptimistic', next.moeOffloadOptimistic)
     this.deps.broadcast({ type: 'settings.changed', settings: this.get() })
-    // Spawn-time engine knob: restart the engine so the change actually applies
-    // (it's read into the engine env at spawn, not via the live model_settings path).
-    if (next.moeOffloadGB !== prevMoeOffloadGB) this.deps.onMoeOffloadChange?.()
+    // Spawn-time engine knobs (both ride OMLX_MOE_* env at spawn, not the live
+    // model_settings path): restart the engine when either changes so it applies.
+    if (
+      next.moeOffloadGB !== prev.moeOffloadGB ||
+      next.moeOffloadOptimistic !== prev.moeOffloadOptimistic
+    ) {
+      this.deps.onMoeOffloadChange?.()
+    }
   }
 
   profile(): AppSettings['profile'] {

@@ -109,3 +109,47 @@ describe('AppSettingsService — defaultFamily', () => {
     expect(new AppSettingsService({ db, broadcast: vi.fn() }).defaultFamily()).toBe('qwen')
   })
 })
+
+describe('AppSettingsService — MoE expert offload', () => {
+  it('defaults to off (gb 0, optimistic false)', () => {
+    const out = new AppSettingsService({ db, broadcast: vi.fn() }).get()
+    expect(out.moeOffloadGB).toBe(0)
+    expect(out.moeOffloadOptimistic).toBe(false)
+  })
+
+  it('round-trips "auto" and the optimistic toggle through update → get', () => {
+    const svc = new AppSettingsService({ db, broadcast: vi.fn() })
+    svc.update({ ...svc.get(), moeOffloadGB: 'auto', moeOffloadOptimistic: true })
+    const out = new AppSettingsService({ db, broadcast: vi.fn() }).get()
+    expect(appSettingsSchema.safeParse(out).success).toBe(true)
+    expect(out.moeOffloadGB).toBe('auto')
+    expect(out.moeOffloadOptimistic).toBe(true)
+  })
+
+  it('still round-trips a fixed numeric cache', () => {
+    const svc = new AppSettingsService({ db, broadcast: vi.fn() })
+    svc.update({ ...svc.get(), moeOffloadGB: 8 })
+    expect(new AppSettingsService({ db, broadcast: vi.fn() }).get().moeOffloadGB).toBe(8)
+  })
+
+  it('fires onMoeOffloadChange when the optimistic toggle flips (a spawn-time env var)', () => {
+    const onMoeOffloadChange = vi.fn()
+    const svc = new AppSettingsService({ db, broadcast: vi.fn(), onMoeOffloadChange })
+    svc.update({ ...svc.get(), moeOffloadOptimistic: true })
+    expect(onMoeOffloadChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires onMoeOffloadChange when the cache mode changes', () => {
+    const onMoeOffloadChange = vi.fn()
+    const svc = new AppSettingsService({ db, broadcast: vi.fn(), onMoeOffloadChange })
+    svc.update({ ...svc.get(), moeOffloadGB: 'auto' })
+    expect(onMoeOffloadChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fire onMoeOffloadChange when no offload setting changed', () => {
+    const onMoeOffloadChange = vi.fn()
+    const svc = new AppSettingsService({ db, broadcast: vi.fn(), onMoeOffloadChange })
+    svc.update({ ...svc.get(), newsTopics: ['ai'] })
+    expect(onMoeOffloadChange).not.toHaveBeenCalled()
+  })
+})
