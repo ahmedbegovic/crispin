@@ -80,12 +80,14 @@ const components: Components = {
     // target=_blank routes through main's setWindowOpenHandler -> shell.openExternal.
     <a {...props} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline" />
   ),
+  // Prose leading follows the reading-density preference (--chat-lh); set it here
+  // because these per-element line-heights would otherwise override the wrapper's.
   p: ({ node: _, ...props }) => (
-    <p className="my-2 leading-relaxed first:mt-0 last:mb-0" {...props} />
+    <p className="my-2 leading-[var(--chat-lh,1.7)] first:mt-0 last:mb-0" {...props} />
   ),
   ul: ({ node: _, ...props }) => <ul className="my-2 list-disc space-y-1 pl-5" {...props} />,
   ol: ({ node: _, ...props }) => <ol className="my-2 list-decimal space-y-1 pl-5" {...props} />,
-  li: ({ node: _, ...props }) => <li className="leading-relaxed" {...props} />,
+  li: ({ node: _, ...props }) => <li className="leading-[var(--chat-lh,1.7)]" {...props} />,
   h1: ({ node: _, ...props }) => (
     <h1
       className="mb-2 mt-6 text-[17px] font-semibold tracking-[-0.01em] text-zinc-100 first:mt-0"
@@ -177,7 +179,7 @@ interface Props {
  */
 const MarkdownPart = memo(function MarkdownPart({ text, sources }: Props) {
   return (
-    <div className="select-text break-words text-[13.5px] leading-[1.7] text-zinc-200">
+    <div className="select-text break-words text-[length:var(--chat-fs,13.5px)] leading-[var(--chat-lh,1.7)] text-zinc-200">
       <SourcesContext.Provider value={sources ?? EMPTY_SOURCES}>
         <ReactMarkdown
           // singleDollarTextMath:false — a single `$` is currency far more often

@@ -33,6 +33,37 @@ body {
   mask-image: linear-gradient(to right, #000 calc(100% - 1.25rem), transparent);
 }
 
+/* The conversation spine breathes while a run is live — the emerald left border
+   pulses in place of a separate spinner (one state cue, not two). Reduced-motion
+   (below) settles it to a steady emerald. */
+@keyframes spine-pulse {
+  0%,
+  100% {
+    border-left-color: rgb(16 185 129);
+  }
+  50% {
+    border-left-color: rgb(16 185 129 / 0.4);
+  }
+}
+.spine-pulse {
+  animation: spine-pulse 1.7s ease-in-out infinite;
+}
+
+/* Terminal-style caret blink at the tail of a streaming answer. step-end gives a
+   hard on/off; reduced-motion (below) settles it to a steady bar. */
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+.caret-blink {
+  animation: caret-blink 1s step-end infinite;
+}
+
 .drag-region {
   -webkit-app-region: drag;
 }

@@ -77,6 +77,8 @@ interface ChatStore {
   activityOpen: Record<string, boolean>
   /** messageIds whose generation the user stopped this session (for the "stopped" marker). */
   stoppedIds: Record<string, true>
+  /** conversationId -> unsent composer draft (persisted to localStorage). */
+  drafts: Record<string, string>
   initialized: boolean
   init: () => Promise<void>
   refreshList: () => Promise<void>
@@ -107,6 +109,7 @@ interface ChatStore {
   clearError: (conversationId: string) => void
   retryLast: (conversationId: string) => Promise<void>
   setActivityOpen: (messageId: string, open: boolean) => void
+  setDraft: (conversationId: string, text: string) => void
 }
 
 // chat.get returns only the active path, but every message carries its full
@@ -204,6 +207,33 @@ function applyDelta(message: ChatMessage, event: CrispinEventOf<'chat.delta'>): 
   return { ...message, parts }
 }
 
+// Composer drafts persist across conversation switches AND app reloads, so a
+// half-typed prompt is never lost. localStorage (renderer-only) is the store of
+// record; the in-memory map mirrors it for synchronous reads.
+const DRAFTS_KEY = 'crispin.chatDrafts.v1'
+function loadDrafts(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(DRAFTS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'string' && v) out[k] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+function persistDrafts(drafts: Record<string, string>): void {
+  try {
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts))
+  } catch {
+    /* storage disabled / over quota — drafts just won't survive reload */
+  }
+}
+
 /** Optimistic mime guess for image parts; main re-derives the real one. */
 function mimeFor(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -229,6 +259,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   usage: {},
   activityOpen: {},
   stoppedIds: {},
+  drafts: loadDrafts(),
   initialized: false,
 
   init: async () => {
@@ -723,6 +754,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const { [conversationId]: _u, ...usage } = s.usage
       const { [conversationId]: _e, ...lastError } = s.lastError
       const { [conversationId]: _f, ...lastFailedSend } = s.lastFailedSend
+      const { [conversationId]: _d, ...drafts } = s.drafts
+      persistDrafts(drafts)
       // None of these were evicted before, so they leaked for the whole session.
       // Prune the message-keyed maps for this conversation's messages and the
       // sibling-registry entries under it.
@@ -745,6 +778,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         lastFailedSend,
         activityOpen,
         stoppedIds,
+        drafts,
         activeId: s.activeId === conversationId ? null : s.activeId
       }
     })
@@ -761,6 +795,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   setActivityOpen: (messageId, open) => {
     set((s) => ({ activityOpen: { ...s.activityOpen, [messageId]: open } }))
+  },
+
+  setDraft: (conversationId, text) => {
+    set((s) => {
+      const drafts = { ...s.drafts }
+      if (text) drafts[conversationId] = text
+      else delete drafts[conversationId]
+      persistDrafts(drafts)
+      return { drafts }
+    })
   },
 
   retryLast: async (conversationId) => {

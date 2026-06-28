@@ -72,6 +72,7 @@ export default function Composer({ conversation }: Props) {
   const abort = useChatStore((s) => s.abort)
   const update = useChatStore((s) => s.update)
   const create = useChatStore((s) => s.create)
+  const setDraft = useChatStore((s) => s.setDraft)
   const streamingId = useChatStore((s) => s.streaming[conversation.id])
   const messages = useChatStore((s) => s.messagesById[conversation.id])
   const usage = useChatStore((s) => s.usage[conversation.id])
@@ -85,7 +86,14 @@ export default function Composer({ conversation }: Props) {
   const runPhase = chatRunPhase(streamingId, streamingMessage)
   const streaming = runPhase !== 'idle'
 
-  const [text, setText] = useState('')
+  // Seed from the saved draft (Composer is keyed per conversation, so this runs
+  // once per conversation mount). setDraftText keeps local state + the persisted
+  // draft in lockstep.
+  const [text, setText] = useState(() => useChatStore.getState().drafts[conversation.id] ?? '')
+  const setDraftText = (value: string): void => {
+    setText(value)
+    setDraft(conversation.id, value)
+  }
   const [attachments, setAttachments] = useState<AttachmentInput[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
@@ -110,6 +118,14 @@ export default function Composer({ conversation }: Props) {
   }, [])
 
   useAutosizeTextarea(textareaRef, text, MAX_TEXTAREA_PX)
+
+  // ⌘L (and select / new-chat focus) routes here via a window event so the
+  // keyboard-first user never has to reach for the composer with the mouse.
+  useEffect(() => {
+    const onFocus = (): void => textareaRef.current?.focus()
+    window.addEventListener('crispin:focus-composer', onFocus)
+    return () => window.removeEventListener('crispin:focus-composer', onFocus)
+  }, [])
 
   const addFiles = (files: Iterable<File>): void => {
     for (const file of files) {
@@ -159,13 +175,17 @@ export default function Composer({ conversation }: Props) {
     // would miss THIS message and be staged onto the next one.
     if (streaming || pendingPastes > 0 || (!trimmed && attachments.length === 0)) return
     const toSend = attachments
-    setText('')
+    setDraftText('')
     setAttachments([])
     void send(conversation.id, trimmed, toSend.length > 0 ? toSend : undefined).catch((err) => {
       // A rejected send persisted nothing — put the draft back so the user
       // doesn't retype it, unless newer input has been entered meanwhile.
       setText((cur) => cur || trimmed)
       setAttachments((cur) => (cur.length ? cur : toSend))
+      // Mirror the "newer wins" rule for the persisted draft too: only restore the
+      // failed text when nothing newer was typed during the in-flight send (an
+      // empty store draft means no new typing, or the composer unmounted away).
+      if (!useChatStore.getState().drafts[conversation.id]) setDraft(conversation.id, trimmed)
       toastError(err)
     })
   }
@@ -182,7 +202,7 @@ export default function Composer({ conversation }: Props) {
             label: `Web search — turn ${conversation.webEnabled ? 'off' : 'on'}`,
             run: () => {
               void update(conversation.id, { webEnabled: !conversation.webEnabled }).catch(toastError)
-              setText('')
+              setDraftText('')
             }
           },
           {
@@ -190,7 +210,7 @@ export default function Composer({ conversation }: Props) {
             label: 'New conversation',
             run: () => {
               void create().catch(toastError)
-              setText('')
+              setDraftText('')
             }
           },
           {
@@ -198,13 +218,13 @@ export default function Composer({ conversation }: Props) {
             label: 'Search conversations',
             run: () => {
               usePaletteStore.getState().setOpen(true)
-              setText('')
+              setDraftText('')
             }
           },
           {
             name: 'think',
             label: 'Prefix: think step by step',
-            run: () => setText('Think carefully, step by step. ')
+            run: () => setDraftText('Think carefully, step by step. ')
           }
         ]
   ).filter((c) => c.name.startsWith(slashFilter ?? ''))
@@ -217,7 +237,7 @@ export default function Composer({ conversation }: Props) {
 
   return (
     <div className="shrink-0">
-      <div className="mx-auto w-full max-w-[42rem] px-6 pb-4">
+      <div className="mx-auto w-full max-w-[var(--chat-measure,46rem)] px-6 pb-4">
         <div
           onDragOver={(e) => {
             e.preventDefault()
@@ -283,7 +303,7 @@ export default function Composer({ conversation }: Props) {
             ref={textareaRef}
             value={text}
             onChange={(e) => {
-              setText(e.target.value)
+              setDraftText(e.target.value)
               setSlashHighlight(0)
             }}
             onKeyDown={(e) => {
@@ -310,7 +330,7 @@ export default function Composer({ conversation }: Props) {
                 }
                 if (e.key === 'Escape') {
                   e.preventDefault()
-                  setText('')
+                  setDraftText('')
                   return
                 }
               }
@@ -343,6 +363,7 @@ export default function Composer({ conversation }: Props) {
                 )
             }}
             rows={1}
+            autoFocus
             placeholder="Message… (Enter to send, Shift+Enter for newline)"
             spellCheck={false}
             className="block max-h-44 w-full resize-none bg-transparent px-3.5 py-3 text-[13px] leading-relaxed text-zinc-200 outline-none placeholder:text-zinc-600"

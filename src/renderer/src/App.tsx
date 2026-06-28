@@ -14,6 +14,7 @@ import { MODULE_ICONS } from './lib/module-icons'
 import { useSystemStore } from './stores/system'
 import { useSettingsStore } from './stores/settings'
 import { useModelsStore } from './stores/models'
+import { useChatStore } from './stores/chat'
 import { useUiStore } from './stores/ui'
 import StatusBar from './components/StatusBar'
 import Toasts from './components/Toasts'
@@ -21,6 +22,7 @@ import Placeholder from './components/Placeholder'
 import CommandPalette from './components/CommandPalette'
 import { usePaletteStore } from './stores/palette'
 import ChatTab from './tabs/chat/ChatTab'
+import { groupConversations } from './tabs/chat/ConversationSidebar'
 import AgentTab from './tabs/agent/AgentTab'
 import ResearchTab from './tabs/research/ResearchTab'
 import ModelsTab from './tabs/models/ModelsTab'
@@ -109,6 +111,41 @@ export default function App() {
           return
         e.preventDefault()
         usePaletteStore.getState().toggle()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Chat-scoped shortcuts, only while the chat tab is visible (other tabs stay
+  // mounted): ⌘N new chat, ⌘L focus composer, ⌘↑/⌘↓ previous/next conversation.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      if (useUiStore.getState().activeTab !== 'chat') return
+      if ((e.target as HTMLElement | null)?.closest('.monaco-editor, .xterm')) return
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
+      const key = e.key.toLowerCase()
+      if (key === 'n') {
+        e.preventDefault()
+        void useChatStore.getState().create().catch(() => {})
+      } else if (key === 'l') {
+        e.preventDefault()
+        window.dispatchEvent(new CustomEvent('crispin:focus-composer'))
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        // Don't hijack the OS caret-to-start/end shortcut while typing in a field.
+        const t = e.target as HTMLElement | null
+        if (t && (t.isContentEditable || t.closest('input, textarea'))) return
+        e.preventDefault()
+        const { conversations, activeId, select, showArchived } = useChatStore.getState()
+        // Step the SAME flattened order the sidebar renders (pinned + date groups),
+        // so prev/next always matches what the user sees — incl. the archived view.
+        const ordered = groupConversations(conversations, !showArchived).flatMap((g) => g.items)
+        const idx = ordered.findIndex((c) => c.id === activeId)
+        if (idx === -1) return
+        const nextIdx =
+          e.key === 'ArrowDown' ? Math.min(idx + 1, ordered.length - 1) : Math.max(idx - 1, 0)
+        if (nextIdx !== idx) void select(ordered[nextIdx].id).catch(() => {})
       }
     }
     window.addEventListener('keydown', onKey)
