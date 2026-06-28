@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Settings2, X } from 'lucide-react'
 import type { PromptPreset } from '@shared/ipc'
 import type { Conversation, ModelSampling } from '@shared/types'
@@ -29,6 +29,12 @@ function samplingFrom(temp: string, topP: string, topK: string): ModelSampling |
   return { temperature: t, topP: p, topK: k }
 }
 
+function sameSampling(a: ModelSampling | null, b: ModelSampling | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.temperature === b.temperature && a.topP === b.topP && a.topK === b.topK
+}
+
 function SamplingInput({
   label,
   value,
@@ -47,6 +53,7 @@ function SamplingInput({
       <span className="px-0.5 text-[9.5px] uppercase tracking-wide text-zinc-600">{label}</span>
       <input
         type="number"
+        aria-label={label}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onCommit}
@@ -69,6 +76,7 @@ function Panel({ conversation }: { conversation: Conversation }) {
   const [topP, setTopP] = useState(conversation.sampling?.topP?.toString() ?? '')
   const [topK, setTopK] = useState(conversation.sampling?.topK?.toString() ?? '')
   const [presetName, setPresetName] = useState('')
+  const sysId = useId()
 
   const commitSys = (): void => {
     const next = sys.trim() || null
@@ -76,13 +84,18 @@ function Panel({ conversation }: { conversation: Conversation }) {
       void update(conversation.id, { systemPrompt: next }).catch(toastError)
   }
   const commitSampling = (): void => {
-    void update(conversation.id, { sampling: samplingFrom(temp, topP, topK) }).catch(toastError)
+    const next = samplingFrom(temp, topP, topK)
+    // Skip a no-op write: chat.update always bumps updated_at, which would jump
+    // the conversation to the top of the sidebar on a bare focus + blur.
+    if (sameSampling(next, conversation.sampling)) return
+    void update(conversation.id, { sampling: next }).catch(toastError)
   }
   const resetSampling = (): void => {
     setTemp('')
     setTopP('')
     setTopK('')
-    void update(conversation.id, { sampling: null }).catch(toastError)
+    if (conversation.sampling !== null)
+      void update(conversation.id, { sampling: null }).catch(toastError)
   }
   const applyPreset = (p: PromptPreset): void => {
     setSys(p.systemPrompt)
@@ -111,16 +124,29 @@ function Panel({ conversation }: { conversation: Conversation }) {
     void updateSettings({ promptPresets: presets.filter((p) => p.id !== id) }).catch(toastError)
   }
 
+  // Fields commit on blur, but Escape / click-outside unmounts the input without
+  // firing blur — flush pending edits on close so a typed system prompt isn't lost.
+  const flushRef = useRef<() => void>(() => {})
+  flushRef.current = () => {
+    commitSys()
+    commitSampling()
+  }
+  useEffect(() => () => flushRef.current(), [])
+
   return (
     <div
       role="dialog"
       aria-label="Conversation settings"
       className="absolute right-0 top-full z-20 mt-1 w-72 rounded-lg border border-zinc-700 bg-zinc-900 p-2.5 shadow-xl"
     >
-      <label className="mb-1 block text-[10px] font-medium uppercase tracking-[0.06em] text-zinc-500">
+      <label
+        htmlFor={sysId}
+        className="mb-1 block text-[10px] font-medium uppercase tracking-[0.06em] text-zinc-500"
+      >
         System prompt
       </label>
       <textarea
+        id={sysId}
         value={sys}
         onChange={(e) => setSys(e.target.value)}
         onBlur={commitSys}

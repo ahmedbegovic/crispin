@@ -529,6 +529,14 @@ export class ChatOrchestrator {
     }
 
     try {
+      // Snapshot the per-conversation system prompt + sampling override at run
+      // START — before the (possibly slow) cold load below — so editing the
+      // settings panel during a cold load affects only the NEXT turn, not this
+      // already-submitted one.
+      const submitted = this.deps.repo.getConversation(conversationId)
+      const submittedSystemPrompt = submitted.systemPrompt
+      const samplingOverride = submitted.sampling
+
       // A cold load can take minutes and is not itself cancellable (the warm
       // request counts toward inflight and may as well finish in the
       // background) — but Stop must release THIS run immediately.
@@ -563,7 +571,7 @@ export class ChatOrchestrator {
         family,
         visionCapable(modelId),
         {
-          customPrompt: conversation.systemPrompt,
+          customPrompt: submittedSystemPrompt,
           skills,
           webEnabled,
           ragEnabled: hasCollection,
@@ -605,10 +613,18 @@ export class ChatOrchestrator {
         signal: controller.signal
       }
 
-      // Per-conversation sampling override (composer Advanced) wins; otherwise
-      // the model's own generation_config.json sampling (gemma: 1.0/0.95) —
-      // without it the engine falls back to its generic 0.7/0.9 defaults.
-      const sampling = conversation.sampling ?? this.deps.modelService.samplingFor(modelId)
+      // Per-conversation override wins PER FIELD; any field the user left blank
+      // follows the model's recommended sampling (gemma 1.0/0.95), not the
+      // engine's generic 0.7/0.9. Snapshotted at run start (above) so a mid-run
+      // settings edit can't change this in-flight turn.
+      const recommended = this.deps.modelService.samplingFor(modelId)
+      const sampling = samplingOverride
+        ? {
+            temperature: samplingOverride.temperature ?? recommended?.temperature ?? null,
+            topP: samplingOverride.topP ?? recommended?.topP ?? null,
+            topK: samplingOverride.topK ?? recommended?.topK ?? null
+          }
+        : recommended
 
       // Harness-owned web pipeline: when routing says the turn needs the web,
       // gather the evidence up front and let the model only write the answer —
@@ -1409,6 +1425,9 @@ export class ChatOrchestrator {
       firstUserParts.find(
         (p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text'
       )?.text ?? ''
+    // Accepted one-time edge: a title written by an OLDER release's instantTitle
+    // won't equal this recompute, so that conversation skips refinement — fine
+    // for a single user with few stale un-refined titles.
     if (conversation.title !== 'New chat' && conversation.title !== instantTitle(rawUserText)) {
       return
     }

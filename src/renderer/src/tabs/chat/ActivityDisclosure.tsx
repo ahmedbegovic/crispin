@@ -181,18 +181,20 @@ function StepRail({
   }
   if (nodes.length === 0) return null
 
+  // The active node while working: a still-running tool if any, else the tail
+  // node — so the rail never reads as fully settled mid-generation (e.g. in the
+  // gap between a tool result landing and the next reasoning token).
+  const runningToolIdx = nodes.findIndex((n) => n.kind === 'tool' && n.status === 'running')
+  const activeIdx = working ? (runningToolIdx >= 0 ? runningToolIdx : nodes.length - 1) : -1
+
   return (
     <div>
       {nodes.map((node, idx) => {
         const last = idx === nodes.length - 1
         const dot =
-          node.kind === 'tool'
-            ? node.status === 'error'
-              ? 'bg-red-400'
-              : node.status === 'running'
-                ? 'animate-pulse bg-amber-400'
-                : 'bg-emerald-500/70'
-            : working && last
+          node.kind === 'tool' && node.status === 'error'
+            ? 'bg-red-400'
+            : idx === activeIdx || (node.kind === 'tool' && node.status === 'running')
               ? 'animate-pulse bg-amber-400'
               : 'bg-emerald-500/70'
         return (
@@ -205,7 +207,9 @@ function StepRail({
             </div>
             <div className="min-w-0 flex-1 pb-2.5">
               {node.kind === 'tool' ? (
-                node.el
+                // Strip ToolCallCard's standalone my-2 so the dot lines up with
+                // the card and node spacing stays even.
+                <div className="[&>details]:my-0">{node.el}</div>
               ) : (
                 <div className="pt-px">
                   {node.heading && (
