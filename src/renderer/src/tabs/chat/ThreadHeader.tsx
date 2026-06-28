@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Search, Type } from 'lucide-react'
+import { Pencil, Search, Type } from 'lucide-react'
 import type { Conversation } from '@shared/types'
 import { useChatStore } from '@/stores/chat'
 import {
@@ -187,15 +187,24 @@ export default function ThreadHeader({ conversation, findOpen, onToggleFind }: P
           className="no-drag min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[13px] font-medium text-zinc-100 outline-none focus:border-zinc-500"
         />
       ) : (
-        <button
-          onClick={startEdit}
-          title="Rename conversation"
-          className="no-drag min-w-0 flex-1 truncate text-left text-[13px] font-medium text-zinc-200 hover:text-zinc-50"
-        >
+        // A plain label that stays part of the drag region, so clicking /
+        // double-clicking the titlebar moves / zooms the window. Rename is the
+        // explicit pencil button on the right — not a click on the title.
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-zinc-200">
           {title}
-        </button>
+        </span>
       )}
       <div className="no-drag flex shrink-0 items-center gap-0.5">
+        {!editing && (
+          <button
+            onClick={startEdit}
+            title="Rename conversation"
+            aria-label="Rename conversation"
+            className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+          >
+            <Pencil size={14} />
+          </button>
+        )}
         <button
           onClick={onToggleFind}
           title="Find in conversation"
