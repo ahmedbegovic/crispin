@@ -462,7 +462,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "omlx", extras = ["grammar"], git = "https://github.com/ahmedbegovic/omlx-crispin.git?rev=b60b2026dc3ea987c1803d7a2a4ec2d23a6a5229" }]
+requires-dist = [{ name = "omlx", extras = ["grammar"], git = "https://github.com/ahmedbegovic/omlx-crispin.git?rev=a849cb582287dbdca659cf90cdf3529c634049c7" }]
 
 [[package]]
 name = "cryptography"
@@ -1693,7 +1693,7 @@ wheels = [
 [[package]]
 name = "omlx"
 version = "0.4.4"
-source = { git = "https://github.com/ahmedbegovic/omlx-crispin.git?rev=b60b2026dc3ea987c1803d7a2a4ec2d23a6a5229#b60b2026dc3ea987c1803d7a2a4ec2d23a6a5229" }
+source = { git = "https://github.com/ahmedbegovic/omlx-crispin.git?rev=a849cb582287dbdca659cf90cdf3529c634049c7#a849cb582287dbdca659cf90cdf3529c634049c7" }
 dependencies = [
     { name = "cohere-melody" },
     { name = "dflash-mlx" },
