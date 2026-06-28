@@ -9,6 +9,7 @@ import {
 } from '@/stores/chatPrefs'
 import { useDismissable } from '@/lib/useDismissable'
 import { toastError } from '@/stores/toasts'
+import ConversationSettings from './ConversationSettings'
 
 /** A two-option/three-option segmented control for the display menu. */
 function Segmented<T extends string>({
@@ -217,6 +218,7 @@ export default function ThreadHeader({ conversation, findOpen, onToggleFind }: P
           <Search size={14} />
         </button>
         <DisplayMenu />
+        <ConversationSettings conversation={conversation} />
       </div>
     </div>
   )
