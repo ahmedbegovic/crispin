@@ -39,12 +39,19 @@ def main() -> None:
         == {"OMLX_MOE_OFFLOAD_GB": "6.0"},
     )
 
-    # Auto: GB=auto + dynamic sizing.
+    # Auto: GB=auto + dynamic sizing + a prefill-aware safety reserve (so the auto-sized
+    # cache leaves upfront room for the prefill memory guard, which preflights before the
+    # shrink-controller can react).
     check(
-        "auto sets GB=auto + DYNAMIC",
+        "auto sets GB=auto + DYNAMIC + SAFETY",
         r.offload_env({"gb": "auto", "dynamic": True, "optimistic": False})
-        == {"OMLX_MOE_OFFLOAD_GB": "auto", "OMLX_MOE_OFFLOAD_DYNAMIC": "1"},
+        == {
+            "OMLX_MOE_OFFLOAD_GB": "auto",
+            "OMLX_MOE_OFFLOAD_DYNAMIC": "1",
+            "OMLX_MOE_OFFLOAD_SAFETY_GIB": str(r.OFFLOAD_SAFETY_GIB),
+        },
     )
+    check("safety reserve leaves real prefill headroom (>= 3 GiB)", r.OFFLOAD_SAFETY_GIB >= 3.0)
 
     # Optimistic decode opt-in rides alongside a cache.
     check(

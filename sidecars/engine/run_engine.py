@@ -109,7 +109,17 @@ MANAGED_OFFLOAD_ENV = (
     "OMLX_MOE_OFFLOAD_GB",
     "OMLX_MOE_OFFLOAD_DYNAMIC",
     "OMLX_MOE_OPTIMISTIC",
+    "OMLX_MOE_OFFLOAD_SAFETY_GIB",
 )
+
+# KV + activation reserve (GiB) auto/dynamic sizing holds back below the memory ceiling.
+# The runtime shrink-controller now reclaims expert-cache memory the moment KV growth
+# crosses the line (every call, not period-gated), so it handles the KV-grows-with-context
+# case. This reserve only has to get the INITIAL load under the prefill memory guard's
+# PREFLIGHT (which runs before the controller can act) with room for a min chunk — the
+# engine default (1.5) loads the cache too large and the preflight rejects, so bump it
+# modestly. The controller does the rest as context grows.
+OFFLOAD_SAFETY_GIB = 3.0
 
 
 def read_offload_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -144,6 +154,9 @@ def offload_env(offload: dict[str, Any]) -> dict[str, str]:
     env = {"OMLX_MOE_OFFLOAD_GB": "auto" if gb == "auto" else str(gb)}
     if offload.get("dynamic"):
         env["OMLX_MOE_OFFLOAD_DYNAMIC"] = "1"
+        # Dynamic/auto sizing reserves this much for KV + activations + the prefill guard's
+        # upfront preflight (see OFFLOAD_SAFETY_GIB). Inert for a fixed cache (no controller).
+        env["OMLX_MOE_OFFLOAD_SAFETY_GIB"] = str(OFFLOAD_SAFETY_GIB)
     if offload.get("optimistic"):
         env["OMLX_MOE_OPTIMISTIC"] = "1"
     return env
