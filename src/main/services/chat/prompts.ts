@@ -119,6 +119,22 @@ export function titleMessages(
   ]
 }
 
+/** Messages for an on-demand conversation summary (summarize + compact reuse it). */
+export function summaryMessages(transcript: string): Array<{ role: 'user'; content: string }> {
+  return [
+    {
+      role: 'user',
+      content:
+        'Summarize the conversation below so someone can quickly understand it. Capture the ' +
+        'main questions, answers, decisions, and any important facts, names, numbers, or ' +
+        'context. Use short bullet points or brief paragraphs. Be faithful — do not invent ' +
+        'anything or add commentary. Reply with ONLY the summary.\n\n---\n' +
+        transcript +
+        '\n---'
+    }
+  ]
+}
+
 /** Post-process a model-generated title into something usable. */
 export function cleanTitle(raw: string): string {
   const title = raw

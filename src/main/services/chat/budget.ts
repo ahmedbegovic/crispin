@@ -12,7 +12,7 @@ export function estimateMessageTokens(parts: MessagePart[]): number {
   let chars = 0
   let images = 0
   for (const p of parts) {
-    if (p.type === 'text' || p.type === 'thought') chars += p.text.length
+    if (p.type === 'text' || p.type === 'thought' || p.type === 'compaction') chars += p.text.length
     else if (p.type === 'tool_call') chars += p.name.length + p.args.length + 16
     else if (p.type === 'tool_result') chars += p.result.length + 16
     else if (p.type === 'image') images += 1

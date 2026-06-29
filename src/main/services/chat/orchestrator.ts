@@ -35,7 +35,13 @@ import type { SkillsService } from '../skills'
 import type { AppSettingsService } from '../app-settings'
 import { EMBEDDING_MODEL, type LibraryService } from '../library-service'
 import type { ChatRepo } from './repo'
-import { buildSystemPrompt, cleanTitle, instantTitle, titleMessages } from './prompts'
+import {
+  buildSystemPrompt,
+  cleanTitle,
+  instantTitle,
+  summaryMessages,
+  titleMessages
+} from './prompts'
 import {
   createContentSplitter,
   encodesToolHistoryAsText,
@@ -75,6 +81,10 @@ import {
 } from './untrusted-web'
 
 const MAX_TOOL_ITERATIONS = 8
+/** Transcript char cap fed to a single-pass summary (~6k tokens); tail-biased. */
+const SUMMARY_INPUT_CHARS = 24_000
+/** Most-recent messages Compact keeps verbatim; everything older is summarized. */
+const COMPACT_KEEP_TAIL = 2
 const DELTA_COALESCE_MS = 30
 const PERSIST_INTERVAL_MS = 500
 /** Documents extracted at send time: inline below this, library ingest above. */
@@ -1330,8 +1340,13 @@ export class ChatOrchestrator {
     const texts: string[] = []
     const images: ChatContentPart[] = []
     for (const part of parts) {
-      if (part.type === 'text') texts.push(part.text)
-      else if (part.type === 'image') {
+      if (part.type === 'text') {
+        texts.push(part.text)
+      } else if (part.type === 'compaction') {
+        // The synthetic Compact summary — frame it for the model as the earlier
+        // conversation rather than something the user typed.
+        texts.push(`Summary of the earlier conversation:\n${part.text}`)
+      } else if (part.type === 'image') {
         if (!vision) {
           texts.push('[An image was attached, but the current model cannot see images.]')
           continue
@@ -1417,7 +1432,9 @@ export class ChatOrchestrator {
     }
 
     for (const part of parts) {
-      if (part.type === 'sources' || part.type === 'image') continue
+      // compaction never appears on an assistant turn (the synthetic summary is a
+      // user message); skip it defensively so the union stays tool_result below.
+      if (part.type === 'sources' || part.type === 'image' || part.type === 'compaction') continue
       if (part.type === 'thought') {
         // Each tool round opens with a thought (gemma emits no visible text
         // between rounds) — flush so rounds replay as call→result→call, not batched.
@@ -1504,6 +1521,141 @@ export class ChatOrchestrator {
 
   /** Fire-and-forget after the first completed exchange, refined with the model
    *  that just answered (already warm) so it doesn't depend on the low tier. */
+  /** Plain-text transcript of the user/assistant turns, for summarization. */
+  private renderTranscript(messages: Array<{ role: string; parts: MessagePart[] }>): string {
+    const lines: string[] = []
+    for (const m of messages) {
+      if (m.role !== 'user' && m.role !== 'assistant') continue
+      const text = m.parts
+        .filter((p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text')
+        .map((p) => p.text)
+        .join('\n')
+        .trim()
+      if (text) lines.push(`${m.role === 'user' ? 'User' : 'Assistant'}: ${text}`)
+    }
+    return lines.join('\n\n')
+  }
+
+  /**
+   * Summarize a transcript with the conversation's model. Clips an over-long
+   * transcript to its most-recent SUMMARY_INPUT_CHARS (a faithful single-pass
+   * summary beats a half-finished map-reduce for a personal app). Reuses the
+   * lifecycle signal — fire it past app teardown, never the per-run abort.
+   */
+  private async generateSummary(
+    modelId: string,
+    transcript: string,
+    conversationId: string,
+    signal: AbortSignal
+  ): Promise<string> {
+    const clipped =
+      transcript.length > SUMMARY_INPUT_CHARS
+        ? `…[earlier turns omitted]\n\n${transcript.slice(-SUMMARY_INPUT_CHARS)}`
+        : transcript
+    const messages = summaryMessages(clipped)
+    const startedAt = Date.now()
+    let raw = ''
+    try {
+      for await (const event of this.deps.engine.streamChat({
+        model: modelId,
+        messages,
+        maxTokens: 700,
+        chatTemplateKwargs: { enable_thinking: false },
+        signal
+      })) {
+        if (event.type === 'content') raw += event.text
+      }
+    } catch (err) {
+      traceLlm({
+        surface: 'chat',
+        step: 'summary',
+        conversationId,
+        model: modelId,
+        messages,
+        output: raw,
+        ok: false,
+        ms: Date.now() - startedAt,
+        error: err instanceof Error ? err.message : String(err)
+      })
+      throw err
+    }
+    const summary = stripThoughts(raw, familyOf(modelId)).trim()
+    traceLlm({
+      surface: 'chat',
+      step: 'summary',
+      conversationId,
+      model: modelId,
+      messages,
+      output: raw,
+      ok: summary.length > 0,
+      ms: Date.now() - startedAt
+    })
+    return summary
+  }
+
+  /**
+   * On-demand summary of a conversation's active path (the header Summarize
+   * action). Claims the conversation's single generation slot for its duration —
+   * so it can't run a SECOND concurrent engine generation alongside a live turn
+   * (a 24 GB RAM concern), and chat.abort can cancel it.
+   */
+  async summarize(conversationId: string): Promise<{ summary: string }> {
+    const controller = this.claim(conversationId)
+    try {
+      const conversation = this.deps.repo.getConversation(conversationId)
+      const transcript = this.renderTranscript(this.deps.repo.activePath(conversationId))
+      if (!transcript.trim()) return { summary: '' }
+      const modelId = this.resolveModel(
+        this.effectiveTier(conversation),
+        this.effectiveFamily(conversation)
+      )
+      await this.ensureModelLoaded(modelId)
+      return {
+        summary: await this.generateSummary(modelId, transcript, conversationId, controller.signal)
+      }
+    } finally {
+      this.active.delete(conversationId)
+    }
+  }
+
+  /**
+   * Compact: summarize the older turns and replace them with one synthetic
+   * summary message, keeping the most recent exchange verbatim. The deliberate,
+   * non-destructive alternative to budget.ts silently dropping the oldest turns.
+   * Claims the generation slot for the WHOLE operation, so a concurrent send /
+   * branch-switch / delete can't move the head out from under the kept-tail
+   * snapshot while the summary streams (the path is read after the claim).
+   */
+  async compact(conversationId: string): Promise<void> {
+    const controller = this.claim(conversationId)
+    try {
+      const conversation = this.deps.repo.getConversation(conversationId)
+      const path = this.deps.repo.activePath(conversationId)
+      const older = path.slice(0, Math.max(0, path.length - COMPACT_KEEP_TAIL))
+      const kept = path.slice(Math.max(0, path.length - COMPACT_KEEP_TAIL))
+      if (older.length < 2) {
+        throw new Error('This conversation is too short to compact.')
+      }
+      const transcript = this.renderTranscript(older)
+      if (!transcript.trim()) {
+        throw new Error('Nothing to compact — the older turns had no text.')
+      }
+      const modelId = this.resolveModel(
+        this.effectiveTier(conversation),
+        this.effectiveFamily(conversation)
+      )
+      await this.ensureModelLoaded(modelId)
+      const summary = await this.generateSummary(modelId, transcript, conversationId, controller.signal)
+      if (!summary) throw new Error('Could not generate a summary to compact with.')
+      this.deps.repo.compactConversation(conversationId, {
+        summary,
+        keepFromMessageId: kept[0]?.id ?? null
+      })
+    } finally {
+      this.active.delete(conversationId)
+    }
+  }
+
   private async maybeGenerateTitle(conversationId: string, modelId: string): Promise<void> {
     const conversation = this.deps.repo.getConversation(conversationId)
 

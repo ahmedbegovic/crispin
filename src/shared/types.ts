@@ -159,6 +159,7 @@ export interface ModelsOverview {
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
 
+
 /** One web/RAG source behind a [n] citation. */
 export interface SourceRef {
   id: number
@@ -183,6 +184,9 @@ export type MessagePart =
   | { type: 'tool_call'; id: string; name: string; args: string }
   | { type: 'tool_result'; toolCallId: string; name: string; result: string; sourceIds?: number[] }
   | { type: 'sources'; sources: SourceRef[] }
+  /** The synthetic Compact summary — provenance is structural, never inferred from
+   *  text, so a real user message can't be mistaken for one. */
+  | { type: 'compaction'; text: string }
 
 export interface Conversation {
   id: string

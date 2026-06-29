@@ -70,22 +70,62 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
     return { ok: true }
   })
 
-  handle('chat.delete', ({ conversationId }) => {
-    orchestrator.abort(conversationId)
-    // The cascade erases the only record of copied image files, so unlink them
-    // first. Only files inside our attachments dir: document attachments store
-    // the user's ORIGINAL path and must never be deleted.
+  // Unlink a copied image file iff it's under our attachments dir (never a user's
+  // original document path) AND no surviving message still references it (a
+  // duplicate shares the source's images — refcount before deleting the file).
+  const unlinkUnusedImages = (paths: string[]): void => {
     const attachmentsDir = join(dataDir(), 'attachments')
-    for (const path of repo.imageAttachmentPaths(conversationId)) {
+    for (const path of paths) {
       if (!resolve(path).startsWith(attachmentsDir + sep)) continue
+      if (repo.imagePathInUse(path)) continue
       try {
         unlinkSync(path)
       } catch {
         // best-effort — an already-missing file changes nothing
       }
     }
+  }
+
+  handle('chat.delete', ({ conversationId }) => {
+    orchestrator.abort(conversationId)
+    // Collect paths BEFORE the delete (cascade erases the only record), delete,
+    // then unlink the ones no longer referenced anywhere.
+    const paths = repo.imageAttachmentPaths(conversationId)
     repo.deleteConversation(conversationId)
+    unlinkUnusedImages(paths)
     return { ok: true }
+  })
+
+  handle('chat.duplicate', ({ conversationId, messageId }) => {
+    if (orchestrator.isActive(conversationId)) {
+      throw new Error('Cannot duplicate a conversation while a generation is running')
+    }
+    const source = repo.getConversation(conversationId)
+    return {
+      conversationId: repo.duplicateConversation(conversationId, {
+        uptoMessageId: messageId,
+        // Leave a copy of an untitled chat untitled too, so 'Copy of New chat'
+        // isn't FTS-indexed (mirrors createConversation skipping the placeholder).
+        title: source.title === 'New chat' ? undefined : `Copy of ${source.title}`
+      })
+    }
+  })
+
+  handle('chat.summarize', ({ conversationId }) => orchestrator.summarize(conversationId))
+
+  handle('chat.compact', async ({ conversationId }) => {
+    await orchestrator.compact(conversationId)
+    return viewOf(conversationId)
+  })
+
+  handle('chat.deleteMessage', ({ conversationId, messageId }) => {
+    if (orchestrator.isActive(conversationId)) {
+      throw new Error('Cannot delete a message while a generation is running')
+    }
+    // deleteMessageSubtree removes the rows and returns the subtree's image paths;
+    // unlink only those no longer referenced (shared with a duplicate, etc.).
+    unlinkUnusedImages(repo.deleteMessageSubtree(conversationId, messageId))
+    return viewOf(conversationId)
   })
 
   handle('chat.search', ({ query, limit }) => ({
@@ -131,6 +171,11 @@ function conversationMarkdown(conversation: Conversation, messages: ChatMessage[
   const lines: string[] = [`# ${conversation.title}`, '']
   for (const m of messages) {
     if (m.role !== 'user' && m.role !== 'assistant') continue
+    const compaction = m.parts.find((p) => p.type === 'compaction')
+    if (compaction) {
+      lines.push('## Summary of earlier conversation', '', compaction.text, '')
+      continue
+    }
     lines.push(`## ${m.role === 'user' ? 'You' : 'Assistant'}`, '')
     for (const part of m.parts) {
       if (part.type === 'text') lines.push(part.text, '')
