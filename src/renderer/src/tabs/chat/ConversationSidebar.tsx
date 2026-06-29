@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import {
   Archive,
   ArchiveRestore,
+  Copy,
   Download,
   MoreHorizontal,
   Pin,
@@ -100,12 +101,14 @@ function RowActionsMenu({
   y,
   onClose,
   onPin,
+  onDuplicate,
   onExport,
   onArchive,
   onDelete
 }: RowMenuState & {
   onClose: () => void
   onPin: () => void
+  onDuplicate: () => void
   onExport: () => void
   onArchive: () => void
   onDelete: () => void
@@ -146,6 +149,10 @@ function RowActionsMenu({
         )}
         {conversation.pinned ? 'Unpin' : 'Pin'}
       </button>
+      <button role="menuitem" onClick={() => { onClose(); onDuplicate() }} className={row}>
+        <Copy size={13} className="text-zinc-500" />
+        Duplicate
+      </button>
       <button role="menuitem" onClick={() => { onClose(); onExport() }} className={row}>
         <Download size={13} className="text-zinc-500" />
         Export to Markdown
@@ -181,6 +188,7 @@ export default function ConversationSidebar(): React.JSX.Element {
   const create = useChatStore((s) => s.create)
   const update = useChatStore((s) => s.update)
   const remove = useChatStore((s) => s.remove)
+  const duplicate = useChatStore((s) => s.duplicate)
   const setShowArchived = useChatStore((s) => s.setShowArchived)
   const [deleteTarget, setDeleteTarget] = useState<ConversationMeta | null>(null)
   const [menu, setMenu] = useState<RowMenuState | null>(null)
@@ -416,6 +424,7 @@ export default function ConversationSidebar(): React.JSX.Element {
           onPin={() =>
             void update(menu.conversation.id, { pinned: !menu.conversation.pinned }).catch(toastError)
           }
+          onDuplicate={() => void duplicate(menu.conversation.id).catch(toastError)}
           onExport={() => exportChat(menu.conversation.id)}
           onArchive={() =>
             void update(menu.conversation.id, { archived: !menu.conversation.archived }).catch(

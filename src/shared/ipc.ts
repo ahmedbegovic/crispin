@@ -179,7 +179,8 @@ export const messagePartSchema = z.discriminatedUnion('type', [
     result: z.string(),
     sourceIds: z.array(z.number()).optional()
   }),
-  z.object({ type: z.literal('sources'), sources: z.array(sourceRefSchema) })
+  z.object({ type: z.literal('sources'), sources: z.array(sourceRefSchema) }),
+  z.object({ type: z.literal('compaction'), text: z.string() })
 ])
 
 export const conversationSchema = z.object({
@@ -708,6 +709,29 @@ export const contract = {
     /** Persist a pasted clipboard blob (e.g. a screenshot) to a temp file for attachment. */
     input: z.object({ name: z.string(), mime: z.string(), dataBase64: z.string() }),
     output: z.object({ path: z.string() })
+  },
+  'chat.deleteMessage': {
+    /** Delete a message and its whole descendant subtree; returns the new view
+     *  (the active path may re-thread onto the deleted node's parent branch). */
+    input: z.object({ conversationId: z.string(), messageId: z.string() }),
+    output: conversationViewSchema
+  },
+  'chat.duplicate': {
+    /** Fork a conversation's active path (optionally up to `messageId`) into a
+     *  standalone new conversation, copying its settings. Returns the new id. */
+    input: z.object({ conversationId: z.string(), messageId: z.string().optional() }),
+    output: z.object({ conversationId: z.string() })
+  },
+  'chat.summarize': {
+    /** On-demand LLM summary of the conversation's active path (ephemeral). */
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({ summary: z.string() })
+  },
+  'chat.compact': {
+    /** Replace the older turns with a synthetic summary message to reclaim
+     *  context (non-destructive); returns the new view. */
+    input: z.object({ conversationId: z.string() }),
+    output: conversationViewSchema
   },
   'chat.delete': {
     input: z.object({ conversationId: z.string() }),

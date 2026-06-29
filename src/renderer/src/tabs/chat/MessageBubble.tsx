@@ -7,7 +7,9 @@ import {
   Image as ImageIcon,
   Loader2,
   Pencil,
-  RefreshCw
+  RefreshCw,
+  Shrink,
+  Trash2
 } from 'lucide-react'
 import {
   TIER_LABELS,
@@ -29,8 +31,45 @@ import ActivityDisclosure, {
 } from './ActivityDisclosure'
 import SourcesStrip from './SourcesStrip'
 import BranchSwitcher from './BranchSwitcher'
+import ConfirmDialog from '@/components/ConfirmDialog'
 import { basename, fileUrl } from './attachments'
 import { chatRunPhase, chatRunPhaseLabel } from './runStatus'
+
+/** Delete this message + its descendant subtree, behind a confirm. */
+function DeleteMessageButton({ message, disabled }: { message: ChatMessage; disabled: boolean }) {
+  const deleteMessage = useChatStore((s) => s.deleteMessage)
+  const [confirm, setConfirm] = useState(false)
+  const [pending, setPending] = useState(false)
+  const doDelete = (): void => {
+    setConfirm(false)
+    setPending(true)
+    void deleteMessage(message.conversationId, message.id)
+      .catch(toastError)
+      .finally(() => setPending(false))
+  }
+  return (
+    <>
+      <button
+        onClick={() => setConfirm(true)}
+        disabled={disabled || pending}
+        title="Delete message"
+        aria-label="Delete message"
+        className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-30"
+      >
+        <Trash2 size={12} />
+      </button>
+      <ConfirmDialog
+        open={confirm}
+        title="Delete message?"
+        body="This message and every reply below it will be permanently removed."
+        danger
+        confirmLabel="Delete"
+        onConfirm={doDelete}
+        onCancel={() => setConfirm(false)}
+      />
+    </>
+  )
+}
 
 function ImageThumb({ path }: { path: string }) {
   // file:// is blocked by webSecurity while the renderer runs off the dev
@@ -76,10 +115,44 @@ function copyText(message: ChatMessage): string {
     .join('\n\n')
 }
 
+/** The synthetic Compact summary renders as a divider, not a user bubble. */
+function CompactionDivider({ summary }: { summary: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="my-4 w-full">
+      <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+        <div className="h-px flex-1 bg-zinc-800" />
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:text-zinc-300"
+        >
+          <Shrink size={11} />
+          Compacted — earlier turns summarized
+          <ChevronDown size={11} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+        <div className="h-px flex-1 bg-zinc-800" />
+      </div>
+      {open && (
+        <div className="mx-auto mt-2 max-w-[80%] select-text whitespace-pre-wrap break-words rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-[12px] leading-relaxed text-zinc-400">
+          {summary}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function UserMessage({ message, streaming }: { message: ChatMessage; streaming: boolean }) {
   const editResend = useChatStore((s) => s.editResend)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+
+  // A compaction summary is a synthetic user message — show it as a divider.
+  const compaction = message.parts.find(
+    (p): p is Extract<MessagePart, { type: 'compaction' }> => p.type === 'compaction'
+  )
+  if (compaction) {
+    return <CompactionDivider summary={compaction.text.trim()} />
+  }
 
   const textParts = message.parts.filter(
     (p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text'
@@ -168,6 +241,7 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
             >
               <Pencil size={12} />
             </button>
+            <DeleteMessageButton message={message} disabled={streaming} />
           </div>
         </>
       )}
@@ -370,6 +444,7 @@ function AssistantMessage({
             )}
             {stats && <span className="text-[10.5px] tabular-nums text-zinc-600">{stats}</span>}
             {stopped && <span className="text-[10.5px] text-amber-500/70">· stopped</span>}
+            <DeleteMessageButton message={message} disabled={busy} />
           </div>
         )}
       </div>

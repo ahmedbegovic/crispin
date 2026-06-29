@@ -87,10 +87,13 @@ const parseParts = (json: string): MessagePart[] => {
   return parseArrayDropInvalid(messagePartSchema, raw, 'chat.parts')
 }
 
-/** Searchable text of a message = its text parts (no thoughts/tools/images). */
+/** Searchable text of a message = its text + compaction-summary parts. */
 const bodyOfParts = (parts: MessagePart[]): string =>
   parts
-    .filter((p): p is Extract<MessagePart, { type: 'text' }> => p.type === 'text')
+    .filter(
+      (p): p is Extract<MessagePart, { type: 'text' | 'compaction' }> =>
+        p.type === 'text' || p.type === 'compaction'
+    )
     .map((p) => p.text)
     .join('\n')
     .trim()
@@ -238,6 +241,100 @@ export class ChatRepo {
     this.ftsSetTitle(id, title)
   }
 
+  /**
+   * Fork a conversation's active path (optionally only up to `uptoMessageId`,
+   * inclusive) into a standalone new conversation, copying its settings. Image
+   * files are SHARED, not re-copied — cleanup is reference-counted (see
+   * imagePathInUse), so neither conversation's delete unlinks a still-used file.
+   */
+  duplicateConversation(sourceId: string, opts: { uptoMessageId?: string; title?: string }): string {
+    const source = this.getConversation(sourceId)
+    const fullPath = this.activePath(sourceId)
+    let path = fullPath
+    if (opts.uptoMessageId) {
+      const idx = fullPath.findIndex((m) => m.id === opts.uptoMessageId)
+      if (idx === -1) throw new Error('Message is not on the active path')
+      path = fullPath.slice(0, idx + 1)
+    }
+    const dup = this.createConversation({
+      tier: source.defaultTier,
+      tierPinned: source.tierPinned,
+      family: source.family,
+      collectionId: source.collectionId,
+      webEnabled: source.webEnabled
+    })
+    this.updateConversation(dup.id, {
+      ...(opts.title !== undefined ? { title: opts.title } : {}),
+      systemPrompt: source.systemPrompt,
+      sampling: source.sampling
+    })
+    let parentId: string | null = null
+    for (const m of path) {
+      const newId = this.insertMessage({
+        conversationId: dup.id,
+        parentId,
+        role: m.role,
+        parts: m.parts,
+        modelId: m.modelId
+      })
+      for (const part of m.parts) {
+        if (part.type === 'image') {
+          this.insertAttachment({ messageId: newId, kind: 'image', path: part.path, mime: part.mime })
+        }
+      }
+      parentId = newId
+    }
+    this.setHead(dup.id, parentId)
+    return dup.id
+  }
+
+  /**
+   * Compact: insert a synthetic summary message as a NEW detached root (parent
+   * null) carrying a structural `compaction` part, then re-thread the kept tail
+   * onto it (or make it the head when nothing is kept). The older messages are
+   * left intact off the active path — compaction is non-destructive and the
+   * pre-compact branch is preserved (and still searchable). Returns the summary id.
+   */
+  compactConversation(
+    conversationId: string,
+    opts: { summary: string; keepFromMessageId: string | null }
+  ): string {
+    const summaryId = this.insertMessage({
+      conversationId,
+      parentId: null,
+      role: 'user',
+      parts: [{ type: 'compaction', text: opts.summary }]
+    })
+    if (opts.keepFromMessageId) {
+      // Re-parent the first kept message onto the summary; the head (still the
+      // last kept message) now walks back through the summary, dropping the rest.
+      this.db
+        .prepare('UPDATE messages SET parent_id = ? WHERE id = ?')
+        .run(summaryId, opts.keepFromMessageId)
+    } else {
+      this.setHead(conversationId, summaryId)
+    }
+    this.touch(conversationId)
+    return summaryId
+  }
+
+  /**
+   * Whether any message still references this image file (an attachments row or
+   * an image part). Lets delete paths unlink only files no longer used by ANY
+   * conversation — so a duplicate that shares the source's images stays intact.
+   * The path is a UUID filename, so the JSON substring match has no false hits.
+   */
+  imagePathInUse(path: string): boolean {
+    const inAttach = this.db
+      .prepare("SELECT 1 FROM attachments WHERE kind = 'image' AND path = ? LIMIT 1")
+      .get(path)
+    if (inAttach) return true
+    const inParts = this.db
+      .prepare(`SELECT 1 FROM messages WHERE parts LIKE '%"' || ? || '"%' LIMIT 1`)
+      .get(path)
+    return inParts !== undefined
+  }
+
   // --- message tree -----------------------------------------------------------
 
   insertMessage(input: InsertMessageInput): string {
@@ -371,6 +468,84 @@ export class ChatRepo {
       leaf = child.id
     }
     this.setHead(conversationId, leaf)
+  }
+
+  private touch(conversationId: string): void {
+    this.db
+      .prepare('UPDATE conversations SET updated_at = ? WHERE id = ?')
+      .run(Date.now(), conversationId)
+  }
+
+  /**
+   * Delete a message and its entire descendant subtree. Returns the copied
+   * image-file paths of the removed messages so the caller can unlink them
+   * (collect-before-delete — the row delete erases the only record). When the
+   * head was inside the deleted subtree, the active path re-threads onto the
+   * deleted node's parent branch (or empties if it was the root).
+   */
+  deleteMessageSubtree(conversationId: string, messageId: string): string[] {
+    const row = this.db
+      .prepare('SELECT conversation_id, parent_id FROM messages WHERE id = ?')
+      .get(messageId) as { conversation_id: string; parent_id: string | null } | undefined
+    if (!row || row.conversation_id !== conversationId) {
+      throw new Error('Message does not belong to this conversation')
+    }
+
+    // Gather the subtree by walking parent links downward (no parent_id FK, so
+    // an explicit walk — not a cascade — collects every descendant).
+    const ids: string[] = []
+    const seen = new Set<string>()
+    const queue = [messageId]
+    const childStmt = this.db.prepare('SELECT id FROM messages WHERE parent_id = ?')
+    while (queue.length > 0) {
+      const id = queue.shift() as string
+      if (seen.has(id)) continue
+      seen.add(id)
+      ids.push(id)
+      for (const c of childStmt.all(id) as unknown as Array<{ id: string }>) queue.push(c.id)
+    }
+
+    const paths = this.imagePathsForMessages(ids)
+    const headRow = this.db
+      .prepare('SELECT head_message_id FROM conversations WHERE id = ?')
+      .get(conversationId) as { head_message_id: string | null } | undefined
+    const headInSubtree = !!headRow?.head_message_id && seen.has(headRow.head_message_id)
+
+    this.db.exec('BEGIN')
+    try {
+      if (this.ftsReady) {
+        const delFts = this.db.prepare('DELETE FROM chat_fts WHERE message_id = ?')
+        for (const id of ids) delFts.run(id)
+      }
+      const delMsg = this.db.prepare('DELETE FROM messages WHERE id = ?')
+      for (const id of ids) delMsg.run(id) // attachments cascade via FK
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+
+    if (headInSubtree) {
+      if (row.parent_id) {
+        // Continue from the deleted node's parent (descend to its newest leaf).
+        this.switchBranch(conversationId, row.parent_id)
+      } else {
+        // The deleted node was a ROOT, but another root branch can survive (an
+        // edit-resend of the first message forks a root sibling). Fall back to the
+        // newest surviving message so that branch stays reachable; empty the
+        // conversation only when nothing remains.
+        const newest = this.db
+          .prepare(
+            'SELECT id FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+          )
+          .get(conversationId) as { id: string } | undefined
+        if (newest) this.switchBranch(conversationId, newest.id)
+        else this.setHead(conversationId, null)
+      }
+    } else {
+      this.touch(conversationId)
+    }
+    return paths
   }
 
   // --- full-text search (FTS5) -------------------------------------------------
@@ -533,6 +708,28 @@ export class ChatRepo {
       .all(conversationId) as unknown as Array<{ parts: string }>
     for (const message of messages) {
       for (const part of parseParts(message.parts)) {
+        if (part.type === 'image') paths.add(part.path)
+      }
+    }
+    return [...paths]
+  }
+
+  /** Copied image paths for a specific set of messages (attachments + image parts). */
+  private imagePathsForMessages(messageIds: string[]): string[] {
+    if (messageIds.length === 0) return []
+    const paths = new Set<string>()
+    const placeholders = messageIds.map(() => '?').join(',')
+    const attachRows = this.db
+      .prepare(
+        `SELECT path FROM attachments WHERE kind = 'image' AND message_id IN (${placeholders})`
+      )
+      .all(...messageIds) as unknown as Array<{ path: string }>
+    for (const r of attachRows) paths.add(r.path)
+    const partRows = this.db
+      .prepare(`SELECT parts FROM messages WHERE id IN (${placeholders})`)
+      .all(...messageIds) as unknown as Array<{ parts: string }>
+    for (const m of partRows) {
+      for (const part of parseParts(m.parts)) {
         if (part.type === 'image') paths.add(part.path)
       }
     }

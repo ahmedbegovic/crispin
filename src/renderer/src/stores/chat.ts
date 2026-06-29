@@ -104,6 +104,9 @@ interface ChatStore {
     message: ChatMessage,
     direction: -1 | 1
   ) => Promise<void>
+  deleteMessage: (conversationId: string, messageId: string) => Promise<void>
+  duplicate: (conversationId: string, messageId?: string) => Promise<void>
+  compact: (conversationId: string) => Promise<void>
   update: (conversationId: string, patch: ConversationPatch) => Promise<void>
   remove: (conversationId: string) => Promise<void>
   clearError: (conversationId: string) => void
@@ -116,6 +119,13 @@ interface ChatStore {
 // sibling id list in branch order — the registry mirrors it per (conversation,
 // parent) so the BranchSwitcher can target any branch, visited or not.
 const siblingRegistry = new Map<string, (string | undefined)[]>()
+
+/** Conversations already nudged to compact this session (cleared on compact). */
+const compactSuggested = new Set<string>()
+/** Context fill at which the one-time compact nudge fires. */
+const COMPACT_SUGGEST_AT = 0.8
+/** Min active-path length for compact to have older turns to fold (KEEP_TAIL=2 + 2). */
+const COMPACT_MIN_MESSAGES = 4
 
 function rememberSiblings(messages: ChatMessage[]): void {
   for (const m of messages) {
@@ -325,6 +335,27 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
       })
       if (event.error !== null && !event.aborted) pushToast('error', friendlyError(event.error))
+      // One-time nudge when the context window is filling up — the user stays in
+      // control (a manual Compact button lives in the thread header). Only for the
+      // ACTIVE conversation (the visible header acts on it) and only when there are
+      // actually older turns to compact (path long enough to survive KEEP_TAIL),
+      // so the nudge can't dead-end on a short-but-full thread.
+      if (
+        !event.aborted &&
+        event.tokensIn !== null &&
+        event.contextLength &&
+        event.conversationId === get().activeId &&
+        (get().messagesById[event.conversationId]?.length ?? 0) >= COMPACT_MIN_MESSAGES
+      ) {
+        const fill = (event.tokensIn + (event.tokensOut ?? 0)) / event.contextLength
+        if (fill >= COMPACT_SUGGEST_AT && !compactSuggested.has(event.conversationId)) {
+          compactSuggested.add(event.conversationId)
+          pushToast(
+            'warn',
+            'This conversation is filling the context window. Use Compact in the thread header to summarize older turns and free up space.'
+          )
+        }
+      }
       // Reconcile with what main persisted: sibling counts, attachment parts, usage.
       void get()
         .refreshConversation(event.conversationId)
@@ -666,6 +697,40 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set((s) => mergeView(s, conversationId, view))
   },
 
+  deleteMessage: async (conversationId, messageId) => {
+    // The active path can re-thread after a mid-conversation delete, so replace
+    // it wholesale from the returned view rather than splicing optimistically.
+    const view = await call('chat.deleteMessage', { conversationId, messageId })
+    rememberSiblings(view.messages)
+    set((s) => mergeView(s, conversationId, view))
+    // updated_at moved — re-bucket/re-sort the sidebar row.
+    await get().refreshList()
+  },
+
+  duplicate: async (conversationId, messageId) => {
+    const { conversationId: newId } = await call('chat.duplicate', { conversationId, messageId })
+    // The copy is always a fresh non-archived chat; leaving the archived-only
+    // view on would select it but filter it out of the sidebar list.
+    if (get().showArchived) set({ showArchived: false })
+    await get().refreshList()
+    await get().select(newId)
+  },
+
+  compact: async (conversationId) => {
+    const view = await call('chat.compact', { conversationId })
+    compactSuggested.delete(conversationId) // it can suggest again if it refills
+    rememberSiblings(view.messages)
+    set((s) => {
+      const merged = mergeView(s, conversationId, view)
+      // The kept tail still carries the pre-compaction assistant's tokensIn, so
+      // the donut would keep reporting the old (full) fill. Clear it until the
+      // next turn measures the now-reduced context.
+      const { [conversationId]: _stale, ...usage } = merged.usage ?? s.usage
+      return { ...merged, usage }
+    })
+    await get().refreshList()
+  },
+
   update: async (conversationId, patch) => {
     // Optimistic: pickers and toggles reflect instantly; revert if main rejects.
     const prevConversation = get().conversationById[conversationId]
@@ -769,6 +834,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       for (const key of [...siblingRegistry.keys()]) {
         if (key.startsWith(`${conversationId}:`)) siblingRegistry.delete(key)
       }
+      compactSuggested.delete(conversationId)
       return {
         conversations: s.conversations.filter((c) => c.id !== conversationId),
         conversationById,
