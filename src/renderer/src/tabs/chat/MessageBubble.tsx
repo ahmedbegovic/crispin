@@ -145,6 +145,12 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
   const editResend = useChatStore((s) => s.editResend)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const [copied, setCopied] = useState(false)
+  const copy = (): void => {
+    void navigator.clipboard.writeText(copyText(message)).catch(toastError)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
 
   // A compaction summary is a synthetic user message — show it as a divider.
   const compaction = message.parts.find(
@@ -230,6 +236,14 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
           )}
           <div className="mt-1 flex h-5 items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <BranchSwitcher message={message} disabled={streaming} />
+            <button
+              onClick={copy}
+              title="Copy message"
+              aria-label="Copy message"
+              className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+            </button>
             <button
               onClick={() => {
                 setDraft(text)
