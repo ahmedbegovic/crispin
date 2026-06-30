@@ -163,6 +163,29 @@ function usageFromMessages(
   return null
 }
 
+/** Reconcile a refetched message list against the current one, KEEPING the object
+ *  reference of every message that is byte-identical. A plain replace hands
+ *  Virtuoso an all-new array of all-new objects, so it re-renders + re-measures
+ *  every visible row at once — a one-frame full-thread blink on each completion
+ *  (refreshConversation runs right after chat.done). Preserving refs means only
+ *  the rows that actually changed (the just-finished message) re-render. */
+export function reconcileMessages(
+  prev: ChatMessage[] | undefined,
+  next: ChatMessage[]
+): ChatMessage[] {
+  if (!prev) return next
+  const byId = new Map(prev.map((m) => [m.id, m]))
+  let changed = prev.length !== next.length
+  const out = next.map((m) => {
+    const old = byId.get(m.id)
+    if (old && JSON.stringify(old) === JSON.stringify(m)) return old
+    changed = true
+    return m
+  })
+  // Nothing changed → keep the whole previous array reference too (Virtuoso no-ops).
+  return changed ? out : prev
+}
+
 /** Merge a chat.get / switchBranch view into per-conversation state: the object,
  *  its active path, and the usage donut. A null contextLength from main (model
  *  momentarily unresolvable) never erases a known denominator. */
@@ -176,14 +199,15 @@ function mergeView(
     modelId: string | null
   }
 ): Partial<ChatStore> {
+  const reconciled = reconcileMessages(s.messagesById[conversationId], view.messages)
   const entry = usageFromMessages(
-    view.messages,
+    reconciled,
     view.contextLength ?? s.usage[conversationId]?.contextLength ?? null
   )
   const { [conversationId]: _omit, ...usage } = s.usage
   return {
     conversationById: { ...s.conversationById, [conversationId]: view.conversation },
-    messagesById: { ...s.messagesById, [conversationId]: view.messages },
+    messagesById: { ...s.messagesById, [conversationId]: reconciled },
     usage: entry ? { ...usage, [conversationId]: entry } : usage,
     resolvedModel: { ...s.resolvedModel, [conversationId]: view.modelId }
   }

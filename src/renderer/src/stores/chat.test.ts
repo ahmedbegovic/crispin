@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CrispinEvent, CrispinEventType } from '@shared/ipc'
+import type { ChatMessage } from '@shared/types'
 
 type EventHandler = (event: CrispinEvent) => void
 
@@ -22,7 +23,26 @@ vi.mock('@/lib/friendlyError', () => ({
   friendlyError: (message: string) => message
 }))
 
-import { useChatStore } from './chat'
+import { useChatStore, reconcileMessages } from './chat'
+
+function msg(id: string, text: string): ChatMessage {
+  return {
+    id,
+    conversationId: CONVERSATION_ID,
+    parentId: null,
+    role: 'assistant',
+    parts: [{ type: 'text', text }],
+    modelId: null,
+    tokensIn: null,
+    tokensOut: null,
+    ttftMs: null,
+    genMs: null,
+    createdAt: 1,
+    siblingIndex: 0,
+    siblingCount: 1,
+    siblingIds: [id]
+  }
+}
 
 const CONVERSATION_ID = 'conversation-1'
 const MODEL_ID = 'mlx-community/Qwen3.5-2B-4bit'
@@ -169,5 +189,36 @@ describe('useChatStore chat events', () => {
 
     expect(useChatStore.getState().modelLoad[CONVERSATION_ID]).toBeUndefined()
     expect(useChatStore.getState().stopping[CONVERSATION_ID]).toBeUndefined()
+  })
+})
+
+describe('reconcileMessages', () => {
+  it('keeps every previous reference (and the array) when nothing changed', () => {
+    const a = msg('a', 'hi')
+    const b = msg('b', 'yo')
+    const prev = [a, b]
+    // Fresh objects with identical content (as a re-fetch produces).
+    const out = reconcileMessages(prev, [msg('a', 'hi'), msg('b', 'yo')])
+    expect(out).toBe(prev) // same array ref — Virtuoso no-ops, no blink
+    expect(out[0]).toBe(a)
+    expect(out[1]).toBe(b)
+  })
+
+  it('replaces only the changed message and keeps the rest', () => {
+    const a = msg('a', 'hi')
+    const b = msg('b', 'yo')
+    const changedB = msg('b', 'yo — now finished')
+    const out = reconcileMessages([a, b], [msg('a', 'hi'), changedB])
+    expect(out[0]).toBe(a) // unchanged → previous ref kept
+    expect(out[1]).toBe(changedB) // changed → new ref re-renders
+  })
+
+  it('returns next when there is no previous list, and on a length change', () => {
+    const next = [msg('a', 'hi')]
+    expect(reconcileMessages(undefined, next)).toBe(next)
+    const a = msg('a', 'hi')
+    const grown = reconcileMessages([a], [msg('a', 'hi'), msg('b', 'new')])
+    expect(grown).toHaveLength(2)
+    expect(grown[0]).toBe(a) // unchanged row still keeps its ref
   })
 })
