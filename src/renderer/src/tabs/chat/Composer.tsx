@@ -17,6 +17,7 @@ import {
   FAMILIES,
   FAMILY_LABELS,
   FEATURE_DEFAULTS,
+  modelDisplayName,
   TIER_LABELS,
   TIER_ORDER
 } from '@shared/model-tiers'
@@ -71,13 +72,11 @@ function toBase64(buf: ArrayBuffer): string {
   return btoa(binary)
 }
 
-function stripModelSuffixes(modelId: string): string {
-  let name = modelId.split('/').pop() || modelId
-  const suffixPattern = /(?:-qat|-\d+bit|-bf16|-fp16|-mlx|-gguf)$/i
-  while (suffixPattern.test(name)) {
-    name = name.replace(suffixPattern, '')
-  }
-  return name
+/** Brand-level model name for the loading line, e.g. "Gemma 4" / "Qwen 3.5":
+ *  the canonical display name with the parameter-size suffix (…9B / …E2B) dropped. */
+function loadingModelName(modelId: string): string {
+  const name = modelDisplayName(modelId)
+  return name.replace(/\s+\S*\d\S*[Bb]$/, '').trim() || name
 }
 
 type ModelReadiness = EngineModelState | 'no-model'
@@ -228,7 +227,7 @@ export default function Composer({ conversation }: Props) {
   const waitingFirstTokenStartedAtRef = useRef<number | null>(null)
   const [waitingFirstTokenStartedAt, setWaitingFirstTokenStartedAt] = useState<number | null>(null)
   const waitingFirstTokenElapsed = useElapsed(waitingFirstTokenStartedAt)
-  const loadingModelShortName = modelLoad ? stripModelSuffixes(modelLoad.modelId) : 'model'
+  const loadingModelShortName = modelLoad ? loadingModelName(modelLoad.modelId) : 'model'
   const footerStatusText =
     runPhase === 'loadingModel'
       ? `Loading ${loadingModelShortName} · ${loadingModelElapsed}s`
