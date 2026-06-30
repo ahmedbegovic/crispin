@@ -25,6 +25,7 @@ import type {
   Conversation,
   EngineModelState,
   Family,
+  ModelsOverview,
   SkillMeta,
   Tier
 } from '@shared/types'
@@ -38,6 +39,7 @@ import { useLibraryStore } from '@/stores/library'
 import { useMcpStore } from '@/stores/mcp'
 import { useModelsStore } from '@/stores/models'
 import { pushToast, toastError } from '@/stores/toasts'
+import StyledSelect, { type StyledSelectOption } from '@/components/StyledSelect'
 import { basename, kindForPath, pathForFile } from './attachments'
 import McpDialog from './McpDialog'
 import LibraryDialog from './LibraryDialog'
@@ -54,8 +56,6 @@ const MANAGE_SENTINEL = '__manage__'
 
 const selectClass =
   'w-full rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:text-zinc-200 focus:border-zinc-600'
-const barSelectClass =
-  'rounded-md border border-zinc-800 bg-zinc-900/70 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:border-zinc-700 hover:text-zinc-300 focus:border-emerald-500/70 focus:text-zinc-200'
 // One row per tool in the context popover — same height, same hit area.
 const popoverRow =
   'flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-[12px] text-zinc-300 hover:bg-zinc-800/80'
@@ -105,6 +105,65 @@ const modelReadinessBadge: Record<ModelReadiness, { label: string; title: string
   }
 }
 
+type ModelOptionDotState = EngineModelState | 'none'
+type FamilySelectValue = '' | Family
+type TierSelectValue = '' | Tier
+
+const modelOptionDot: Record<
+  ModelOptionDotState,
+  { label: string; title: string; className: string }
+> = {
+  loaded: {
+    label: 'Loaded',
+    title: 'Loaded',
+    className: 'bg-emerald-500'
+  },
+  loading: {
+    label: 'Loading',
+    title: 'Loading',
+    className: 'animate-pulse bg-amber-400'
+  },
+  unloaded: {
+    label: 'Installed but idle',
+    title: 'Installed but not loaded',
+    className: 'bg-zinc-500'
+  },
+  none: {
+    label: 'No installed model',
+    title: 'No installed model',
+    // A clearly brighter hollow ring so "not installed" reads distinctly from
+    // the filled zinc "installed but idle" dot.
+    className: 'border border-zinc-400/70'
+  }
+}
+
+function cellDot(
+  overview: Pick<ModelsOverview, 'tiers'> | null,
+  tier: Tier,
+  family: Family | null
+): React.JSX.Element | null {
+  // No dot until the overview loads — otherwise every option shows a false
+  // 'none' (hollow) on first paint, even for installed/loaded models.
+  if (!overview) return null
+  const row = overview?.tiers.find((item) => item.tier === tier)
+  const candidate = family
+    ? row?.candidates.find((item) => item.family === family && item.installed)
+    : row?.candidates.find((item) => item.repoId === row.active)
+  const state: ModelOptionDotState = candidate?.installed
+    ? (candidate.engineState ?? 'unloaded')
+    : 'none'
+  const meta = modelOptionDot[state]
+
+  return (
+    <span
+      title={meta.title}
+      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${meta.className}`}
+    >
+      <span className="sr-only">{meta.label}</span>
+    </span>
+  )
+}
+
 interface Props {
   conversation: Conversation
 }
@@ -122,7 +181,9 @@ export default function Composer({ conversation }: Props) {
   const usage = useChatStore((s) => s.usage[conversation.id])
   const collections = useLibraryStore((s) => s.collections)
   const mcpEnabled = useMcpStore((s) => s.servers.filter((srv) => srv.enabled).length)
+  const modelTiers = useModelsStore((s) => s.overview?.tiers ?? null)
   const chatDefaultTier = useModelsStore((s) => s.overview?.defaults.chat ?? FEATURE_DEFAULTS.chat)
+  const defaultFamily = useModelsStore((s) => s.overview?.defaultFamily ?? null)
   // main resolves the real (cascade-aware) model for this conversation and ships
   // it in the view — the badge reads that id's LIVE engine state as a primitive,
   // so it never lies about a down-tier cascade and the heavy composer doesn't
@@ -324,6 +385,35 @@ export default function Composer({ conversation }: Props) {
     conversation.webEnabled ||
     conversation.collectionId !== null ||
     mcpEnabled > 0
+  const effectiveTier = conversation.tierPinned ? conversation.defaultTier : chatDefaultTier
+  const effectiveFamily = conversation.family ?? defaultFamily
+  const familyValue: FamilySelectValue = conversation.family ?? ''
+  const tierValue: TierSelectValue = conversation.tierPinned ? conversation.defaultTier : ''
+  const modelPickerOverview = modelTiers ? { tiers: modelTiers } : null
+  const familyOptions: StyledSelectOption<FamilySelectValue>[] = [
+    { value: '', label: 'Default', leading: cellDot(modelPickerOverview, effectiveTier, null) },
+    ...FAMILIES.map(
+      (family): StyledSelectOption<FamilySelectValue> => ({
+        value: family,
+        label: FAMILY_LABELS[family],
+        leading: cellDot(modelPickerOverview, effectiveTier, family)
+      })
+    )
+  ]
+  const tierOptions: StyledSelectOption<TierSelectValue>[] = [
+    {
+      value: '',
+      label: `Default (${TIER_LABELS[chatDefaultTier]})`,
+      leading: cellDot(modelPickerOverview, chatDefaultTier, effectiveFamily)
+    },
+    ...TIER_ORDER.map(
+      (tier): StyledSelectOption<TierSelectValue> => ({
+        value: tier,
+        label: TIER_LABELS[tier],
+        leading: cellDot(modelPickerOverview, tier, effectiveFamily)
+      })
+    )
+  ]
 
   return (
     <div className="shrink-0">
@@ -623,45 +713,33 @@ export default function Composer({ conversation }: Props) {
               )}
             </div>
 
-            <select
-              value={conversation.family ?? ''}
-              onChange={(e) =>
+            <StyledSelect
+              value={familyValue}
+              options={familyOptions}
+              onChange={(value) =>
                 void update(conversation.id, {
                   // '' = follow the global active family live.
-                  family: e.target.value === '' ? null : (e.target.value as Family)
+                  family: value === '' ? null : value
                 }).catch(toastError)
               }
-              title="Model"
-              aria-label="Model family"
-              className={`${barSelectClass} w-24`}
-            >
-              <option value="">Default</option>
-              {FAMILIES.map((family) => (
-                <option key={family} value={family}>
-                  {FAMILY_LABELS[family]}
-                </option>
-              ))}
-            </select>
+              ariaLabel="Model family"
+              title="Model family"
+              className="w-24"
+            />
 
-            <select
-              value={conversation.tierPinned ? conversation.defaultTier : ''}
-              onChange={(e) =>
+            <StyledSelect
+              value={tierValue}
+              options={tierOptions}
+              onChange={(value) =>
                 void update(conversation.id, {
                   // '' = un-pin: follow the chat feature default live.
-                  defaultTier: e.target.value === '' ? null : (e.target.value as Tier)
+                  defaultTier: value === '' ? null : value
                 }).catch(toastError)
               }
-              title="Quality"
-              aria-label="Model quality"
-              className={`${barSelectClass} w-28`}
-            >
-              <option value="">Default ({TIER_LABELS[chatDefaultTier]})</option>
-              {TIER_ORDER.map((tier) => (
-                <option key={tier} value={tier}>
-                  {TIER_LABELS[tier]}
-                </option>
-              ))}
-            </select>
+              ariaLabel="Model quality"
+              title="Model quality"
+              className="w-32"
+            />
 
             {modelReadinessMeta && (
               <span
