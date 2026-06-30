@@ -191,7 +191,9 @@ function UserMessage({
   }
 
   return (
-    <div className={`group flex flex-col items-end pb-2 pt-6 ${isNew ? 'msg-in' : ''}`}>
+    <div
+      className={`group flex flex-col items-end pb-2 pt-[var(--chat-pt-turn,1.5rem)] ${isNew ? 'msg-in' : ''}`}
+    >
       {editing ? (
         <div className="w-full max-w-[80%]">
           <textarea

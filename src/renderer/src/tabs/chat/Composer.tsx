@@ -25,7 +25,6 @@ import type {
   Conversation,
   EngineModelState,
   Family,
-  ModelsOverview,
   SkillMeta,
   Tier
 } from '@shared/types'
@@ -83,24 +82,6 @@ function stripModelSuffixes(modelId: string): string {
 
 type ModelReadiness = EngineModelState | 'no-model'
 
-function getModelState(
-  overview: ModelsOverview,
-  conversation: Pick<Conversation, 'defaultTier' | 'family' | 'tierPinned'>
-): ModelReadiness {
-  const effectiveTier = conversation.tierPinned ? conversation.defaultTier : overview.defaults.chat
-  const effectiveFamily = conversation.family
-  const tierRes = overview.tiers.find((t) => t.tier === effectiveTier)
-  if (!tierRes) return 'no-model'
-
-  const candidate = effectiveFamily
-    ? tierRes.candidates.find((c) => c.family === effectiveFamily && c.installed)
-    : tierRes.candidates.find((c) => c.repoId === tierRes.active)
-  const repoId = effectiveFamily ? (candidate?.repoId ?? null) : tierRes.active
-
-  if (!repoId || !candidate?.installed) return 'no-model'
-  return overview.engine.models.find((m) => m.id === repoId)?.state ?? 'unloaded'
-}
-
 const modelReadinessBadge: Record<ModelReadiness, { label: string; title: string; dot: string }> = {
   'no-model': {
     label: 'No model',
@@ -141,10 +122,17 @@ export default function Composer({ conversation }: Props) {
   const usage = useChatStore((s) => s.usage[conversation.id])
   const collections = useLibraryStore((s) => s.collections)
   const mcpEnabled = useMcpStore((s) => s.servers.filter((srv) => srv.enabled).length)
-  const modelsOverview = useModelsStore((s) => s.overview)
-  const chatDefaultTier =
-    modelsOverview?.defaults.chat ?? FEATURE_DEFAULTS.chat
-  const modelReadiness = modelsOverview ? getModelState(modelsOverview, conversation) : null
+  const chatDefaultTier = useModelsStore((s) => s.overview?.defaults.chat ?? FEATURE_DEFAULTS.chat)
+  // main resolves the real (cascade-aware) model for this conversation and ships
+  // it in the view — the badge reads that id's LIVE engine state as a primitive,
+  // so it never lies about a down-tier cascade and the heavy composer doesn't
+  // re-render on every unrelated models event (RAM ticks, download progress).
+  const resolvedModelId = useChatStore((s) => s.resolvedModel[conversation.id])
+  const modelReadiness = useModelsStore((s): ModelReadiness | null => {
+    if (resolvedModelId === undefined) return null // conversation view not loaded yet
+    if (resolvedModelId === null) return 'no-model' // nothing installed in any tier
+    return s.overview?.engine.models.find((m) => m.id === resolvedModelId)?.state ?? 'unloaded'
+  })
   const modelReadinessMeta = modelReadiness ? modelReadinessBadge[modelReadiness] : null
   const streamingMessage = streamingId
     ? messages?.find((message) => message.id === streamingId)
@@ -683,7 +671,7 @@ export default function Composer({ conversation }: Props) {
               >
                 <span
                   aria-hidden
-                  className={`h-0.5 w-0.5 rounded-full ${modelReadinessMeta.dot}`}
+                  className={`h-1.5 w-1.5 rounded-full ${modelReadinessMeta.dot}`}
                 />
                 <span className="hidden sm:inline">{modelReadinessMeta.label}</span>
               </span>

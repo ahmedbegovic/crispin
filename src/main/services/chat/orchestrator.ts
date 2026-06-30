@@ -1294,6 +1294,20 @@ export class ChatOrchestrator {
     return this.contextForTier(this.effectiveTier(conversation), this.effectiveFamily(conversation))
   }
 
+  /**
+   * The repo id this conversation would generate with right now — the exact
+   * cascade-aware model the send path resolves (so the composer's status badge
+   * reflects what actually runs, not a single tier/family cell). Null when
+   * nothing is installed in any tier (resolveModel throws).
+   */
+  modelForConversation(conversation: Conversation): string | null {
+    try {
+      return this.resolveModel(this.effectiveTier(conversation), this.effectiveFamily(conversation))
+    } catch {
+      return null
+    }
+  }
+
   /** Requested (tier, family) first, then nearest installed below, then above. */
   private resolveModel(tier: Tier, family?: Family): string {
     return this.deps.modelService.resolveRepoFor(tier, family)

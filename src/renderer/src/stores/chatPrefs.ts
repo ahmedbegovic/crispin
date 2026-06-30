@@ -37,9 +37,11 @@ const WIDTH: Record<ChatWidth, string> = {
   standard: '46rem',
   wide: '54rem'
 }
-const DENSITY: Record<ChatDensity, { pbMsg: string; myPara: string }> = {
-  comfortable: { pbMsg: '1rem', myPara: '0.5rem' },
-  compact: { pbMsg: '0.5rem', myPara: '0.25rem' }
+const DENSITY: Record<ChatDensity, { pbMsg: string; myPara: string; ptTurn: string }> = {
+  // ptTurn = top padding above each user message — the dominant inter-turn gap,
+  // so it carries most of the visible comfortable↔compact difference.
+  comfortable: { pbMsg: '1rem', myPara: '0.5rem', ptTurn: '1.5rem' },
+  compact: { pbMsg: '0.5rem', myPara: '0.25rem', ptTurn: '0.875rem' }
 }
 
 const DEFAULTS: Persisted = {
@@ -49,17 +51,24 @@ const DEFAULTS: Persisted = {
   codeWrap: false
 }
 
+/** Coerce an arbitrary persisted blob into a valid Persisted, defaulting any
+ *  missing/invalid field individually — so an upgrade that adds a key (e.g.
+ *  density) never drops the user's other saved prefs. Pure + exported for tests. */
+export function coercePersisted(raw: unknown): Persisted {
+  const p = (raw && typeof raw === 'object' ? raw : {}) as Partial<Persisted>
+  return {
+    textSize: p.textSize && p.textSize in TEXT_SIZE ? p.textSize : DEFAULTS.textSize,
+    width: p.width && p.width in WIDTH ? p.width : DEFAULTS.width,
+    density: p.density && p.density in DENSITY ? p.density : DEFAULTS.density,
+    codeWrap: typeof p.codeWrap === 'boolean' ? p.codeWrap : DEFAULTS.codeWrap
+  }
+}
+
 function load(): Persisted {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return DEFAULTS
-    const p = JSON.parse(raw) as Partial<Persisted>
-    return {
-      textSize: p.textSize && p.textSize in TEXT_SIZE ? p.textSize : DEFAULTS.textSize,
-      width: p.width && p.width in WIDTH ? p.width : DEFAULTS.width,
-      density: p.density && p.density in DENSITY ? p.density : DEFAULTS.density,
-      codeWrap: typeof p.codeWrap === 'boolean' ? p.codeWrap : DEFAULTS.codeWrap
-    }
+    return coercePersisted(JSON.parse(raw))
   } catch {
     return DEFAULTS
   }
@@ -110,6 +119,7 @@ export function chatPrefsVars(
     '--chat-lh': t.lh,
     '--chat-measure': WIDTH[width],
     '--chat-pb-msg': d.pbMsg,
-    '--chat-my-para': d.myPara
+    '--chat-my-para': d.myPara,
+    '--chat-pt-turn': d.ptTurn
   } as CSSProperties
 }

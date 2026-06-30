@@ -70,6 +70,9 @@ interface ChatStore {
   modelLoad: Record<string, { modelId: string; startedAt: number }>
   /** conversationId -> abort has been requested and chat.done has not landed yet. */
   stopping: Record<string, boolean>
+  /** conversationId -> the repo id main resolved for this conversation (cascade-aware,
+   *  matches what generation runs); null = nothing installed. Drives the status badge. */
+  resolvedModel: Record<string, string | null>
   toolPhases: Record<string, ToolPhaseInfo>
   /** conversationId -> error from the last chat.done; cleared on the next send. */
   lastError: Record<string, string>
@@ -166,7 +169,12 @@ function usageFromMessages(
 function mergeView(
   s: ChatStore,
   conversationId: string,
-  view: { conversation: Conversation; messages: ChatMessage[]; contextLength: number | null }
+  view: {
+    conversation: Conversation
+    messages: ChatMessage[]
+    contextLength: number | null
+    modelId: string | null
+  }
 ): Partial<ChatStore> {
   const entry = usageFromMessages(
     view.messages,
@@ -176,7 +184,8 @@ function mergeView(
   return {
     conversationById: { ...s.conversationById, [conversationId]: view.conversation },
     messagesById: { ...s.messagesById, [conversationId]: view.messages },
-    usage: entry ? { ...usage, [conversationId]: entry } : usage
+    usage: entry ? { ...usage, [conversationId]: entry } : usage,
+    resolvedModel: { ...s.resolvedModel, [conversationId]: view.modelId }
   }
 }
 
@@ -269,6 +278,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   streaming: {},
   modelLoad: {},
   stopping: {},
+  resolvedModel: {},
   toolPhases: {},
   lastError: {},
   lastFailedSend: {},

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import {
   Archive,
   ArchiveRestore,
+  ClipboardCopy,
   Copy,
   Download,
   MoreHorizontal,
@@ -157,7 +158,7 @@ function RowActionsMenu({
         Duplicate
       </button>
       <button role="menuitem" onClick={() => { onClose(); onCopy() }} className={row}>
-        <Copy size={13} className="text-zinc-500" />
+        <ClipboardCopy size={13} className="text-zinc-500" />
         Copy conversation
       </button>
       <button role="menuitem" onClick={() => { onClose(); onExport() }} className={row}>

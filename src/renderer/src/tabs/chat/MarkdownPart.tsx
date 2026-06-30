@@ -88,8 +88,18 @@ const components: Components = {
       {...props}
     />
   ),
-  ul: ({ node: _, ...props }) => <ul className="my-2 list-disc space-y-1 pl-5" {...props} />,
-  ol: ({ node: _, ...props }) => <ol className="my-2 list-decimal space-y-1 pl-5" {...props} />,
+  ul: ({ node: _, ...props }) => (
+    <ul
+      className="[margin-top:var(--chat-my-para,0.5rem)] [margin-bottom:var(--chat-my-para,0.5rem)] list-disc space-y-1 pl-5"
+      {...props}
+    />
+  ),
+  ol: ({ node: _, ...props }) => (
+    <ol
+      className="[margin-top:var(--chat-my-para,0.5rem)] [margin-bottom:var(--chat-my-para,0.5rem)] list-decimal space-y-1 pl-5"
+      {...props}
+    />
+  ),
   li: ({ node: _, ...props }) => <li className="leading-[var(--chat-lh,1.7)]" {...props} />,
   h1: ({ node: _, ...props }) => (
     <h1

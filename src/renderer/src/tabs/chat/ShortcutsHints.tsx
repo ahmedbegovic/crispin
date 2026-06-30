@@ -1,4 +1,4 @@
-import type { RefObject } from 'react'
+import { useRef, type RefObject } from 'react'
 import { useDismissable } from '@/lib/useDismissable'
 
 const SHORTCUTS = [
@@ -17,15 +17,21 @@ interface Props {
 }
 
 export default function ShortcutsHints({ open, onClose, outsideRef }: Props) {
-  useDismissable(open, onClose, { outsideRef })
+  const panelRef = useRef<HTMLDivElement>(null)
+  // Move focus into the panel on open so a screen reader announces the dialog
+  // and its rows (role="dialog" was inert without this); useDismissable restores
+  // focus to the trigger on close. outsideRef stays the wrapper for click-outside.
+  useDismissable(open, onClose, { outsideRef, focusRef: panelRef })
 
   if (!open) return null
 
   return (
     <div
+      ref={panelRef}
       role="dialog"
       aria-label="Keyboard shortcuts"
-      className="pop-in absolute right-0 top-full z-20 mt-1 w-60 origin-top-right rounded-lg border border-zinc-700 bg-zinc-900 p-2 shadow-xl"
+      tabIndex={-1}
+      className="pop-in absolute right-0 top-full z-20 mt-1 w-60 origin-top-right rounded-lg border border-zinc-700 bg-zinc-900 p-2 shadow-xl outline-none"
     >
       <div className="px-1 pb-1.5 text-[10px] font-medium uppercase tracking-[0.06em] text-zinc-500">
         Shortcuts
