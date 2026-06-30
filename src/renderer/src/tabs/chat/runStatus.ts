@@ -19,9 +19,9 @@ export function chatRunPhase(
   message?: MessageWithParts,
   ctx?: ChatRunPhaseContext
 ): ChatRunPhase {
+  if (streamingId === undefined) return 'idle'
   if (ctx?.stopping) return 'stopping'
   if (ctx?.modelLoad) return 'loadingModel'
-  if (streamingId === undefined) return 'idle'
   if (streamingId === '') return 'starting'
   return message && message.parts.length > 0 ? 'generating' : 'waitingFirstToken'
 }

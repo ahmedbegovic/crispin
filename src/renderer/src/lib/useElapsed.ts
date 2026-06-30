@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 export function elapsedSeconds(now: number, startedAt: number | null | undefined): number {
-  if (startedAt == null) {
+  if (startedAt == null || startedAt <= 0) {
     return 0
   }
 
@@ -12,7 +12,7 @@ export function useElapsed(startedAt: number | null | undefined, intervalMs = 10
   const [elapsed, setElapsed] = useState(() => elapsedSeconds(Date.now(), startedAt))
 
   useEffect(() => {
-    if (startedAt == null) {
+    if (startedAt == null || startedAt <= 0) {
       setElapsed(0)
       return
     }

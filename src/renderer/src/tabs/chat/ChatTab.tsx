@@ -48,13 +48,13 @@ export default function ChatTab() {
           Loading…
         </div>
       ) : (
-        <div className="relative flex min-w-0 flex-1 flex-col items-center justify-center gap-3 border-l border-zinc-800/60 bg-[#15151a]">
+        <div className="relative flex min-w-0 flex-1 flex-col items-center justify-center gap-4 border-l border-zinc-800/60 bg-[#15151a]">
           <div className="drag-region absolute inset-x-0 top-0 h-12" />
           <MessageSquare size={32} strokeWidth={1.5} className="text-zinc-700" />
           <div className="text-center">
-            <h2 className="text-[16px] font-medium text-zinc-200">Start a new conversation</h2>
+            <h2 className="text-[15px] font-medium text-zinc-200">Start a conversation</h2>
             <p className="mt-1 max-w-sm text-[12px] text-zinc-600">
-              Choose New chat when you’re ready to talk with a local model.
+              Chat with a local model — attach files, search the web, or query your library.
             </p>
           </div>
           <button

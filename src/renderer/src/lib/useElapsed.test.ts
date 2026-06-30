@@ -12,6 +12,14 @@ describe('elapsedSeconds', () => {
     expect(elapsedSeconds(startedAt, undefined)).toBe(0)
   })
 
+  it('returns 0 when startedAt is 0', () => {
+    expect(elapsedSeconds(startedAt, 0)).toBe(0)
+  })
+
+  it('returns 0 when startedAt is negative', () => {
+    expect(elapsedSeconds(startedAt, -5)).toBe(0)
+  })
+
   it('returns 0 for the same instant', () => {
     expect(elapsedSeconds(startedAt, startedAt)).toBe(0)
   })

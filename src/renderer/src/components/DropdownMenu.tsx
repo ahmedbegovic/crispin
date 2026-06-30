@@ -75,8 +75,8 @@ export default function DropdownMenu({
           ref={menuRef}
           role="menu"
           onKeyDown={onMenuKey}
-          className={`pop-in absolute bottom-full z-40 mb-1 min-w-44 origin-bottom rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-xl ${
-            align === 'right' ? 'right-0' : 'left-0'
+          className={`pop-in absolute bottom-full z-40 mb-1 min-w-44 rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-xl ${
+            align === 'right' ? 'origin-bottom-right right-0' : 'origin-bottom-left left-0'
           }`}
         >
           {items.map((item, i) => (

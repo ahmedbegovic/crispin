@@ -144,11 +144,11 @@ function CompactionDivider({ summary }: { summary: string }) {
 function UserMessage({
   message,
   streaming,
-  isLatest
+  isNew
 }: {
   message: ChatMessage
   streaming: boolean
-  isLatest: boolean
+  isNew: boolean
 }) {
   const editResend = useChatStore((s) => s.editResend)
   const [editing, setEditing] = useState(false)
@@ -191,7 +191,7 @@ function UserMessage({
   }
 
   return (
-    <div className={`group flex flex-col items-end pb-2 pt-6 ${isLatest ? 'msg-in' : ''}`}>
+    <div className={`group flex flex-col items-end pb-2 pt-6 ${isNew ? 'msg-in' : ''}`}>
       {editing ? (
         <div className="w-full max-w-[80%]">
           <textarea
@@ -275,17 +275,17 @@ function AssistantMessage({
   message,
   streaming,
   busy,
-  isLatest
+  isNew
 }: {
   message: ChatMessage
   streaming: boolean
   busy: boolean
-  isLatest: boolean
+  isNew: boolean
 }) {
   const regenerate = useChatStore((s) => s.regenerate)
   const stopped = useChatStore((s) => s.stoppedIds[message.id])
-  const modelLoad = useChatStore((s) => s.modelLoad)
-  const stopping = useChatStore((s) => s.stopping)
+  const activeModelLoad = useChatStore((s) => s.modelLoad[message.conversationId])
+  const isStopping = useChatStore((s) => s.stopping[message.conversationId])
   const [copied, setCopied] = useState(false)
 
   // Stable [n] → source map for inline citations; empty until the sources part
@@ -366,15 +366,15 @@ function AssistantMessage({
     processParts.some((x) => x.part.type !== 'thought' || x.part.text.trim().length > 0) ||
     (streaming && processParts.length > 0)
   const runPhase = chatRunPhase(streaming ? message.id : undefined, message, {
-    modelLoad: !!modelLoad[message.conversationId],
-    stopping: !!stopping[message.conversationId]
+    modelLoad: !!activeModelLoad,
+    stopping: !!isStopping
   })
 
   return (
     // Reserved left indent (pl-4 always present, so settling the stream never
     // shifts content). No coloured spine — liveness is shown by the activity
     // narrative and the caret, not a green bar down the message.
-    <div className={`group border-l-2 border-transparent pb-4 pl-4 pt-1 ${isLatest ? 'msg-in' : ''}`}>
+    <div className={`group border-l-2 border-transparent pb-4 pl-4 pt-1 ${isNew ? 'msg-in' : ''}`}>
       {(runPhase === 'waitingFirstToken' || runPhase === 'loadingModel' || runPhase === 'stopping') && (
         <div className="flex items-center gap-2 py-1 text-[12px] text-zinc-500">
           <Loader2 size={13} className="animate-spin" />
@@ -487,13 +487,13 @@ interface Props {
   streaming: boolean
   /** True while any generation runs in this conversation (gates branching/edit). */
   busy: boolean
-  /** True for the active tail row; avoids re-animating older virtualized rows. */
-  isLatest: boolean
+  /** True only for messages that arrived after the thread mounted. */
+  isNew: boolean
 }
 
-export default function MessageBubble({ message, streaming, busy, isLatest }: Props) {
-  if (message.role === 'user') return <UserMessage message={message} streaming={busy} isLatest={isLatest} />
+export default function MessageBubble({ message, streaming, busy, isNew }: Props) {
+  if (message.role === 'user') return <UserMessage message={message} streaming={busy} isNew={isNew} />
   if (message.role === 'assistant')
-    return <AssistantMessage message={message} streaming={streaming} busy={busy} isLatest={isLatest} />
+    return <AssistantMessage message={message} streaming={streaming} busy={busy} isNew={isNew} />
   return null // system/tool rows are folded into assistant parts
 }

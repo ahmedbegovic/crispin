@@ -137,7 +137,7 @@ function Panel({ conversation }: { conversation: Conversation }) {
     <div
       role="dialog"
       aria-label="Conversation settings"
-      className="absolute right-0 top-full z-20 mt-1 w-72 rounded-lg border border-zinc-700 bg-zinc-900 p-2.5 shadow-xl"
+      className="pop-in absolute right-0 top-full z-20 mt-1 w-72 origin-top-right rounded-lg border border-zinc-700 bg-zinc-900 p-2.5 shadow-xl"
     >
       <label
         htmlFor={sysId}
@@ -242,7 +242,7 @@ export default function ConversationSettings({
         aria-label="Conversation settings"
         aria-haspopup="dialog"
         aria-expanded={open}
-        className={`rounded-md p-1.5 transition-colors ${
+        className={`press rounded-md p-1.5 transition-colors ${
           open ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
         }`}
       >

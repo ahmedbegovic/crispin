@@ -67,11 +67,11 @@ async function* answerStream() {
   }
 }
 
-function harness(isResident: boolean) {
+function harness(isResident: boolean, ensureLoaded: () => Promise<void> = async () => {}) {
   const broadcast = vi.fn<(event: CrispinEvent) => void>()
   const modelService = {
     isResident: vi.fn(() => isResident),
-    ensureLoaded: vi.fn(async () => {}),
+    ensureLoaded: vi.fn(ensureLoaded),
     contextLengthFor: vi.fn(() => 131072),
     samplingFor: vi.fn(() => null),
     refreshEngineModels: vi.fn(async () => {}),
@@ -116,7 +116,10 @@ function harness(isResident: boolean) {
   return { orchestrator: new ChatOrchestrator(deps), broadcast, modelService }
 }
 
-async function runGeneration(orchestrator: ChatOrchestrator): Promise<void> {
+async function runGeneration(
+  orchestrator: ChatOrchestrator,
+  controller = new AbortController()
+): Promise<void> {
   await (
     orchestrator as unknown as {
       run(ctx: {
@@ -132,7 +135,7 @@ async function runGeneration(orchestrator: ChatOrchestrator): Promise<void> {
     assistantMessageId: 'assistant-1',
     modelId: MODEL_ID,
     family: 'qwen',
-    controller: new AbortController()
+    controller
   })
 }
 
@@ -176,5 +179,38 @@ describe('ChatOrchestrator model load events', () => {
     expect(modelService.isResident).toHaveBeenCalledWith(MODEL_ID)
     expect(modelService.ensureLoaded).toHaveBeenCalledWith(MODEL_ID)
     expect(modelLoadEvents(broadcast)).toEqual([])
+  })
+
+  it('does not broadcast ready when aborted during a cold model load', async () => {
+    const neverLoads = new Promise<void>(() => {})
+    const { orchestrator, broadcast, modelService } = harness(false, () => neverLoads)
+    const controller = new AbortController()
+
+    const generation = runGeneration(orchestrator, controller)
+
+    expect(modelLoadEvents(broadcast)).toEqual([
+      {
+        type: 'chat.modelLoad',
+        conversationId: conversation.id,
+        messageId: 'assistant-1',
+        modelId: MODEL_ID,
+        phase: 'loading'
+      }
+    ])
+
+    controller.abort()
+    await generation
+
+    expect(modelService.ensureLoaded).toHaveBeenCalledWith(MODEL_ID)
+    expect(modelLoadEvents(broadcast)).toEqual([
+      {
+        type: 'chat.modelLoad',
+        conversationId: conversation.id,
+        messageId: 'assistant-1',
+        modelId: MODEL_ID,
+        phase: 'loading'
+      }
+    ])
+    expect(modelLoadEvents(broadcast).filter((event) => event.phase === 'ready')).toHaveLength(0)
   })
 })

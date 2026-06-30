@@ -48,7 +48,7 @@ const MANAGE_SENTINEL = '__manage__'
 const selectClass =
   'w-full rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:text-zinc-200 focus:border-zinc-600'
 const barSelectClass =
-  'rounded-md border border-zinc-800/70 bg-zinc-950/40 px-1.5 py-1 text-[11px] text-zinc-500 outline-none hover:border-zinc-700 hover:text-zinc-300 focus:border-emerald-500/70 focus:text-zinc-200'
+  'rounded-md border border-zinc-800 bg-zinc-900/70 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:border-zinc-700 hover:text-zinc-300 focus:border-emerald-500/70 focus:text-zinc-200'
 // One row per tool in the context popover — same height, same hit area.
 const popoverRow =
   'flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-[12px] text-zinc-300 hover:bg-zinc-800/80'
@@ -295,7 +295,7 @@ export default function Composer({ conversation }: Props) {
           }`}
         >
           {showSlash && (
-            <div className="absolute bottom-full left-2 z-20 mb-1 min-w-60 rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-xl">
+            <div className="pop-in absolute bottom-full left-2 z-20 mb-1 min-w-60 origin-bottom-left rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-xl">
               {slashCommands.map((c, i) => (
                 <button
                   key={c.name}
@@ -450,7 +450,7 @@ export default function Composer({ conversation }: Props) {
                 <div
                   role="dialog"
                   aria-label="Tools and context"
-                  className="absolute bottom-full left-0 z-20 mb-1 w-60 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl"
+                  className="pop-in absolute bottom-full left-0 z-20 mb-1 w-60 origin-bottom-left rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl"
                 >
                   {/* Web search — the persistent, per-conversation toggle. */}
                   <button
@@ -616,14 +616,14 @@ export default function Composer({ conversation }: Props) {
               {usage && <ContextDonut used={usage.used} contextLength={usage.contextLength} />}
               {streaming ? (
                 <>
-                  <span className="hidden min-w-0 max-w-36 items-center gap-1.5 text-[11px] text-zinc-500 md:flex">
+                  <span className="flex min-w-0 max-w-36 items-center gap-1.5 text-[11px] text-zinc-500">
                     <Loader2 size={12} className="shrink-0 animate-spin" />
                     <span className="truncate">{footerStatusText}</span>
                   </span>
                   <button
                     onClick={() => void abort(conversation.id).catch(toastError)}
                     title={stopButtonLabel}
-                    aria-label={stopButtonLabel}
+                    aria-label="Stop generating"
                     className="press rounded-lg bg-red-600/90 p-2 text-white hover:bg-red-500"
                   >
                     <Square size={13} />

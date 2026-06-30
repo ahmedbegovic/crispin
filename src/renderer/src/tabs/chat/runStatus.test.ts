@@ -6,6 +6,18 @@ describe('chatRunPhase', () => {
     expect(chatRunPhase(undefined)).toBe('idle')
   })
 
+  it('does not apply conversation context to non-streaming rows', () => {
+    expect(chatRunPhase(undefined, { parts: [] }, { modelLoad: true })).toBe('idle')
+    expect(chatRunPhase(undefined, { parts: [] }, { stopping: true })).toBe('idle')
+  })
+
+  it('applies conversation context to the active streaming row', () => {
+    expect(chatRunPhase('a', { parts: [] }, { modelLoad: true })).toBe('loadingModel')
+    expect(chatRunPhase('a', { parts: [{ type: 'text', text: 'x' }] }, { stopping: true })).toBe(
+      'stopping'
+    )
+  })
+
   it('returns starting before chat.send resolves the assistant id', () => {
     expect(chatRunPhase('')).toBe('starting')
     expect(chatRunPhaseLabel('starting')).toBe('Starting local run…')

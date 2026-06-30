@@ -548,8 +548,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const message = err instanceof Error ? err.message : String(err)
       set((s) => {
         const { [conversationId]: _, ...streaming } = s.streaming
+        const { [conversationId]: _stopping, ...stopping } = s.stopping
         return {
           streaming,
+          stopping,
           lastError: { ...s.lastError, [conversationId]: message },
           lastFailedSend: {
             ...s.lastFailedSend,
@@ -574,7 +576,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       set((s) => ({ stopping: { ...s.stopping, [conversationId]: true } }))
     }
     try {
-      await call('chat.abort', { conversationId })
+      const result = await call('chat.abort', { conversationId })
+      if (hadActiveStream && !result.ok) {
+        set((s) => {
+          const { [conversationId]: _stopping, ...stopping } = s.stopping
+          return { stopping }
+        })
+      }
     } catch (err) {
       if (hadActiveStream) {
         set((s) => {
@@ -636,7 +644,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     } catch (err) {
       set((s) => {
         const { [conversationId]: _, ...streaming } = s.streaming
-        return { streaming }
+        const { [conversationId]: _stopping, ...stopping } = s.stopping
+        return { streaming, stopping }
       })
       throw err
     }
@@ -718,7 +727,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     } catch (err) {
       set((s) => {
         const { [conversationId]: _, ...streaming } = s.streaming
-        return { streaming }
+        const { [conversationId]: _stopping, ...stopping } = s.stopping
+        return { streaming, stopping }
       })
       throw err
     }
