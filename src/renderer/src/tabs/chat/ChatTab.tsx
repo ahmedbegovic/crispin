@@ -22,6 +22,7 @@ export default function ChatTab() {
   const create = useChatStore((s) => s.create)
   const textSize = useChatPrefs((s) => s.textSize)
   const width = useChatPrefs((s) => s.width)
+  const density = useChatPrefs((s) => s.density)
 
   useEffect(() => {
     void init().catch(toastError)
@@ -30,9 +31,9 @@ export default function ChatTab() {
   }, [init, initLibrary, initMcp])
 
   return (
-    // --chat-fs / --chat-lh / --chat-measure cascade to the thread + composer;
+    // --chat-fs / --chat-lh / --chat-measure / density vars cascade to the thread + composer;
     // reading the prefs here means the memoized MarkdownPart never re-renders.
-    <div className="flex h-full" style={chatPrefsVars(textSize, width)}>
+    <div className="flex h-full" style={chatPrefsVars(textSize, width, density)}>
       <ConversationSidebar />
       {/* ThreadHeader is the draggable titlebar band for an open conversation;
           the no-conversation / loading states keep their own absolute strip. */}

@@ -20,7 +20,15 @@ import {
   TIER_LABELS,
   TIER_ORDER
 } from '@shared/model-tiers'
-import type { AttachmentInput, Conversation, Family, SkillMeta, Tier } from '@shared/types'
+import type {
+  AttachmentInput,
+  Conversation,
+  EngineModelState,
+  Family,
+  ModelsOverview,
+  SkillMeta,
+  Tier
+} from '@shared/types'
 import { call } from '@/lib/ipc'
 import { useAutosizeTextarea } from '@/lib/useAutosizeTextarea'
 import { useDismissable } from '@/lib/useDismissable'
@@ -73,6 +81,49 @@ function stripModelSuffixes(modelId: string): string {
   return name
 }
 
+type ModelReadiness = EngineModelState | 'no-model'
+
+function getModelState(
+  overview: ModelsOverview,
+  conversation: Pick<Conversation, 'defaultTier' | 'family' | 'tierPinned'>
+): ModelReadiness {
+  const effectiveTier = conversation.tierPinned ? conversation.defaultTier : overview.defaults.chat
+  const effectiveFamily = conversation.family
+  const tierRes = overview.tiers.find((t) => t.tier === effectiveTier)
+  if (!tierRes) return 'no-model'
+
+  const candidate = effectiveFamily
+    ? tierRes.candidates.find((c) => c.family === effectiveFamily && c.installed)
+    : tierRes.candidates.find((c) => c.repoId === tierRes.active)
+  const repoId = effectiveFamily ? (candidate?.repoId ?? null) : tierRes.active
+
+  if (!repoId || !candidate?.installed) return 'no-model'
+  return overview.engine.models.find((m) => m.id === repoId)?.state ?? 'unloaded'
+}
+
+const modelReadinessBadge: Record<ModelReadiness, { label: string; title: string; dot: string }> = {
+  'no-model': {
+    label: 'No model',
+    title: 'No model installed for this tier',
+    dot: 'bg-red-500'
+  },
+  loaded: {
+    label: 'Ready',
+    title: 'Ready',
+    dot: 'bg-emerald-500'
+  },
+  loading: {
+    label: 'Loading',
+    title: 'Loading',
+    dot: 'animate-pulse bg-amber-400'
+  },
+  unloaded: {
+    label: 'Idle',
+    title: 'Installed but not loaded',
+    dot: 'bg-zinc-500'
+  }
+}
+
 interface Props {
   conversation: Conversation
 }
@@ -90,8 +141,11 @@ export default function Composer({ conversation }: Props) {
   const usage = useChatStore((s) => s.usage[conversation.id])
   const collections = useLibraryStore((s) => s.collections)
   const mcpEnabled = useMcpStore((s) => s.servers.filter((srv) => srv.enabled).length)
+  const modelsOverview = useModelsStore((s) => s.overview)
   const chatDefaultTier =
-    useModelsStore((s) => s.overview?.defaults.chat) ?? FEATURE_DEFAULTS.chat
+    modelsOverview?.defaults.chat ?? FEATURE_DEFAULTS.chat
+  const modelReadiness = modelsOverview ? getModelState(modelsOverview, conversation) : null
+  const modelReadinessMeta = modelReadiness ? modelReadinessBadge[modelReadiness] : null
   const streamingMessage = streamingId
     ? messages?.find((message) => message.id === streamingId)
     : undefined
@@ -620,6 +674,20 @@ export default function Composer({ conversation }: Props) {
                 </option>
               ))}
             </select>
+
+            {modelReadinessMeta && (
+              <span
+                title={modelReadinessMeta.title}
+                aria-label={`Model status: ${modelReadinessMeta.label}`}
+                className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-500"
+              >
+                <span
+                  aria-hidden
+                  className={`h-0.5 w-0.5 rounded-full ${modelReadinessMeta.dot}`}
+                />
+                <span className="hidden sm:inline">{modelReadinessMeta.label}</span>
+              </span>
+            )}
 
             <div className="ml-auto flex items-center gap-2">
               {usage && <ContextDonut used={usage.used} contextLength={usage.contextLength} />}

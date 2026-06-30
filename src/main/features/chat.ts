@@ -141,6 +141,11 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
     return { path }
   })
 
+  handle('chat.exportMarkdown', ({ conversationId }) => {
+    const { conversation, messages } = repo.view(conversationId)
+    return { markdown: conversationMarkdown(conversation, messages) }
+  })
+
   handle('chat.savePastedFile', ({ name, mime, dataBase64 }) => {
     const dir = join(dataDir(), 'attachments')
     mkdirSync(dir, { recursive: true })

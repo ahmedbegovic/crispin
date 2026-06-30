@@ -374,7 +374,11 @@ function AssistantMessage({
     // Reserved left indent (pl-4 always present, so settling the stream never
     // shifts content). No coloured spine — liveness is shown by the activity
     // narrative and the caret, not a green bar down the message.
-    <div className={`group border-l-2 border-transparent pb-4 pl-4 pt-1 ${isNew ? 'msg-in' : ''}`}>
+    <div
+      className={`group border-l-2 border-transparent pb-[var(--chat-pb-msg,1rem)] pl-4 pt-1 ${
+        isNew ? 'msg-in' : ''
+      }`}
+    >
       {(runPhase === 'waitingFirstToken' || runPhase === 'loadingModel' || runPhase === 'stopping') && (
         <div className="flex items-center gap-2 py-1 text-[12px] text-zinc-500">
           <Loader2 size={13} className="animate-spin" />

@@ -89,6 +89,7 @@ interface RowMenuState {
 }
 
 const MENU_W = 176
+const MENU_H = 196
 
 /**
  * A conversation's row actions (pin / export / archive / delete), opened by the
@@ -102,6 +103,7 @@ function RowActionsMenu({
   onClose,
   onPin,
   onDuplicate,
+  onCopy,
   onExport,
   onArchive,
   onDelete
@@ -109,6 +111,7 @@ function RowActionsMenu({
   onClose: () => void
   onPin: () => void
   onDuplicate: () => void
+  onCopy: () => void
   onExport: () => void
   onArchive: () => void
   onDelete: () => void
@@ -130,7 +133,7 @@ function RowActionsMenu({
   }, [onClose])
 
   const left = Math.max(8, Math.min(x, window.innerWidth - MENU_W - 8))
-  const top = Math.max(8, Math.min(y, window.innerHeight - 168))
+  const top = Math.max(8, Math.min(y, window.innerHeight - MENU_H))
   const row =
     'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] text-zinc-300 hover:bg-zinc-800'
 
@@ -152,6 +155,10 @@ function RowActionsMenu({
       <button role="menuitem" onClick={() => { onClose(); onDuplicate() }} className={row}>
         <Copy size={13} className="text-zinc-500" />
         Duplicate
+      </button>
+      <button role="menuitem" onClick={() => { onClose(); onCopy() }} className={row}>
+        <Copy size={13} className="text-zinc-500" />
+        Copy conversation
       </button>
       <button role="menuitem" onClick={() => { onClose(); onExport() }} className={row}>
         <Download size={13} className="text-zinc-500" />
@@ -222,6 +229,15 @@ export default function ConversationSidebar(): React.JSX.Element {
   const exportChat = (id: string): void => {
     void call('chat.export', { conversationId: id })
       .then((r) => pushToast('info', `Exported to ${r.path}`))
+      .catch(toastError)
+  }
+
+  const copyChat = (id: string): void => {
+    void call('chat.exportMarkdown', { conversationId: id })
+      .then(async ({ markdown }) => {
+        await navigator.clipboard.writeText(markdown)
+        pushToast('info', 'Conversation copied')
+      })
       .catch(toastError)
   }
 
@@ -425,6 +441,7 @@ export default function ConversationSidebar(): React.JSX.Element {
             void update(menu.conversation.id, { pinned: !menu.conversation.pinned }).catch(toastError)
           }
           onDuplicate={() => void duplicate(menu.conversation.id).catch(toastError)}
+          onCopy={() => copyChat(menu.conversation.id)}
           onExport={() => exportChat(menu.conversation.id)}
           onArchive={() =>
             void update(menu.conversation.id, { archived: !menu.conversation.archived }).catch(

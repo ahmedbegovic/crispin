@@ -83,7 +83,10 @@ const components: Components = {
   // Prose leading follows the reading-density preference (--chat-lh); set it here
   // because these per-element line-heights would otherwise override the wrapper's.
   p: ({ node: _, ...props }) => (
-    <p className="my-2 leading-[var(--chat-lh,1.7)] first:mt-0 last:mb-0" {...props} />
+    <p
+      className="[margin-top:var(--chat-my-para,0.5rem)] [margin-bottom:var(--chat-my-para,0.5rem)] leading-[var(--chat-lh,1.7)] first:mt-0 last:mb-0"
+      {...props}
+    />
   ),
   ul: ({ node: _, ...props }) => <ul className="my-2 list-disc space-y-1 pl-5" {...props} />,
   ol: ({ node: _, ...props }) => <ol className="my-2 list-decimal space-y-1 pl-5" {...props} />,

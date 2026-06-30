@@ -705,6 +705,11 @@ export const contract = {
     input: z.object({ conversationId: z.string() }),
     output: z.object({ path: z.string() })
   },
+  'chat.exportMarkdown': {
+    /** Render the conversation's active path to Markdown without writing a file. */
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({ markdown: z.string() })
+  },
   'chat.savePastedFile': {
     /** Persist a pasted clipboard blob (e.g. a screenshot) to a temp file for attachment. */
     input: z.object({ name: z.string(), mime: z.string(), dataBase64: z.string() }),
