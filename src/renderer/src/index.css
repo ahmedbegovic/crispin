@@ -2,6 +2,12 @@
 
 :root {
   color-scheme: dark;
+  /* Reuse chat motion/surface values without scattering literals. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --surface-rail: #0a0a0c;
+  --surface-sidebar: #0f0f12;
+  --surface-thread: #15151a;
+  --surface-user-bubble: #26262c;
 }
 
 html,
@@ -63,6 +69,26 @@ body {
 .caret-blink {
   animation: caret-blink 1s step-end infinite;
 }
+
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* press: subtle scale-down feedback on click */
+.press { transition: transform 120ms var(--ease-out); }
+.press:active { transform: scale(0.97); }
+
+/* pop-in: caller is expected to set transform-origin for origin-aware popovers */
+.pop-in { animation: pop-in 150ms var(--ease-out); }
+
+/* msg-in: new message slide-fade */
+.msg-in { animation: msg-in 180ms var(--ease-out); }
 
 .drag-region {
   -webkit-app-region: drag;

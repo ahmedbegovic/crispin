@@ -578,6 +578,16 @@ export class ChatOrchestrator {
       // A cold load can take minutes and is not itself cancellable (the warm
       // request counts toward inflight and may as well finish in the
       // background) — but Stop must release THIS run immediately.
+      const wasResident = this.deps.modelService.isResident(modelId)
+      if (!wasResident) {
+        this.deps.broadcast({
+          type: 'chat.modelLoad',
+          conversationId,
+          messageId: assistantMessageId,
+          modelId,
+          phase: 'loading'
+        })
+      }
       const loading = this.ensureModelLoaded(modelId)
       loading.catch(() => {}) // abandoned on abort — never an unhandled rejection
       await Promise.race([
@@ -589,6 +599,17 @@ export class ChatOrchestrator {
         })
       ])
       if (controller.signal.aborted) throw new Error('aborted')
+      if (!wasResident) {
+        this.deps.broadcast({
+          type: 'chat.modelLoad',
+          conversationId,
+          messageId: assistantMessageId,
+          modelId,
+          phase: 'ready'
+        })
+      }
+      // On load failure or abort, chat.done is the renderer's clear signal; no
+      // ready event is emitted from those paths.
 
       const conversation = this.deps.repo.getConversation(conversationId)
       // Chat sees only explicitly opted-in skills — coding packs symlinked for

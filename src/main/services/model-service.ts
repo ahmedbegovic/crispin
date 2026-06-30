@@ -960,12 +960,16 @@ export class ModelService {
   /** Pre-warm with swap semantics; no-op when already resident. The single
    *  shared implementation behind chat/agent/research prompts. */
   async ensureLoaded(repoId: string): Promise<void> {
-    const resident =
-      this.engineProcessRunning() &&
-      this.engineModels.some((m) => m.id === repoId && m.state === 'loaded')
-    if (resident) return
+    if (this.isResident(repoId)) return
     const res = await this.load(repoId)
     if (!res.ok) throw new Error(res.reason ?? `could not load ${repoId}`)
+  }
+
+  isResident(repoId: string): boolean {
+    return (
+      this.engineProcessRunning() &&
+      this.engineModels.some((m) => m.id === repoId && m.state === 'loaded')
+    )
   }
 
   /**

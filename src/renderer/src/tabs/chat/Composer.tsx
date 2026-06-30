@@ -24,6 +24,7 @@ import type { AttachmentInput, Conversation, Family, SkillMeta, Tier } from '@sh
 import { call } from '@/lib/ipc'
 import { useAutosizeTextarea } from '@/lib/useAutosizeTextarea'
 import { useDismissable } from '@/lib/useDismissable'
+import { useElapsed } from '@/lib/useElapsed'
 import { useChatStore } from '@/stores/chat'
 import { usePaletteStore } from '@/stores/palette'
 import { useLibraryStore } from '@/stores/library'
@@ -47,7 +48,7 @@ const MANAGE_SENTINEL = '__manage__'
 const selectClass =
   'w-full rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:text-zinc-200 focus:border-zinc-600'
 const barSelectClass =
-  'rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-400 outline-none hover:text-zinc-200 focus:border-emerald-500/70'
+  'rounded-md border border-zinc-800/70 bg-zinc-950/40 px-1.5 py-1 text-[11px] text-zinc-500 outline-none hover:border-zinc-700 hover:text-zinc-300 focus:border-emerald-500/70 focus:text-zinc-200'
 // One row per tool in the context popover — same height, same hit area.
 const popoverRow =
   'flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-[12px] text-zinc-300 hover:bg-zinc-800/80'
@@ -74,6 +75,8 @@ export default function Composer({ conversation }: Props) {
   const create = useChatStore((s) => s.create)
   const setDraft = useChatStore((s) => s.setDraft)
   const streamingId = useChatStore((s) => s.streaming[conversation.id])
+  const modelLoad = useChatStore((s) => s.modelLoad[conversation.id])
+  const stopping = useChatStore((s) => s.stopping[conversation.id])
   const messages = useChatStore((s) => s.messagesById[conversation.id])
   const usage = useChatStore((s) => s.usage[conversation.id])
   const collections = useLibraryStore((s) => s.collections)
@@ -83,8 +86,12 @@ export default function Composer({ conversation }: Props) {
   const streamingMessage = streamingId
     ? messages?.find((message) => message.id === streamingId)
     : undefined
-  const runPhase = chatRunPhase(streamingId, streamingMessage)
+  const runPhase = chatRunPhase(streamingId, streamingMessage, {
+    modelLoad: !!modelLoad,
+    stopping: !!stopping
+  })
   const streaming = runPhase !== 'idle'
+  const loadingModelElapsed = useElapsed(modelLoad?.startedAt ?? null)
 
   // Seed from the saved draft (Composer is keyed per conversation, so this runs
   // once per conversation mount). setDraftText keeps local state + the persisted
@@ -106,8 +113,40 @@ export default function Composer({ conversation }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const contextRef = useRef<HTMLDivElement>(null)
+  const waitingFirstTokenStartedAtRef = useRef<number | null>(null)
+  const [waitingFirstTokenStartedAt, setWaitingFirstTokenStartedAt] = useState<number | null>(null)
+  const waitingFirstTokenElapsed = useElapsed(waitingFirstTokenStartedAt)
+  const loadingModelShortName = modelLoad?.modelId.split('/').pop() || modelLoad?.modelId || 'model'
+  const footerStatusText =
+    runPhase === 'loadingModel'
+      ? `Loading ${loadingModelShortName} · ${loadingModelElapsed}s`
+      : runPhase === 'stopping'
+        ? 'Stopping…'
+        : runPhase === 'waitingFirstToken' && waitingFirstTokenElapsed >= 25
+          ? 'Still working — local generation can be slow.'
+          : chatRunPhaseLabel(runPhase)
+  const stopButtonLabel =
+    runPhase === 'loadingModel'
+      ? 'Model is loading — it finishes in the background'
+      : 'Stop generating'
   // Context/tools popover: Escape / click-outside dismiss like every other overlay.
   useDismissable(contextOpen, () => setContextOpen(false), { outsideRef: contextRef })
+
+  useEffect(() => {
+    if (runPhase === 'waitingFirstToken') {
+      if (waitingFirstTokenStartedAtRef.current == null) {
+        const startedAt = Date.now()
+        waitingFirstTokenStartedAtRef.current = startedAt
+        setWaitingFirstTokenStartedAt(startedAt)
+      }
+      return
+    }
+
+    if (waitingFirstTokenStartedAtRef.current != null) {
+      waitingFirstTokenStartedAtRef.current = null
+      setWaitingFirstTokenStartedAt(null)
+    }
+  }, [runPhase])
 
   useEffect(() => {
     // Chat only sees opted-in skills — the badge must match what the model
@@ -369,7 +408,7 @@ export default function Composer({ conversation }: Props) {
             className="block max-h-44 w-full resize-none bg-transparent px-3.5 py-3 text-[13px] leading-relaxed text-zinc-200 outline-none placeholder:text-zinc-600"
           />
 
-          <div className="mt-1 flex items-center gap-1.5 border-t border-zinc-800/50 px-2.5 pb-2.5 pt-2">
+          <div className="mt-1 flex items-center gap-2 border-t border-zinc-800/50 px-2.5 pb-2.5 pt-2">
             <input
               ref={fileRef}
               type="file"
@@ -389,12 +428,12 @@ export default function Composer({ conversation }: Props) {
                 aria-label="Tools and context"
                 aria-haspopup="dialog"
                 aria-expanded={contextOpen}
-                className={`relative rounded-md border p-1.5 ${
+                className={`press relative rounded-md border p-1.5 ${
                   contextActive
-                    ? 'border-emerald-600/40 bg-emerald-500/10 text-emerald-300'
+                    ? 'border-emerald-600/35 bg-emerald-500/10 text-emerald-300'
                     : contextOpen
-                      ? 'border-zinc-700 bg-zinc-800 text-zinc-200'
-                      : 'border-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+                      ? 'border-zinc-700 bg-zinc-800 text-zinc-300'
+                      : 'border-transparent text-zinc-600 hover:bg-zinc-800/80 hover:text-zinc-300'
                 }`}
               >
                 <SlidersHorizontal size={14} />
@@ -579,13 +618,13 @@ export default function Composer({ conversation }: Props) {
                 <>
                   <span className="hidden min-w-0 max-w-36 items-center gap-1.5 text-[11px] text-zinc-500 md:flex">
                     <Loader2 size={12} className="shrink-0 animate-spin" />
-                    <span className="truncate">{chatRunPhaseLabel(runPhase)}</span>
+                    <span className="truncate">{footerStatusText}</span>
                   </span>
                   <button
                     onClick={() => void abort(conversation.id).catch(toastError)}
-                    title="Stop generating"
-                    aria-label="Stop generating"
-                    className="rounded-lg bg-red-600/90 p-2 text-white hover:bg-red-500"
+                    title={stopButtonLabel}
+                    aria-label={stopButtonLabel}
+                    className="press rounded-lg bg-red-600/90 p-2 text-white hover:bg-red-500"
                   >
                     <Square size={13} />
                   </button>
@@ -596,7 +635,7 @@ export default function Composer({ conversation }: Props) {
                   disabled={pendingPastes > 0 || (!text.trim() && attachments.length === 0)}
                   title="Send"
                   aria-label="Send message"
-                  className="rounded-lg bg-emerald-600 p-2 text-white enabled:shadow-[0_0_0_1px_rgba(16,185,129,0.25)] enabled:hover:bg-emerald-500 disabled:opacity-40"
+                  className="press rounded-lg bg-emerald-600 p-2 text-white enabled:shadow-[0_0_0_1px_rgba(16,185,129,0.25)] enabled:hover:bg-emerald-500 disabled:opacity-40"
                 >
                   <SendHorizontal size={13} />
                 </button>

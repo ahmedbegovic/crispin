@@ -34,7 +34,7 @@ function CompactButton({ conversationId }: { conversationId: string }) {
         disabled={pending || streaming}
         title="Compact conversation"
         aria-label="Compact conversation"
-        className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
+        className="press rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
       >
         {pending ? <Loader2 size={14} className="animate-spin" /> : <Shrink size={14} />}
       </button>
@@ -87,7 +87,7 @@ function SummaryMenu({ conversationId }: { conversationId: string }) {
         disabled={streaming}
         title="Summarize conversation"
         aria-label="Summarize conversation"
-        className={`rounded-md p-1.5 transition-colors disabled:opacity-40 ${
+        className={`press rounded-md p-1.5 transition-colors disabled:opacity-40 ${
           open ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
         }`}
       >
@@ -97,7 +97,7 @@ function SummaryMenu({ conversationId }: { conversationId: string }) {
         <div
           role="dialog"
           aria-label="Conversation summary"
-          className="absolute right-0 top-full z-20 mt-1 w-80 rounded-lg border border-zinc-700 bg-zinc-900 p-3 shadow-xl"
+          className="pop-in absolute right-0 top-full z-20 mt-1 w-80 origin-top-right rounded-lg border border-zinc-700 bg-zinc-900 p-3 shadow-xl"
         >
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-[10px] font-medium uppercase tracking-[0.06em] text-zinc-500">
@@ -184,7 +184,7 @@ function DisplayMenu() {
         aria-label="Display settings"
         aria-haspopup="dialog"
         aria-expanded={open}
-        className={`rounded-md p-1.5 transition-colors ${
+        className={`press rounded-md p-1.5 transition-colors ${
           open ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
         }`}
       >
@@ -194,7 +194,7 @@ function DisplayMenu() {
         <div
           role="dialog"
           aria-label="Display settings"
-          className="absolute right-0 top-full z-20 mt-1 w-56 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl"
+          className="pop-in absolute right-0 top-full z-20 mt-1 w-56 origin-top-right rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl"
         >
           <Segmented<ChatTextSize>
             label="Text size"
@@ -319,7 +319,7 @@ export default function ThreadHeader({ conversation, findOpen, onToggleFind }: P
             onClick={startEdit}
             title="Rename conversation"
             aria-label="Rename conversation"
-            className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+            className="press rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
           >
             <Pencil size={14} />
           </button>
@@ -329,7 +329,7 @@ export default function ThreadHeader({ conversation, findOpen, onToggleFind }: P
           title="Find in conversation"
           aria-label="Find in conversation"
           aria-pressed={findOpen}
-          className={`rounded-md p-1.5 transition-colors ${
+          className={`press rounded-md p-1.5 transition-colors ${
             findOpen ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
           }`}
         >

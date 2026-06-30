@@ -1278,6 +1278,13 @@ export const crispinEventSchema = z.discriminatedUnion('type', [
     detail: z.string().optional()
   }),
   z.object({
+    type: z.literal('chat.modelLoad'),
+    conversationId: z.string(),
+    messageId: z.string(),
+    modelId: z.string(),
+    phase: z.enum(['loading', 'ready'])
+  }),
+  z.object({
     type: z.literal('chat.done'),
     conversationId: z.string(),
     messageId: z.string(),
