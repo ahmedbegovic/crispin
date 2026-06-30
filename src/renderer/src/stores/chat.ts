@@ -66,6 +66,13 @@ interface ChatStore {
   messagesById: Record<string, ChatMessage[]>
   /** conversationId -> streaming assistant message id ('' until chat.send resolves). */
   streaming: Record<string, string>
+  /** conversationId -> model cold-load state while the model becomes resident. */
+  modelLoad: Record<string, { modelId: string; startedAt: number }>
+  /** conversationId -> abort has been requested and chat.done has not landed yet. */
+  stopping: Record<string, boolean>
+  /** conversationId -> the repo id main resolved for this conversation (cascade-aware,
+   *  matches what generation runs); null = nothing installed. Drives the status badge. */
+  resolvedModel: Record<string, string | null>
   toolPhases: Record<string, ToolPhaseInfo>
   /** conversationId -> error from the last chat.done; cleared on the next send. */
   lastError: Record<string, string>
@@ -162,7 +169,12 @@ function usageFromMessages(
 function mergeView(
   s: ChatStore,
   conversationId: string,
-  view: { conversation: Conversation; messages: ChatMessage[]; contextLength: number | null }
+  view: {
+    conversation: Conversation
+    messages: ChatMessage[]
+    contextLength: number | null
+    modelId: string | null
+  }
 ): Partial<ChatStore> {
   const entry = usageFromMessages(
     view.messages,
@@ -172,7 +184,8 @@ function mergeView(
   return {
     conversationById: { ...s.conversationById, [conversationId]: view.conversation },
     messagesById: { ...s.messagesById, [conversationId]: view.messages },
-    usage: entry ? { ...usage, [conversationId]: entry } : usage
+    usage: entry ? { ...usage, [conversationId]: entry } : usage,
+    resolvedModel: { ...s.resolvedModel, [conversationId]: view.modelId }
   }
 }
 
@@ -263,6 +276,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   conversationById: {},
   messagesById: {},
   streaming: {},
+  modelLoad: {},
+  stopping: {},
+  resolvedModel: {},
   toolPhases: {},
   lastError: {},
   lastFailedSend: {},
@@ -307,11 +323,30 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }))
     })
 
+    onEvent('chat.modelLoad', (event) => {
+      set((s) => {
+        if (event.phase === 'loading') {
+          return {
+            modelLoad: {
+              ...s.modelLoad,
+              [event.conversationId]: { modelId: event.modelId, startedAt: Date.now() }
+            }
+          }
+        }
+        const { [event.conversationId]: _modelLoad, ...modelLoad } = s.modelLoad
+        return { modelLoad }
+      })
+    })
+
     onEvent('chat.done', (event) => {
       set((s) => {
-        const { [event.conversationId]: _, ...streaming } = s.streaming
+        const { [event.conversationId]: _streaming, ...streaming } = s.streaming
+        const { [event.conversationId]: _modelLoad, ...modelLoad } = s.modelLoad
+        const { [event.conversationId]: _stopping, ...stopping } = s.stopping
         return {
           streaming,
+          modelLoad,
+          stopping,
           stoppedIds: event.aborted
             ? { ...s.stoppedIds, [event.messageId]: true as const }
             : s.stoppedIds,
@@ -523,8 +558,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const message = err instanceof Error ? err.message : String(err)
       set((s) => {
         const { [conversationId]: _, ...streaming } = s.streaming
+        const { [conversationId]: _stopping, ...stopping } = s.stopping
         return {
           streaming,
+          stopping,
           lastError: { ...s.lastError, [conversationId]: message },
           lastFailedSend: {
             ...s.lastFailedSend,
@@ -544,7 +581,27 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   abort: async (conversationId) => {
     // chat.done {aborted:true} clears the streaming flag.
-    await call('chat.abort', { conversationId })
+    const hadActiveStream = conversationId in get().streaming
+    if (hadActiveStream) {
+      set((s) => ({ stopping: { ...s.stopping, [conversationId]: true } }))
+    }
+    try {
+      const result = await call('chat.abort', { conversationId })
+      if (hadActiveStream && !result.ok) {
+        set((s) => {
+          const { [conversationId]: _stopping, ...stopping } = s.stopping
+          return { stopping }
+        })
+      }
+    } catch (err) {
+      if (hadActiveStream) {
+        set((s) => {
+          const { [conversationId]: _stopping, ...stopping } = s.stopping
+          return { stopping }
+        })
+      }
+      throw err
+    }
   },
 
   regenerate: async (conversationId, messageId, options) => {
@@ -597,7 +654,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     } catch (err) {
       set((s) => {
         const { [conversationId]: _, ...streaming } = s.streaming
-        return { streaming }
+        const { [conversationId]: _stopping, ...stopping } = s.stopping
+        return { streaming, stopping }
       })
       throw err
     }
@@ -679,7 +737,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     } catch (err) {
       set((s) => {
         const { [conversationId]: _, ...streaming } = s.streaming
-        return { streaming }
+        const { [conversationId]: _stopping, ...stopping } = s.stopping
+        return { streaming, stopping }
       })
       throw err
     }

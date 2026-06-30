@@ -1,9 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, Loader2, Pencil, Search, Shrink, Sparkles, Type } from 'lucide-react'
+import {
+  Check,
+  Copy,
+  HelpCircle,
+  Loader2,
+  Pencil,
+  Search,
+  Shrink,
+  Sparkles,
+  Type
+} from 'lucide-react'
 import type { Conversation } from '@shared/types'
 import { useChatStore } from '@/stores/chat'
 import {
   useChatPrefs,
+  type ChatDensity,
   type ChatTextSize,
   type ChatWidth
 } from '@/stores/chatPrefs'
@@ -12,6 +23,7 @@ import { call } from '@/lib/ipc'
 import { pushToast, toastError } from '@/stores/toasts'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import ConversationSettings from './ConversationSettings'
+import ShortcutsHints from './ShortcutsHints'
 
 /** Compact the conversation — summarize older turns to reclaim context. */
 function CompactButton({ conversationId }: { conversationId: string }) {
@@ -34,7 +46,7 @@ function CompactButton({ conversationId }: { conversationId: string }) {
         disabled={pending || streaming}
         title="Compact conversation"
         aria-label="Compact conversation"
-        className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
+        className="press rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
       >
         {pending ? <Loader2 size={14} className="animate-spin" /> : <Shrink size={14} />}
       </button>
@@ -87,7 +99,7 @@ function SummaryMenu({ conversationId }: { conversationId: string }) {
         disabled={streaming}
         title="Summarize conversation"
         aria-label="Summarize conversation"
-        className={`rounded-md p-1.5 transition-colors disabled:opacity-40 ${
+        className={`press rounded-md p-1.5 transition-colors disabled:opacity-40 ${
           open ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
         }`}
       >
@@ -97,7 +109,7 @@ function SummaryMenu({ conversationId }: { conversationId: string }) {
         <div
           role="dialog"
           aria-label="Conversation summary"
-          className="absolute right-0 top-full z-20 mt-1 w-80 rounded-lg border border-zinc-700 bg-zinc-900 p-3 shadow-xl"
+          className="pop-in absolute right-0 top-full z-20 mt-1 w-80 origin-top-right rounded-lg border border-zinc-700 bg-zinc-900 p-3 shadow-xl"
         >
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-[10px] font-medium uppercase tracking-[0.06em] text-zinc-500">
@@ -164,13 +176,15 @@ function Segmented<T extends string>({
   )
 }
 
-/** Reading comfort knobs (text size / measure / code wrap). App-global, persisted. */
+/** Reading comfort knobs (text size / measure / density / code wrap). App-global, persisted. */
 function DisplayMenu() {
   const textSize = useChatPrefs((s) => s.textSize)
   const width = useChatPrefs((s) => s.width)
+  const density = useChatPrefs((s) => s.density)
   const codeWrap = useChatPrefs((s) => s.codeWrap)
   const setTextSize = useChatPrefs((s) => s.setTextSize)
   const setWidth = useChatPrefs((s) => s.setWidth)
+  const setDensity = useChatPrefs((s) => s.setDensity)
   const setCodeWrap = useChatPrefs((s) => s.setCodeWrap)
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -184,7 +198,7 @@ function DisplayMenu() {
         aria-label="Display settings"
         aria-haspopup="dialog"
         aria-expanded={open}
-        className={`rounded-md p-1.5 transition-colors ${
+        className={`press rounded-md p-1.5 transition-colors ${
           open ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
         }`}
       >
@@ -194,7 +208,7 @@ function DisplayMenu() {
         <div
           role="dialog"
           aria-label="Display settings"
-          className="absolute right-0 top-full z-20 mt-1 w-56 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl"
+          className="pop-in absolute right-0 top-full z-20 mt-1 w-56 origin-top-right rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl"
         >
           <Segmented<ChatTextSize>
             label="Text size"
@@ -213,6 +227,15 @@ function DisplayMenu() {
             options={[
               { v: 'standard', label: 'Standard' },
               { v: 'wide', label: 'Wide' }
+            ]}
+          />
+          <Segmented<ChatDensity>
+            label="Density"
+            value={density}
+            onChange={setDensity}
+            options={[
+              { v: 'comfortable', label: 'Comfortable' },
+              { v: 'compact', label: 'Compact' }
             ]}
           />
           <button
@@ -237,6 +260,28 @@ function DisplayMenu() {
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+function ShortcutsButton() {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Keyboard shortcuts"
+        aria-label="Keyboard shortcuts"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className={`press rounded-md p-1.5 transition-colors ${
+          open ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+        }`}
+      >
+        <HelpCircle size={14} />
+      </button>
+      <ShortcutsHints open={open} onClose={() => setOpen(false)} outsideRef={ref} />
     </div>
   )
 }
@@ -319,7 +364,7 @@ export default function ThreadHeader({ conversation, findOpen, onToggleFind }: P
             onClick={startEdit}
             title="Rename conversation"
             aria-label="Rename conversation"
-            className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+            className="press rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
           >
             <Pencil size={14} />
           </button>
@@ -329,7 +374,7 @@ export default function ThreadHeader({ conversation, findOpen, onToggleFind }: P
           title="Find in conversation"
           aria-label="Find in conversation"
           aria-pressed={findOpen}
-          className={`rounded-md p-1.5 transition-colors ${
+          className={`press rounded-md p-1.5 transition-colors ${
             findOpen ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
           }`}
         >
@@ -338,6 +383,7 @@ export default function ThreadHeader({ conversation, findOpen, onToggleFind }: P
         <SummaryMenu conversationId={conversation.id} />
         <CompactButton conversationId={conversation.id} />
         <DisplayMenu />
+        <ShortcutsButton />
         <ConversationSettings conversation={conversation} />
       </div>
     </div>

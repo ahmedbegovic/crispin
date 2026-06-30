@@ -54,7 +54,7 @@ function DeleteMessageButton({ message, disabled }: { message: ChatMessage; disa
         disabled={disabled || pending}
         title="Delete message"
         aria-label="Delete message"
-        className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-30"
+        className="press rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-30"
       >
         <Trash2 size={12} />
       </button>
@@ -141,7 +141,15 @@ function CompactionDivider({ summary }: { summary: string }) {
   )
 }
 
-function UserMessage({ message, streaming }: { message: ChatMessage; streaming: boolean }) {
+function UserMessage({
+  message,
+  streaming,
+  isNew
+}: {
+  message: ChatMessage
+  streaming: boolean
+  isNew: boolean
+}) {
   const editResend = useChatStore((s) => s.editResend)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -183,7 +191,9 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
   }
 
   return (
-    <div className="group flex flex-col items-end pb-2 pt-6">
+    <div
+      className={`group flex flex-col items-end pb-2 pt-[var(--chat-pt-turn,1.5rem)] ${isNew ? 'msg-in' : ''}`}
+    >
       {editing ? (
         <div className="w-full max-w-[80%]">
           <textarea
@@ -240,7 +250,7 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
               onClick={copy}
               title="Copy message"
               aria-label="Copy message"
-              className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              className="press rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
             >
               {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
             </button>
@@ -251,7 +261,7 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
               }}
               disabled={streaming}
               title="Edit & resend"
-              className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30"
+              className="press rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30"
             >
               <Pencil size={12} />
             </button>
@@ -266,14 +276,18 @@ function UserMessage({ message, streaming }: { message: ChatMessage; streaming: 
 function AssistantMessage({
   message,
   streaming,
-  busy
+  busy,
+  isNew
 }: {
   message: ChatMessage
   streaming: boolean
   busy: boolean
+  isNew: boolean
 }) {
   const regenerate = useChatStore((s) => s.regenerate)
   const stopped = useChatStore((s) => s.stoppedIds[message.id])
+  const activeModelLoad = useChatStore((s) => s.modelLoad[message.conversationId])
+  const isStopping = useChatStore((s) => s.stopping[message.conversationId])
   const [copied, setCopied] = useState(false)
 
   // Stable [n] → source map for inline citations; empty until the sources part
@@ -353,14 +367,21 @@ function AssistantMessage({
   const showActivity =
     processParts.some((x) => x.part.type !== 'thought' || x.part.text.trim().length > 0) ||
     (streaming && processParts.length > 0)
-  const runPhase = chatRunPhase(streaming ? message.id : undefined, message)
+  const runPhase = chatRunPhase(streaming ? message.id : undefined, message, {
+    modelLoad: !!activeModelLoad,
+    stopping: !!isStopping
+  })
 
   return (
     // Reserved left indent (pl-4 always present, so settling the stream never
     // shifts content). No coloured spine — liveness is shown by the activity
     // narrative and the caret, not a green bar down the message.
-    <div className="group border-l-2 border-transparent pb-4 pl-4 pt-1">
-      {runPhase === 'waitingFirstToken' && (
+    <div
+      className={`group border-l-2 border-transparent pb-[var(--chat-pb-msg,1rem)] pl-4 pt-1 ${
+        isNew ? 'msg-in' : ''
+      }`}
+    >
+      {(runPhase === 'waitingFirstToken' || runPhase === 'loadingModel' || runPhase === 'stopping') && (
         <div className="flex items-center gap-2 py-1 text-[12px] text-zinc-500">
           <Loader2 size={13} className="animate-spin" />
           {chatRunPhaseLabel(runPhase)}
@@ -407,7 +428,7 @@ function AssistantMessage({
                 onClick={copy}
                 title="Copy response so far"
                 aria-label="Copy response so far"
-                className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+                className="press rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
               >
                 {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
               </button>
@@ -419,7 +440,7 @@ function AssistantMessage({
               onClick={copy}
               title="Copy response"
               aria-label="Copy response"
-              className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              className="press rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
             >
               {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
             </button>
@@ -428,7 +449,7 @@ function AssistantMessage({
               disabled={busy}
               title="Regenerate"
               aria-label="Regenerate response"
-              className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30"
+              className="press rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30"
             >
               <RefreshCw size={12} />
             </button>
@@ -442,7 +463,7 @@ function AssistantMessage({
                   aria-label="Regenerate options"
                   aria-haspopup="menu"
                   aria-expanded={open}
-                  className={`-ml-1 rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 ${
+                  className={`press -ml-1 rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 ${
                     open ? 'bg-zinc-800 text-zinc-200' : ''
                   }`}
                 >
@@ -472,11 +493,13 @@ interface Props {
   streaming: boolean
   /** True while any generation runs in this conversation (gates branching/edit). */
   busy: boolean
+  /** True only for messages that arrived after the thread mounted. */
+  isNew: boolean
 }
 
-export default function MessageBubble({ message, streaming, busy }: Props) {
-  if (message.role === 'user') return <UserMessage message={message} streaming={busy} />
+export default function MessageBubble({ message, streaming, busy, isNew }: Props) {
+  if (message.role === 'user') return <UserMessage message={message} streaming={busy} isNew={isNew} />
   if (message.role === 'assistant')
-    return <AssistantMessage message={message} streaming={streaming} busy={busy} />
+    return <AssistantMessage message={message} streaming={streaming} busy={busy} isNew={isNew} />
   return null // system/tool rows are folded into assistant parts
 }

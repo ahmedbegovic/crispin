@@ -9,10 +9,12 @@ import { create } from 'zustand'
 
 export type ChatTextSize = 'small' | 'default' | 'large'
 export type ChatWidth = 'standard' | 'wide'
+export type ChatDensity = 'comfortable' | 'compact'
 
 interface Persisted {
   textSize: ChatTextSize
   width: ChatWidth
+  density: ChatDensity
   /** Default soft-wrap for code blocks; each block can still override locally. */
   codeWrap: boolean
 }
@@ -20,6 +22,7 @@ interface Persisted {
 interface ChatPrefsStore extends Persisted {
   setTextSize: (v: ChatTextSize) => void
   setWidth: (v: ChatWidth) => void
+  setDensity: (v: ChatDensity) => void
   setCodeWrap: (v: boolean) => void
 }
 
@@ -34,19 +37,38 @@ const WIDTH: Record<ChatWidth, string> = {
   standard: '46rem',
   wide: '54rem'
 }
+const DENSITY: Record<ChatDensity, { pbMsg: string; myPara: string; ptTurn: string }> = {
+  // ptTurn = top padding above each user message — the dominant inter-turn gap,
+  // so it carries most of the visible comfortable↔compact difference.
+  comfortable: { pbMsg: '1rem', myPara: '0.5rem', ptTurn: '1.5rem' },
+  compact: { pbMsg: '0.5rem', myPara: '0.25rem', ptTurn: '0.875rem' }
+}
 
-const DEFAULTS: Persisted = { textSize: 'default', width: 'standard', codeWrap: false }
+const DEFAULTS: Persisted = {
+  textSize: 'default',
+  width: 'standard',
+  density: 'comfortable',
+  codeWrap: false
+}
+
+/** Coerce an arbitrary persisted blob into a valid Persisted, defaulting any
+ *  missing/invalid field individually — so an upgrade that adds a key (e.g.
+ *  density) never drops the user's other saved prefs. Pure + exported for tests. */
+export function coercePersisted(raw: unknown): Persisted {
+  const p = (raw && typeof raw === 'object' ? raw : {}) as Partial<Persisted>
+  return {
+    textSize: p.textSize && p.textSize in TEXT_SIZE ? p.textSize : DEFAULTS.textSize,
+    width: p.width && p.width in WIDTH ? p.width : DEFAULTS.width,
+    density: p.density && p.density in DENSITY ? p.density : DEFAULTS.density,
+    codeWrap: typeof p.codeWrap === 'boolean' ? p.codeWrap : DEFAULTS.codeWrap
+  }
+}
 
 function load(): Persisted {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return DEFAULTS
-    const p = JSON.parse(raw) as Partial<Persisted>
-    return {
-      textSize: p.textSize && p.textSize in TEXT_SIZE ? p.textSize : DEFAULTS.textSize,
-      width: p.width && p.width in WIDTH ? p.width : DEFAULTS.width,
-      codeWrap: typeof p.codeWrap === 'boolean' ? p.codeWrap : DEFAULTS.codeWrap
-    }
+    return coercePersisted(JSON.parse(raw))
   } catch {
     return DEFAULTS
   }
@@ -64,23 +86,40 @@ export const useChatPrefs = create<ChatPrefsStore>((set, get) => ({
   ...load(),
   setTextSize: (textSize) => {
     set({ textSize })
-    const { width, codeWrap } = get()
-    persist({ textSize, width, codeWrap })
+    const { width, density, codeWrap } = get()
+    persist({ textSize, width, density, codeWrap })
   },
   setWidth: (width) => {
     set({ width })
-    const { textSize, codeWrap } = get()
-    persist({ textSize, width, codeWrap })
+    const { textSize, density, codeWrap } = get()
+    persist({ textSize, width, density, codeWrap })
+  },
+  setDensity: (density) => {
+    set({ density })
+    const { textSize, width, codeWrap } = get()
+    persist({ textSize, width, density, codeWrap })
   },
   setCodeWrap: (codeWrap) => {
     set({ codeWrap })
-    const { textSize, width } = get()
-    persist({ textSize, width, codeWrap })
+    const { textSize, width, density } = get()
+    persist({ textSize, width, density, codeWrap })
   }
 }))
 
 /** CSS custom properties for the chat content area; pass straight to a `style` prop. */
-export function chatPrefsVars(textSize: ChatTextSize, width: ChatWidth): CSSProperties {
+export function chatPrefsVars(
+  textSize: ChatTextSize,
+  width: ChatWidth,
+  density: ChatDensity
+): CSSProperties {
   const t = TEXT_SIZE[textSize]
-  return { '--chat-fs': t.fs, '--chat-lh': t.lh, '--chat-measure': WIDTH[width] } as CSSProperties
+  const d = DENSITY[density]
+  return {
+    '--chat-fs': t.fs,
+    '--chat-lh': t.lh,
+    '--chat-measure': WIDTH[width],
+    '--chat-pb-msg': d.pbMsg,
+    '--chat-my-para': d.myPara,
+    '--chat-pt-turn': d.ptTurn
+  } as CSSProperties
 }

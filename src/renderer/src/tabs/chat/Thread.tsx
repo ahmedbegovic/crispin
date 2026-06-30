@@ -43,7 +43,7 @@ function EmptyThread({
       <MessageSquare size={28} strokeWidth={1.5} className="text-zinc-700" />
       <div className="text-center">
         <p className="text-[13px] text-zinc-400">
-          Talking to <span className="text-zinc-200">{family}</span>
+          Talking to <span className="font-semibold text-zinc-100">{family}</span>
           <span className="text-zinc-600"> · {TIER_LABELS[tier]}</span>
         </p>
         <p className="mt-0.5 text-[11px] text-zinc-600">Enter to send · Shift+Enter for a newline</p>
@@ -53,7 +53,7 @@ function EmptyThread({
           <button
             key={suggestion}
             onClick={() => void send(conversationId, suggestion).catch(toastError)}
-            className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-left text-[12px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+            className="press rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-left text-[12px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
           >
             {suggestion}
           </button>
@@ -68,6 +68,29 @@ function ErrorBanner({ conversationId, error }: { conversationId: string; error:
   const retryLast = useChatStore((s) => s.retryLast)
   const engineRunning = useModelsStore((s) => s.overview?.engine.running)
   const setActiveTab = useUiStore((s) => s.setActiveTab)
+  const [copied, setCopied] = useState(false)
+  const [copyAnnouncement, setCopyAnnouncement] = useState('')
+  const copyResetTimeout = useRef<number | null>(null)
+  const copyDiagnostics = (): void => {
+    void navigator.clipboard
+      .writeText(error)
+      .then(() => {
+        setCopied(true)
+        setCopyAnnouncement('Diagnostics copied')
+        if (copyResetTimeout.current !== null) window.clearTimeout(copyResetTimeout.current)
+        copyResetTimeout.current = window.setTimeout(() => {
+          setCopied(false)
+          setCopyAnnouncement('')
+          copyResetTimeout.current = null
+        }, 1500)
+      })
+      .catch(toastError)
+  }
+  useEffect(() => {
+    return () => {
+      if (copyResetTimeout.current !== null) window.clearTimeout(copyResetTimeout.current)
+    }
+  }, [])
   return (
     <div className="mx-auto w-full max-w-[var(--chat-measure,46rem)] px-6 pb-2">
       <div
@@ -83,6 +106,13 @@ function ErrorBanner({ conversationId, error }: { conversationId: string; error:
               className="rounded bg-red-500/20 px-2 py-0.5 font-medium text-red-200 hover:bg-red-500/30"
             >
               Retry
+            </button>
+            <button
+              onClick={copyDiagnostics}
+              aria-label="Copy diagnostics"
+              className="rounded px-2 py-0.5 text-red-300/80 hover:bg-red-500/20 hover:text-red-200"
+            >
+              {copied ? 'Copied' : 'Copy diagnostics'}
             </button>
             {engineRunning !== true && (
               <button
@@ -101,6 +131,9 @@ function ErrorBanner({ conversationId, error }: { conversationId: string; error:
         >
           <X size={13} />
         </button>
+      </div>
+      <div role="status" aria-live="polite" className="sr-only">
+        {copyAnnouncement}
       </div>
     </div>
   )
@@ -126,16 +159,40 @@ export default function Thread({ conversationId }: Props) {
   const messages = useChatStore((s) => s.messagesById[conversationId])
   const conversation = useChatStore((s) => s.conversationById[conversationId])
   const streamingId = useChatStore((s) => s.streaming[conversationId])
+  const activeModelLoad = useChatStore((s) => s.modelLoad[conversationId])
+  const isStopping = useChatStore((s) => s.stopping[conversationId])
   const lastError = useChatStore((s) => s.lastError[conversationId])
   const streamingMessage = streamingId
     ? messages?.find((message) => message.id === streamingId)
     : undefined
-  const runPhase = chatRunPhase(streamingId, streamingMessage)
+  const runPhase = chatRunPhase(streamingId, streamingMessage, {
+    modelLoad: !!activeModelLoad,
+    stopping: isStopping
+  })
   const busy = runPhase !== 'idle'
 
   const rootRef = useRef<HTMLDivElement>(null)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
+  const seenIds = useRef<Set<string>>(new Set())
+  const seenConversationId = useRef(conversationId)
+  const seededSeenIds = useRef(false)
   const [atBottom, setAtBottom] = useState(true)
+  const messageIds = messages?.map((message) => message.id) ?? []
+  const messageIdsKey = messageIds.join('\x1f')
+
+  if (seenConversationId.current !== conversationId) {
+    seenIds.current = new Set()
+    seenConversationId.current = conversationId
+    seededSeenIds.current = false
+  }
+  if (!seededSeenIds.current && messages) {
+    messageIds.forEach((id) => seenIds.current.add(id))
+    seededSeenIds.current = true
+  }
+
+  useEffect(() => {
+    messageIds.forEach((id) => seenIds.current.add(id))
+  }, [messageIdsKey])
 
   // Find-in-conversation: matches over the active path's text parts (this branch
   // only). Cross-conversation search lives in the sidebar.
@@ -308,7 +365,12 @@ export default function Thread({ conversationId }: Props) {
                   message.id === highlightId ? 'bg-sky-500/[0.07]' : ''
                 }`}
               >
-                <MessageBubble message={message} streaming={message.id === streamingId} busy={busy} />
+                <MessageBubble
+                  message={message}
+                  streaming={message.id === streamingId}
+                  busy={busy}
+                  isNew={!seenIds.current.has(message.id)}
+                />
               </div>
             )}
           />

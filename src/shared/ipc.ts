@@ -244,7 +244,15 @@ export const conversationViewSchema = z.object({
    * denominator for the composer's context-usage donut. Null when nothing
    * is installed for the tier.
    */
-  contextLength: z.number().nullable()
+  contextLength: z.number().nullable(),
+  /**
+   * The repo id the conversation would actually generate with — the SAME
+   * cascade-aware resolution the send path uses (effective tier/family →
+   * resolveRepoFor, falling through to the nearest installed tier). The
+   * composer's model-status badge reads this so it can't lie about a model
+   * that will run. Null only when nothing is installed in any tier.
+   */
+  modelId: z.string().nullable()
 })
 
 export const chatSearchHitSchema = z.object({
@@ -704,6 +712,11 @@ export const contract = {
     /** Render the conversation's active path to a Markdown file; returns its path. */
     input: z.object({ conversationId: z.string() }),
     output: z.object({ path: z.string() })
+  },
+  'chat.exportMarkdown': {
+    /** Render the conversation's active path to Markdown without writing a file. */
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({ markdown: z.string() })
   },
   'chat.savePastedFile': {
     /** Persist a pasted clipboard blob (e.g. a screenshot) to a temp file for attachment. */
@@ -1276,6 +1289,13 @@ export const crispinEventSchema = z.discriminatedUnion('type', [
     name: z.string(),
     phase: z.enum(['start', 'result', 'error']),
     detail: z.string().optional()
+  }),
+  z.object({
+    type: z.literal('chat.modelLoad'),
+    conversationId: z.string(),
+    messageId: z.string(),
+    modelId: z.string(),
+    phase: z.enum(['loading', 'ready'])
   }),
   z.object({
     type: z.literal('chat.done'),

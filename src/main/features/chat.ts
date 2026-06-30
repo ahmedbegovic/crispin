@@ -17,14 +17,19 @@ export interface ChatFeatureDeps {
 export function registerChatFeature(deps: ChatFeatureDeps): void {
   const { repo, orchestrator, modelService } = deps
 
-  // conversationViewSchema requires contextLength — the composer's donut denominator.
+  // conversationViewSchema requires contextLength (donut denominator) + modelId
+  // (the composer's model-status badge). Both share the orchestrator's
+  // effective-tier resolution so neither can drift from what actually generates.
   const viewOf = (conversationId: string): ReturnType<ChatRepo['view']> & {
     contextLength: number | null
+    modelId: string | null
   } => {
     const view = repo.view(conversationId)
-    // contextForConversation owns the effective-tier resolution, so the donut
-    // denominator can't drift from the tier the orchestrator generates with.
-    return { ...view, contextLength: orchestrator.contextForConversation(view.conversation) }
+    return {
+      ...view,
+      contextLength: orchestrator.contextForConversation(view.conversation),
+      modelId: orchestrator.modelForConversation(view.conversation)
+    }
   }
 
   handle('chat.list', (input) => ({
@@ -139,6 +144,11 @@ export function registerChatFeature(deps: ChatFeatureDeps): void {
     const path = join(dir, `${slugify(conversation.title)}-${conversation.id.slice(0, 8)}.md`)
     writeFileSync(path, conversationMarkdown(conversation, messages))
     return { path }
+  })
+
+  handle('chat.exportMarkdown', ({ conversationId }) => {
+    const { conversation, messages } = repo.view(conversationId)
+    return { markdown: conversationMarkdown(conversation, messages) }
   })
 
   handle('chat.savePastedFile', ({ name, mime, dataBase64 }) => {

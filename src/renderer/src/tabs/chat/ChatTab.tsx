@@ -22,6 +22,7 @@ export default function ChatTab() {
   const create = useChatStore((s) => s.create)
   const textSize = useChatPrefs((s) => s.textSize)
   const width = useChatPrefs((s) => s.width)
+  const density = useChatPrefs((s) => s.density)
 
   useEffect(() => {
     void init().catch(toastError)
@@ -30,9 +31,9 @@ export default function ChatTab() {
   }, [init, initLibrary, initMcp])
 
   return (
-    // --chat-fs / --chat-lh / --chat-measure cascade to the thread + composer;
+    // --chat-fs / --chat-lh / --chat-measure / density vars cascade to the thread + composer;
     // reading the prefs here means the memoized MarkdownPart never re-renders.
-    <div className="flex h-full" style={chatPrefsVars(textSize, width)}>
+    <div className="flex h-full" style={chatPrefsVars(textSize, width, density)}>
       <ConversationSidebar />
       {/* ThreadHeader is the draggable titlebar band for an open conversation;
           the no-conversation / loading states keep their own absolute strip. */}
@@ -52,14 +53,14 @@ export default function ChatTab() {
           <div className="drag-region absolute inset-x-0 top-0 h-12" />
           <MessageSquare size={32} strokeWidth={1.5} className="text-zinc-700" />
           <div className="text-center">
-            <h2 className="text-[14px] font-medium text-zinc-300">No conversation selected</h2>
-            <p className="mt-1 text-[12px] text-zinc-600">
-              Start a chat with a local model — attach files, search the web, query your library.
+            <h2 className="text-[15px] font-medium text-zinc-200">Start a conversation</h2>
+            <p className="mt-1 max-w-sm text-[12px] text-zinc-600">
+              Chat with a local model — attach files, search the web, or query your library.
             </p>
           </div>
           <button
             onClick={() => void create().catch(toastError)}
-            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-emerald-500"
+            className="press flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-emerald-500"
           >
             <Plus size={14} />
             New chat
