@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useChatStore } from '@/stores/chat'
 import type { MessagePart } from '@shared/types'
-import { segmentThought } from './thoughtSteps'
+import ThoughtMarkdown from './ThoughtMarkdown'
 
 export type ProcessPart = Extract<MessagePart, { type: 'thought' | 'tool_call' | 'tool_result' }>
 export type ToolCallPart = Extract<MessagePart, { type: 'tool_call' }>
@@ -244,9 +244,9 @@ export default function ActivityDisclosure({
 /**
  * The expanded activity as a plain temporal narrative: each reasoning step and
  * tool call is one readable line (a muted icon + a sentence), no raw JSON and no
- * coloured rail. Reasoning steps are segmented render-side from the existing
- * 'thought' strings; parts are already in temporal order, so think→tool→think
- * interleaves for free.
+ * coloured rail. Reasoning parts stay intact so each contiguous thought gets a
+ * single heading and markdown body; parts are already in temporal order, so
+ * think→tool→think interleaves for free.
  */
 function ActivityTimeline({
   parts,
@@ -261,14 +261,14 @@ function ActivityTimeline({
 }) {
   const rows: ReactNode[] = []
 
-  const thoughtRow = (key: string, heading: string | null, body: string): ReactNode => (
+  const thoughtRow = (key: string, body: string): ReactNode => (
     <div key={key} className="flex items-start gap-2">
       <Brain size={13} className="mt-0.5 shrink-0 text-zinc-600" />
       <div className="min-w-0 flex-1">
-        <div className="text-[12px] text-zinc-400">{heading ?? 'Thinking'}</div>
+        <div className="text-[12px] text-zinc-400">Thinking</div>
         {body && (
-          <div className="mt-0.5 max-h-52 select-text overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-zinc-500">
-            {body}
+          <div className="mt-0.5 max-h-52 overflow-y-auto">
+            <ThoughtMarkdown text={body} />
           </div>
         )}
       </div>
@@ -297,7 +297,7 @@ function ActivityTimeline({
 
   for (const { part, i } of parts) {
     if (part.type === 'thought') {
-      segmentThought(part.text).forEach((s, si) => rows.push(thoughtRow(`t${i}-${si}`, s.heading, s.body)))
+      if (part.text.trim()) rows.push(thoughtRow(`t${i}`, part.text))
     } else if (part.type === 'tool_call') {
       const r = resultFor(part.id)
       const running = working && !r

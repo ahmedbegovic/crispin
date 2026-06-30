@@ -64,6 +64,15 @@ function toBase64(buf: ArrayBuffer): string {
   return btoa(binary)
 }
 
+function stripModelSuffixes(modelId: string): string {
+  let name = modelId.split('/').pop() || modelId
+  const suffixPattern = /(?:-qat|-\d+bit|-bf16|-fp16|-mlx|-gguf)$/i
+  while (suffixPattern.test(name)) {
+    name = name.replace(suffixPattern, '')
+  }
+  return name
+}
+
 interface Props {
   conversation: Conversation
 }
@@ -116,7 +125,7 @@ export default function Composer({ conversation }: Props) {
   const waitingFirstTokenStartedAtRef = useRef<number | null>(null)
   const [waitingFirstTokenStartedAt, setWaitingFirstTokenStartedAt] = useState<number | null>(null)
   const waitingFirstTokenElapsed = useElapsed(waitingFirstTokenStartedAt)
-  const loadingModelShortName = modelLoad?.modelId.split('/').pop() || modelLoad?.modelId || 'model'
+  const loadingModelShortName = modelLoad ? stripModelSuffixes(modelLoad.modelId) : 'model'
   const footerStatusText =
     runPhase === 'loadingModel'
       ? `Loading ${loadingModelShortName} · ${loadingModelElapsed}s`
@@ -618,13 +627,13 @@ export default function Composer({ conversation }: Props) {
                 <>
                   <span className="flex min-w-0 max-w-36 items-center gap-1.5 text-[11px] text-zinc-500">
                     <Loader2 size={12} className="shrink-0 animate-spin" />
-                    <span className="truncate">{footerStatusText}</span>
+                    <span className="min-w-0 truncate">{footerStatusText}</span>
                   </span>
                   <button
                     onClick={() => void abort(conversation.id).catch(toastError)}
                     title={stopButtonLabel}
                     aria-label="Stop generating"
-                    className="press rounded-lg bg-red-600/90 p-2 text-white hover:bg-red-500"
+                    className="press shrink-0 rounded-lg bg-red-700/85 p-2 text-white hover:bg-red-600"
                   >
                     <Square size={13} />
                   </button>
@@ -635,7 +644,7 @@ export default function Composer({ conversation }: Props) {
                   disabled={pendingPastes > 0 || (!text.trim() && attachments.length === 0)}
                   title="Send"
                   aria-label="Send message"
-                  className="press rounded-lg bg-emerald-600 p-2 text-white enabled:shadow-[0_0_0_1px_rgba(16,185,129,0.25)] enabled:hover:bg-emerald-500 disabled:opacity-40"
+                  className="press shrink-0 rounded-lg bg-emerald-600 p-2 text-white enabled:shadow-[0_0_0_1px_rgba(16,185,129,0.25)] enabled:hover:bg-emerald-500 disabled:opacity-40"
                 >
                   <SendHorizontal size={13} />
                 </button>
