@@ -41,7 +41,7 @@
 - Risk: low, isolated to renderer run-phase classification.
 - Files affected: `src/renderer/src/tabs/chat/runStatus.ts`, `src/renderer/src/tabs/chat/runStatus.test.ts`.
 - Verification: `npm test -- src/renderer/src/tabs/chat/runStatus.test.ts`, `npm run typecheck`, `npm test`, `npm run build`, `git diff --check`.
-- PR: pending.
+- PR: #6.
 
 ## Rejected
 
