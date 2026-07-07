@@ -1,0 +1,3 @@
+commit	feature	status	checks	description
+9214efa	chat-run-status-answer-readiness	baseline	deps-missing	focused test command initially could not run because node_modules was absent before npm ci
+10a8908	chat-run-status-answer-readiness	keep	focused-test,typecheck,test,build,diff-check	classify generating only after visible assistant answer text streams

@@ -44,7 +44,37 @@ describe('chatRunPhase', () => {
     expect(chatRunPhaseLabel('waitingFirstToken')).toBe('Thinking…')
   })
 
-  it('returns generating once the assistant message has streamed parts', () => {
+  it('keeps waiting while only process or non-answer parts have streamed', () => {
+    expect(chatRunPhase('assistant-1', { parts: [{ type: 'thought', text: 'reasoning' }] })).toBe(
+      'waitingFirstToken'
+    )
+    expect(
+      chatRunPhase('assistant-1', {
+        parts: [{ type: 'tool_call', id: 'call-1', name: 'search', args: '{"q":"x"}' }]
+      })
+    ).toBe('waitingFirstToken')
+    expect(
+      chatRunPhase('assistant-1', {
+        parts: [{ type: 'tool_result', toolCallId: 'call-1', name: 'search', result: 'result' }]
+      })
+    ).toBe('waitingFirstToken')
+    expect(
+      chatRunPhase('assistant-1', {
+        parts: [{ type: 'sources', sources: [{ id: 1, title: null, url: 'https://example.com' }] }]
+      })
+    ).toBe('waitingFirstToken')
+  })
+
+  it('keeps waiting for empty text placeholders', () => {
+    expect(chatRunPhase('assistant-1', { parts: [{ type: 'text', text: '' }] })).toBe(
+      'waitingFirstToken'
+    )
+    expect(chatRunPhase('assistant-1', { parts: [{ type: 'text', text: '\n  ' }] })).toBe(
+      'waitingFirstToken'
+    )
+  })
+
+  it('returns generating once the assistant message has streamed visible answer text', () => {
     expect(chatRunPhase('assistant-1', { parts: [{ type: 'text', text: 'hello' }] })).toBe(
       'generating'
     )

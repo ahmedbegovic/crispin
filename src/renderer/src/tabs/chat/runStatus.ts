@@ -14,6 +14,12 @@ interface ChatRunPhaseContext {
   stopping?: boolean
 }
 
+function hasVisibleAnswerText(message: MessageWithParts): boolean {
+  return (
+    message?.parts.some((part) => part.type === 'text' && part.text.trim().length > 0) ?? false
+  )
+}
+
 export function chatRunPhase(
   streamingId: string | undefined,
   message?: MessageWithParts,
@@ -23,7 +29,7 @@ export function chatRunPhase(
   if (ctx?.stopping) return 'stopping'
   if (ctx?.modelLoad) return 'loadingModel'
   if (streamingId === '') return 'starting'
-  return message && message.parts.length > 0 ? 'generating' : 'waitingFirstToken'
+  return hasVisibleAnswerText(message) ? 'generating' : 'waitingFirstToken'
 }
 
 export const CHAT_RUN_PHASE_LABELS: Record<ChatRunPhase, string> = {
